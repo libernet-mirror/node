@@ -3,6 +3,8 @@ use crate::proto;
 use anyhow::{Context, Result, anyhow};
 use blstrs::{G1Affine, G2Affine, Scalar};
 use crypto::{account::Account as LowLevelAccount, utils};
+use curve25519_dalek::EdwardsPoint as Point25519;
+use primitive_types::H512;
 
 #[derive(Debug)]
 pub struct Account {
@@ -14,14 +16,18 @@ impl Account {
         Self { inner }
     }
 
-    pub fn from_private_key(private_key: Scalar) -> Self {
+    pub fn from_secret_key(secret_key: H512) -> Self {
         Self {
-            inner: LowLevelAccount::new(private_key),
+            inner: LowLevelAccount::new(secret_key),
         }
     }
 
     pub fn public_key(&self) -> G1Affine {
         self.inner.public_key()
+    }
+
+    pub fn ed25519_public_key(&self) -> Point25519 {
+        self.inner.ed25519_public_key()
     }
 
     pub fn address(&self) -> Scalar {
@@ -88,28 +94,25 @@ pub mod testing {
 
     pub fn account1() -> Account {
         Account::new(LowLevelAccount::new(
-            utils::parse_scalar(
-                "0x0b0276914bf0f850d27771adb1abb62b2674e041b63c86c8cd0d7520355ae7c0",
-            )
-            .unwrap(),
+            "0x4191f15fdee5d58d9e829c72da3ff838a707a3e798e0cd67348dbdc628ad1565381456e6acde30debd3054224d3f684a8262550c5abc757d2dd4be979151997d"
+                .parse()
+                .unwrap(),
         ))
     }
 
     pub fn account2() -> Account {
         Account::new(LowLevelAccount::new(
-            utils::parse_scalar(
-                "0x0fc56ce55997c46f1ba0bce9a8a4daead405c29edf4066a2cd7d0419f592392b",
-            )
-            .unwrap(),
+            "0xac363bfd648af099278f7bc694633713999eb1089c33ef144496d52c9ee41d70b4503dac4448ad234747f3553fb4040c29cdf842f251cf116795dcd72be51ddc"
+                .parse()
+                .unwrap(),
         ))
     }
 
     pub fn account3() -> Account {
         Account::new(LowLevelAccount::new(
-            utils::parse_scalar(
-                "0x2417c832ac8f3f2e773d8e01eb9fe12e5349a7bfeff44b15d1b15b06e8c1176f",
-            )
-            .unwrap(),
+            "0xbee4977e23fd5a077def6fe641ebcf0c876484ff32b62095df046398c77eb93ab22161ccf87f3b9e1915a41578badafdce4f6608fdf6f9aafd02a11d13b4780d"
+                .parse()
+                .unwrap(),
         ))
     }
 }
@@ -124,13 +127,20 @@ mod tests {
         let account = testing::account1();
         assert_eq!(
             account.public_key(),
-            utils::parse_g1("0x971a30a286a15f62f9b93b4444851051ca102dd62a1adf63f16ae1e721934c1adfb611eadd71ebb81f2bbba11e9fa7e6")
+            utils::parse_g1("0xa0a63b0e43652fe3d2b5d5255df9eaf97ac522b929819db4d8655b29b2745695021dfda5f93a50f33d9fff9c95ab6fdc")
                 .unwrap()
+        );
+        assert_eq!(
+            account.ed25519_public_key(),
+            utils::parse_point_25519(
+                "0x908ea6fbbb3d4979d185118b94762b127002e06ee43fdb8b62bba20e443dc71f"
+            )
+            .unwrap()
         );
         assert_eq!(
             account.address(),
             utils::parse_scalar(
-                "0x33bae89b460efdef119f92c722a4e7c25003310cdcbdb9aa696e7bf37539882f"
+                "0x28fe947cabf1257baba35b31ba1f1ae837d20c4b0dbcf15b23c5e2afa7d0e369"
             )
             .unwrap()
         );
@@ -139,15 +149,28 @@ mod tests {
     #[test]
     fn test_account2() {
         let account = testing::account2();
+        println!("{}", utils::format_g1(account.public_key()));
+        println!(
+            "{}",
+            utils::format_point_25519(account.ed25519_public_key())
+        );
+        println!("{}", utils::format_scalar(account.address()));
         assert_eq!(
             account.public_key(),
-            utils::parse_g1("0xb7903cbd05093082918179fbdd250629a86be67ad069c0f0c2b5c7f5f299ba38680de9b60333504434e5acc096d66a58")
+            utils::parse_g1("0x90ae9b9e3c07d5eec8b3e4bc60ae7242a06816d0c4eb791b77958cd1f6feab226773bf3d049c5178dc9531271e9b0514")
                 .unwrap()
+        );
+        assert_eq!(
+            account.ed25519_public_key(),
+            utils::parse_point_25519(
+                "0xea9f8969a264ea7ebade38388c90add11ecd517389f94ad230c6e94b58b1bcdd"
+            )
+            .unwrap()
         );
         assert_eq!(
             account.address(),
             utils::parse_scalar(
-                "0x69c22a50555cff3bda736d8a5e7e658a73e59da13173395135a3135883d043c1"
+                "0x3725571def3264422951c9225e5f9c16bb68b15f1c58ccae131b8d13d15213f2"
             )
             .unwrap()
         );
@@ -158,13 +181,20 @@ mod tests {
         let account = testing::account3();
         assert_eq!(
             account.public_key(),
-            utils::parse_g1("0xa4e3a32b90c771d93ab3f78582e823dbf31e55a7e898223bd1a5cad15b0393574deb1c05131bbe946875a443b3b1f7de")
+            utils::parse_g1("0x8a73da6df68c26747a0fcda2b311d866dfed5a47c864629073a04b52d4d89e21690507939d73987ce10a2a38ab7177eb")
                 .unwrap()
+        );
+        assert_eq!(
+            account.ed25519_public_key(),
+            utils::parse_point_25519(
+                "0xcafd8587e708bb86514539c252213072660b7ecb4839f5e4bae2b806acabaca2"
+            )
+            .unwrap()
         );
         assert_eq!(
             account.address(),
             utils::parse_scalar(
-                "0x50215682c436f03f0bdc903061e2ff3f01ed6452433a2fdfb6d167418a00a398"
+                "0x5858d1799bf539667a0c48bed0c019ac2da886f85218e902dd147c59a99c397"
             )
             .unwrap()
         );
@@ -172,7 +202,7 @@ mod tests {
 
     #[test]
     fn test_bls_signature() {
-        let account = Account::from_private_key(utils::get_random_scalar());
+        let account = Account::from_secret_key(utils::get_random_bytes());
         let message = b"Hello, world!";
         let signature = account.bls_sign(message);
         assert!(Account::bls_verify(account.public_key(), message, signature).is_ok());
@@ -181,7 +211,7 @@ mod tests {
 
     #[test]
     fn test_wrong_bls_signature() {
-        let account = Account::from_private_key(utils::get_random_scalar());
+        let account = Account::from_secret_key(utils::get_random_bytes());
         let signature = account.bls_sign(b"World, hello!");
         let wrong_message = b"Hello, world!";
         assert!(Account::bls_verify(account.public_key(), wrong_message, signature).is_err());

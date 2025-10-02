@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use crypto::{account::Account, utils};
+use primitive_types::H512;
 
 mod account;
 mod clock;
@@ -69,11 +70,11 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     let secret_key = if args.secret_key.is_empty() {
-        let key = utils::get_random_scalar();
-        println!("New secret key: {:#x}", utils::scalar_to_u256(key));
+        let key = utils::get_random_bytes();
+        println!("New secret key: {:#x}", key);
         key
     } else {
-        utils::parse_scalar(args.secret_key.as_str())?
+        args.secret_key.as_str().parse::<H512>()?
     };
 
     let account = Account::new(secret_key);
