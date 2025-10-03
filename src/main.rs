@@ -1,14 +1,22 @@
-use anyhow::Result;
+use crate::account::Account;
+use crate::libernet::node_service_v1_server::NodeServiceV1Server;
+use anyhow::{Result, anyhow};
 use clap::Parser;
-use crypto::{account::Account, utils};
+use crypto::utils;
 use primitive_types::H512;
+use std::sync::Arc;
+use tonic::transport::Server;
 
 mod account;
 mod clock;
 mod db;
+mod net;
 mod proto;
+mod service;
+mod ssl;
 mod topology;
 mod tree;
+mod version;
 
 #[cfg(test)]
 mod fake;
@@ -65,6 +73,19 @@ struct Args {
     bootstrap_list: Vec<String>,
 }
 
+fn make_location(latitude: f64, longitude: f64) -> Result<libernet::GeographicalLocation> {
+    if !(-90.0..=90.0).contains(&latitude) {
+        return Err(anyhow!("the latitude is out of range"));
+    }
+    if !(0.0..=180.0).contains(&longitude) {
+        return Err(anyhow!("the longitude is out of range"));
+    }
+    Ok(libernet::GeographicalLocation {
+        latitude: Some((latitude * 60.0) as i32),
+        longitude: Some((longitude * 60.0) as u32),
+    })
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -77,11 +98,38 @@ async fn main() -> Result<()> {
         args.secret_key.as_str().parse::<H512>()?
     };
 
-    let account = Account::new(secret_key);
+    let account = Arc::new(Account::from_secret_key(secret_key)?);
+    let certificate = Arc::new(ssl::generate_certificate(
+        &*account,
+        vec![args.public_address.clone()],
+    )?);
 
-    // TODO
+    let location = make_location(args.latitude, args.longitude)?;
+    let server =
+        Server::builder().add_service(NodeServiceV1Server::new(service::NodeService::new(
+            Arc::new(clock::RealClock::default()),
+            account.clone(),
+            location,
+            args.chain_id,
+            args.public_address.as_str(),
+            [],
+            args.grpc_port,
+            args.http_port,
+        )?));
 
-    println!("Hello, world!");
+    let local_address = format!("{}:{}", args.local_address, args.grpc_port);
+    println!("listening on {}", local_address);
+
+    server
+        .serve_with_incoming(
+            net::IncomingWithMTls::new(
+                Arc::new(net::TcpListenerAdapter::new(local_address).await.unwrap()),
+                &*account,
+                certificate,
+            )
+            .await?,
+        )
+        .await?;
 
     Ok(())
 }

@@ -5,21 +5,29 @@ use blstrs::{G1Affine, G2Affine, Scalar};
 use crypto::{account::Account as LowLevelAccount, utils};
 use curve25519_dalek::EdwardsPoint as Point25519;
 use primitive_types::H512;
+use zeroize::Zeroizing;
 
+/// A Libernet account with an associated BLS keypair, account address, and Ed25519 keypair for
+/// generating TLS certificates.
 #[derive(Debug)]
 pub struct Account {
     inner: LowLevelAccount,
+    ed25519_public_key_bytes: Vec<u8>,
 }
 
 impl Account {
-    pub fn new(inner: LowLevelAccount) -> Self {
-        Self { inner }
+    pub fn new(inner: LowLevelAccount) -> Result<Self> {
+        let ed25519_public_key_bytes = utils::compress_point_25519(inner.ed25519_public_key())
+            .as_fixed_bytes()
+            .to_vec();
+        Ok(Self {
+            inner,
+            ed25519_public_key_bytes,
+        })
     }
 
-    pub fn from_secret_key(secret_key: H512) -> Self {
-        Self {
-            inner: LowLevelAccount::new(secret_key),
-        }
+    pub fn from_secret_key(secret_key: H512) -> Result<Self> {
+        Self::new(LowLevelAccount::new(secret_key))
     }
 
     pub fn public_key(&self) -> G1Affine {
@@ -32,6 +40,10 @@ impl Account {
 
     pub fn address(&self) -> Scalar {
         self.inner.address()
+    }
+
+    pub fn export_ed25519_private_key(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.inner.export_ed25519_private_key()
     }
 
     pub fn bls_sign(&self, message: &[u8]) -> G2Affine {
@@ -88,6 +100,26 @@ impl Account {
     }
 }
 
+impl rcgen::PublicKeyData for Account {
+    fn der_bytes(&self) -> &[u8] {
+        // NOTE: we're returning the raw bytes of the compressed key even though it really looks
+        // like this method should return the DER encoding. There seems to be a bug in rustls (or
+        // one of its dependencies) that causes a key mismatch if we pass the DER encoding. We're
+        // gonna have to update this code if the bug gets fixed in the future.
+        self.ed25519_public_key_bytes.as_slice()
+    }
+
+    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+        &rcgen::PKCS_ED25519
+    }
+}
+
+impl rcgen::SigningKey for Account {
+    fn sign(&self, message: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
+        Ok(self.inner.ed25519_sign(message).to_vec())
+    }
+}
+
 #[cfg(test)]
 pub mod testing {
     use super::*;
@@ -98,6 +130,7 @@ pub mod testing {
                 .parse()
                 .unwrap(),
         ))
+        .unwrap()
     }
 
     pub fn account2() -> Account {
@@ -106,6 +139,7 @@ pub mod testing {
                 .parse()
                 .unwrap(),
         ))
+        .unwrap()
     }
 
     pub fn account3() -> Account {
@@ -114,6 +148,7 @@ pub mod testing {
                 .parse()
                 .unwrap(),
         ))
+        .unwrap()
     }
 }
 
@@ -202,7 +237,7 @@ mod tests {
 
     #[test]
     fn test_bls_signature() {
-        let account = Account::from_secret_key(utils::get_random_bytes());
+        let account = Account::from_secret_key(utils::get_random_bytes()).unwrap();
         let message = b"Hello, world!";
         let signature = account.bls_sign(message);
         assert!(Account::bls_verify(account.public_key(), message, signature).is_ok());
@@ -211,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_wrong_bls_signature() {
-        let account = Account::from_secret_key(utils::get_random_bytes());
+        let account = Account::from_secret_key(utils::get_random_bytes()).unwrap();
         let signature = account.bls_sign(b"World, hello!");
         let wrong_message = b"Hello, world!";
         assert!(Account::bls_verify(account.public_key(), wrong_message, signature).is_err());

@@ -15,7 +15,7 @@ impl Clock for RealClock {
 }
 
 #[cfg(test)]
-pub mod test {
+pub mod testing {
     use super::*;
     use std::sync::Mutex;
     use std::time::Duration;
@@ -58,7 +58,7 @@ pub mod test {
 mod tests {
     use super::*;
     use std::time::Duration;
-    use test::MockClock;
+    use testing::MockClock;
     use tokio::time::Instant;
 
     #[test]
