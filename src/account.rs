@@ -4,6 +4,7 @@ use anyhow::{Context, Result, anyhow};
 use blstrs::{G1Affine, G2Affine, Scalar};
 use crypto::{account::Account as LowLevelAccount, utils};
 use curve25519_dalek::EdwardsPoint as Point25519;
+use ed25519_dalek::pkcs8::{DecodePublicKey, EncodePublicKey, spki::der::Encode};
 use oid_registry::{Oid, asn1_rs::oid};
 use primitive_types::{H256, H384, H512, H768};
 use x509_parser::{parse_x509_certificate, prelude::X509Certificate};
@@ -16,19 +17,23 @@ const OID_LIBERNET_IDENTITY_SIGNATURE_V1: Oid<'_> = oid!(1.3.6.1.4.1.71104.2);
 #[derive(Debug)]
 pub struct Account {
     inner: LowLevelAccount,
-    ed25519_public_key_bytes: [u8; 32],
+    ed25519_public_key_bytes: Vec<u8>,
 }
 
 impl Account {
-    pub fn new(inner: LowLevelAccount) -> Self {
-        let ed25519_public_key = utils::compress_point_25519(inner.ed25519_public_key());
-        Self {
+    pub fn new(inner: LowLevelAccount) -> Result<Self> {
+        let ed25519_public_key_bytes = {
+            let bytes = utils::compress_point_25519(inner.ed25519_public_key());
+            let bytes = ed25519_dalek::pkcs8::PublicKeyBytes(bytes.to_fixed_bytes());
+            bytes.to_public_key_der()?.to_der()?
+        };
+        Ok(Self {
             inner,
-            ed25519_public_key_bytes: ed25519_public_key.to_fixed_bytes(),
-        }
+            ed25519_public_key_bytes,
+        })
     }
 
-    pub fn from_secret_key(secret_key: H512) -> Self {
+    pub fn from_secret_key(secret_key: H512) -> Result<Self> {
         Self::new(LowLevelAccount::new(secret_key))
     }
 
@@ -99,8 +104,11 @@ impl Account {
 
     /// Generates a self-signed TLS certificate for use in all network connections with other
     /// Libernet nodes.
-    pub fn generate_tls_certificate(&self, canonical_address: &str) -> Result<rcgen::Certificate> {
-        let mut params = rcgen::CertificateParams::new(vec![canonical_address.to_string()])?;
+    pub fn generate_tls_certificate(
+        &self,
+        subject_alt_names: Vec<String>,
+    ) -> Result<rcgen::Certificate> {
+        let mut params = rcgen::CertificateParams::new(subject_alt_names)?;
 
         let now = time::OffsetDateTime::now_utc();
         params.not_before = now - time::Duration::days(1);
@@ -173,8 +181,14 @@ impl Account {
                 },
             )),
         }?;
-        utils::decompress_point_25519(H256::from_slice(bytes))
-            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))
+        let bytes =
+            ed25519_dalek::pkcs8::PublicKeyBytes::from_public_key_der(bytes).map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
+        let verifying_key = ed25519_dalek::VerifyingKey::try_from(bytes).map_err(|_| {
+            rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
+        Ok(verifying_key.to_edwards())
     }
 
     fn recover_bls_public_key(certificate: &X509Certificate) -> Result<G1Affine, rustls::Error> {
@@ -241,7 +255,7 @@ impl Account {
 
 impl rcgen::PublicKeyData for Account {
     fn der_bytes(&self) -> &[u8] {
-        &self.ed25519_public_key_bytes
+        self.ed25519_public_key_bytes.as_slice()
     }
 
     fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
@@ -265,6 +279,7 @@ pub mod testing {
                 .parse()
                 .unwrap(),
         ))
+        .unwrap()
     }
 
     pub fn account2() -> Account {
@@ -273,6 +288,7 @@ pub mod testing {
                 .parse()
                 .unwrap(),
         ))
+        .unwrap()
     }
 
     pub fn account3() -> Account {
@@ -281,6 +297,7 @@ pub mod testing {
                 .parse()
                 .unwrap(),
         ))
+        .unwrap()
     }
 }
 
@@ -369,7 +386,7 @@ mod tests {
 
     #[test]
     fn test_bls_signature() {
-        let account = Account::from_secret_key(utils::get_random_bytes());
+        let account = Account::from_secret_key(utils::get_random_bytes()).unwrap();
         let message = b"Hello, world!";
         let signature = account.bls_sign(message);
         assert!(Account::bls_verify(account.public_key(), message, signature).is_ok());
@@ -378,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_wrong_bls_signature() {
-        let account = Account::from_secret_key(utils::get_random_bytes());
+        let account = Account::from_secret_key(utils::get_random_bytes()).unwrap();
         let signature = account.bls_sign(b"World, hello!");
         let wrong_message = b"Hello, world!";
         assert!(Account::bls_verify(account.public_key(), wrong_message, signature).is_err());
@@ -450,5 +467,28 @@ mod tests {
         let (any, mut signature) = account1.sign_message(&message).unwrap();
         signature.signer = Some(proto::encode_scalar(account2.address()));
         assert!(Account::verify_signed_message(&any, &signature).is_err());
+    }
+
+    fn test_tls_certificate(account: Account) {
+        let certificate = account.generate_tls_certificate(vec![]).unwrap();
+        assert!(
+            Account::verify_tls_certificate(certificate.der(), rustls::pki_types::UnixTime::now())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_tls_certificate1() {
+        test_tls_certificate(testing::account1());
+    }
+
+    #[test]
+    fn test_tls_certificate2() {
+        test_tls_certificate(testing::account2());
+    }
+
+    #[test]
+    fn test_tls_certificate3() {
+        test_tls_certificate(testing::account3());
     }
 }
