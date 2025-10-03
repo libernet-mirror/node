@@ -4,22 +4,32 @@ use anyhow::{Context, Result, anyhow};
 use blstrs::{G1Affine, G2Affine, Scalar};
 use crypto::{account::Account as LowLevelAccount, utils};
 use curve25519_dalek::EdwardsPoint as Point25519;
-use primitive_types::H512;
+use oid_registry::{Oid, asn1_rs::oid};
+use primitive_types::{H256, H384, H512, H768};
+use x509_parser::{parse_x509_certificate, prelude::X509Certificate};
 
+const OID_LIBERNET_BLS_PUBLIC_KEY: Oid<'_> = oid!(1.3.6.1.4.1.71104.1);
+const OID_LIBERNET_IDENTITY_SIGNATURE_V1: Oid<'_> = oid!(1.3.6.1.4.1.71104.2);
+
+/// A Libernet account with an associated BLS keypair, account address, and Ed25519 keypair for
+/// generating TLS certificates.
 #[derive(Debug)]
 pub struct Account {
     inner: LowLevelAccount,
+    ed25519_public_key_bytes: [u8; 32],
 }
 
 impl Account {
     pub fn new(inner: LowLevelAccount) -> Self {
-        Self { inner }
+        let ed25519_public_key = utils::compress_point_25519(inner.ed25519_public_key());
+        Self {
+            inner,
+            ed25519_public_key_bytes: ed25519_public_key.to_fixed_bytes(),
+        }
     }
 
     pub fn from_secret_key(secret_key: H512) -> Self {
-        Self {
-            inner: LowLevelAccount::new(secret_key),
-        }
+        Self::new(LowLevelAccount::new(secret_key))
     }
 
     pub fn public_key(&self) -> G1Affine {
@@ -85,6 +95,163 @@ impl Account {
         )?;
         let payload = proto::encode_any_canonical(&payload);
         Self::bls_verify(public_key, payload.as_slice(), signature)
+    }
+
+    /// Generates a self-signed TLS certificate for use in all network connections with other
+    /// Libernet nodes.
+    pub fn generate_tls_certificate(&self, canonical_address: &str) -> Result<rcgen::Certificate> {
+        let mut params = rcgen::CertificateParams::new(vec![canonical_address.to_string()])?;
+
+        let now = time::OffsetDateTime::now_utc();
+        params.not_before = now - time::Duration::days(1);
+        params.not_after = now + time::Duration::days(365);
+
+        params.distinguished_name = rcgen::DistinguishedName::new();
+        params.distinguished_name.push(
+            rcgen::DnType::CommonName,
+            utils::format_scalar(self.inner.address()),
+        );
+
+        params.is_ca = rcgen::IsCa::ExplicitNoCa;
+
+        let public_key_oid: Vec<u64> = OID_LIBERNET_BLS_PUBLIC_KEY.iter().unwrap().collect();
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                public_key_oid.as_slice(),
+                utils::compress_g1(self.inner.public_key())
+                    .to_fixed_bytes()
+                    .to_vec(),
+            ));
+
+        let ed25519_public_key = utils::compress_point_25519(self.inner.ed25519_public_key());
+        let signature = self.inner.bls_sign(ed25519_public_key.as_fixed_bytes());
+        let identity_signature_oid: Vec<u64> =
+            OID_LIBERNET_IDENTITY_SIGNATURE_V1.iter().unwrap().collect();
+        params
+            .custom_extensions
+            .push(rcgen::CustomExtension::from_oid_content(
+                identity_signature_oid.as_slice(),
+                utils::compress_g2(signature).as_bytes().to_vec(),
+            ));
+
+        Ok(params.self_signed(self)?)
+    }
+
+    fn get_cert_not_before(certificate: &X509Certificate) -> u64 {
+        certificate.tbs_certificate.validity.not_before.timestamp() as u64
+    }
+
+    fn get_cert_not_after(certificate: &X509Certificate) -> u64 {
+        certificate.tbs_certificate.validity.not_after.timestamp() as u64
+    }
+
+    fn recover_ed25519_public_key(
+        certificate: &X509Certificate,
+    ) -> Result<Point25519, rustls::Error> {
+        let public_key = certificate
+            .tbs_certificate
+            .subject_pki
+            .parsed()
+            .map_err(|_| {
+                rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+            })?;
+        let bytes = match public_key {
+            // NOTE: the x509_parser doesn't handle Ed25519 keys yet, so our Ed25519 keys show up as
+            // "unknown".
+            x509_parser::public_key::PublicKey::Unknown(bytes) => Ok(bytes),
+            _ => Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::UnsupportedSignatureAlgorithmContext {
+                    signature_algorithm_id: certificate
+                        .tbs_certificate
+                        .subject_pki
+                        .algorithm
+                        .algorithm
+                        .as_bytes()
+                        .to_vec(),
+                    supported_algorithms: vec![rustls::pki_types::alg_id::ED25519],
+                },
+            )),
+        }?;
+        utils::decompress_point_25519(H256::from_slice(bytes))
+            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))
+    }
+
+    fn recover_bls_public_key(certificate: &X509Certificate) -> Result<G1Affine, rustls::Error> {
+        let extensions = certificate.extensions_map().map_err(|_| {
+            rustls::Error::General("public BLS key not found in X.509 certificate".into())
+        })?;
+        let extension = *extensions
+            .get(&OID_LIBERNET_BLS_PUBLIC_KEY)
+            .context("public BLS key not found in X.509 certificate")
+            .map_err(|error| rustls::Error::General(error.to_string()))?;
+        utils::decompress_g1(H384::from_slice(extension.value))
+            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))
+    }
+
+    fn recover_identity_signature(
+        certificate: &X509Certificate,
+    ) -> Result<G2Affine, rustls::Error> {
+        let extensions = certificate.extensions_map().map_err(|_| {
+            rustls::Error::General("identity signature not found in X.509 certificate".into())
+        })?;
+        let extension = *extensions
+            .get(&OID_LIBERNET_IDENTITY_SIGNATURE_V1)
+            .context("identity signature not found in X.509 certificate")
+            .map_err(|error| rustls::Error::General(error.to_string()))?;
+        utils::decompress_g2(H768::from_slice(extension.value))
+            .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding))
+    }
+
+    /// Verifies a self-signed TLS certificate from another Libernet node, returning the public BLS
+    /// key of the node.
+    pub fn verify_tls_certificate(
+        certificate: &rustls::pki_types::CertificateDer<'_>,
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<G1Affine, rustls::Error> {
+        let (_, certificate) = parse_x509_certificate(certificate).map_err(|_| {
+            rustls::Error::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
+
+        if now.as_secs() < Self::get_cert_not_before(&certificate) {
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::NotValidYet,
+            ));
+        }
+        if now.as_secs() > Self::get_cert_not_after(&certificate) {
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::Expired,
+            ));
+        }
+
+        let ed25519_public_key = Self::recover_ed25519_public_key(&certificate)?;
+        let ed25519_public_key = utils::compress_point_25519(ed25519_public_key);
+        let bls_public_key = Self::recover_bls_public_key(&certificate)?;
+        let identity_signature = Self::recover_identity_signature(&certificate)?;
+        LowLevelAccount::bls_verify(
+            bls_public_key,
+            ed25519_public_key.as_fixed_bytes(),
+            identity_signature,
+        )
+        .map_err(|_| rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature))?;
+
+        Ok(bls_public_key)
+    }
+}
+
+impl rcgen::PublicKeyData for Account {
+    fn der_bytes(&self) -> &[u8] {
+        &self.ed25519_public_key_bytes
+    }
+
+    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
+        &rcgen::PKCS_ED25519
+    }
+}
+
+impl rcgen::SigningKey for Account {
+    fn sign(&self, message: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
+        Ok(self.inner.ed25519_sign(message).to_vec())
     }
 }
 
