@@ -4,7 +4,7 @@ use crate::db;
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
 use crate::net;
 use crate::proto;
-use crate::tree::AccountInfo;
+use crate::tree::{self, AccountInfo};
 use crate::version;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
@@ -107,7 +107,7 @@ impl NodeServiceImpl {
         Ok(info.peer_public_key())
     }
 
-    fn get_client_wallet_address<M>(&self, request: &Request<M>) -> anyhow::Result<Scalar> {
+    fn get_client_account_address<M>(&self, request: &Request<M>) -> anyhow::Result<Scalar> {
         let info = request
             .extensions()
             .get::<net::ConnectionInfo>()
@@ -156,6 +156,46 @@ impl NodeServiceImpl {
                     .map_err(|error| Status::not_found(error.to_string()))
             }
             None => Ok(self.db.get_latest_block().await),
+        }
+    }
+
+    async fn get_account_impl(
+        &self,
+        request: &libernet::GetAccountRequest,
+    ) -> Result<(db::BlockInfo, tree::AccountProof), Status> {
+        let account_address = proto::decode_scalar(
+            request
+                .account_address
+                .as_ref()
+                .context("missing account address field")
+                .map_err(|error| Status::invalid_argument(error.to_string()))?,
+        )
+        .map_err(|_| Status::invalid_argument("invalid account address"))?;
+        match &request.block_hash {
+            Some(block_hash) => {
+                let block_hash = proto::decode_scalar(&block_hash)
+                    .map_err(|_| Status::invalid_argument("invalid block hash"))?;
+                self.db
+                    .get_account_info(account_address, block_hash)
+                    .await
+                    .map_err(|_| {
+                        Status::not_found(format!(
+                            "account address {} not found at block {}",
+                            utils::format_scalar(account_address),
+                            utils::format_scalar(block_hash)
+                        ))
+                    })
+            }
+            None => self
+                .db
+                .get_latest_account_info(account_address)
+                .await
+                .map_err(|_| {
+                    Status::not_found(format!(
+                        "account address {} not found",
+                        utils::format_scalar(account_address)
+                    ))
+                }),
         }
     }
 }
@@ -245,8 +285,17 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetAccountRequest>,
     ) -> Result<Response<libernet::GetAccountResponse>, Status> {
-        // TODO
-        todo!()
+        let (block_info, proof) = self.inner.get_account_impl(request.get_ref()).await?;
+        let payload = proof
+            .encode(block_info.encode())
+            .map_err(|_| Status::internal("internal error"))?;
+        let (payload, signature) = self
+            .sign_message(&payload)
+            .map_err(|_| Status::internal("signature error"))?;
+        Ok(Response::new(libernet::GetAccountResponse {
+            payload: Some(payload),
+            signature: Some(signature),
+        }))
     }
 
     async fn get_transaction(
@@ -284,7 +333,6 @@ mod tests {
     };
     use crate::net;
     use crate::ssl;
-    use ff::Field;
     use tokio::{sync::Notify, task::JoinHandle};
     use tonic::transport::{Channel, Server};
 
@@ -463,7 +511,7 @@ mod tests {
         let response = response.get_ref();
         let payload = response.payload.as_ref().unwrap();
         assert!(
-            Account::verify_signed_message(&payload, &response.signature.as_ref().unwrap()).is_ok()
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
         );
         let payload = payload.to_msg::<libernet::BlockDescriptor>().unwrap();
 
@@ -474,7 +522,7 @@ mod tests {
         assert_eq!(payload.block_number.unwrap(), 0);
         assert_eq!(
             proto::decode_scalar(&payload.previous_block_hash.unwrap()).unwrap(),
-            Scalar::ZERO
+            0.into()
         );
         assert_eq!(
             proto::decode_scalar(&payload.network_topology_root_hash.unwrap()).unwrap(),
@@ -511,7 +559,7 @@ mod tests {
         let response = response.get_ref();
         let payload = response.payload.as_ref().unwrap();
         assert!(
-            Account::verify_signed_message(&payload, &response.signature.as_ref().unwrap()).is_ok()
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
         );
         let payload = payload.to_msg::<libernet::BlockDescriptor>().unwrap();
 
@@ -522,7 +570,7 @@ mod tests {
         assert_eq!(payload.block_number.unwrap(), 0);
         assert_eq!(
             proto::decode_scalar(&payload.previous_block_hash.unwrap()).unwrap(),
-            Scalar::ZERO
+            0.into()
         );
         assert_eq!(
             proto::decode_scalar(&payload.network_topology_root_hash.unwrap()).unwrap(),
@@ -560,6 +608,137 @@ mod tests {
                         )
                         .unwrap()
                     )),
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_default_initial_account_balance() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+
+        let account = testing::account3();
+
+        let response = client
+            .get_account(libernet::GetAccountRequest {
+                account_address: Some(proto::encode_scalar(account.address())),
+                block_hash: Some(proto::encode_scalar(default_genesis_block_hash())),
+            })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = payload.to_msg::<libernet::MerkleProof>().unwrap();
+
+        let block_info = db::BlockInfo::decode(payload.block_descriptor.as_ref().unwrap()).unwrap();
+        assert_eq!(block_info.hash(), default_genesis_block_hash());
+
+        let proof =
+            tree::AccountProof::decode_and_verify(&payload, block_info.accounts_root_hash())
+                .unwrap();
+        assert_eq!(proof.key(), account.address());
+        assert_eq!(*proof.value(), AccountInfo::with_balance(0.into()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_latest_account_balance_at_genesis() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+
+        let account = testing::account3();
+
+        let response = client
+            .get_account(libernet::GetAccountRequest {
+                account_address: Some(proto::encode_scalar(account.address())),
+                block_hash: None,
+            })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = payload.to_msg::<libernet::MerkleProof>().unwrap();
+
+        let block_info = db::BlockInfo::decode(payload.block_descriptor.as_ref().unwrap()).unwrap();
+        assert_eq!(block_info.hash(), default_genesis_block_hash());
+
+        let proof =
+            tree::AccountProof::decode_and_verify(&payload, block_info.accounts_root_hash())
+                .unwrap();
+        assert_eq!(proof.key(), account.address());
+        assert_eq!(*proof.value(), AccountInfo::with_balance(0.into()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_initial_account_state() {
+        let account = testing::account3();
+
+        let mut fixture = TestFixture::with_initial_balances([(account.address(), 123.into())])
+            .await
+            .unwrap();
+        let client = &mut fixture.client;
+
+        let response = client
+            .get_account(libernet::GetAccountRequest {
+                account_address: Some(proto::encode_scalar(account.address())),
+                block_hash: None,
+            })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = payload.to_msg::<libernet::MerkleProof>().unwrap();
+
+        let block_info = db::BlockInfo::decode(payload.block_descriptor.as_ref().unwrap()).unwrap();
+        assert_eq!(
+            block_info.hash(),
+            utils::parse_scalar(
+                "0x6c0700339becc41fbaeed76d4a70d7321007d27d5cf56245b2446fe6c2c1c03d"
+            )
+            .unwrap()
+        );
+
+        let proof =
+            tree::AccountProof::decode_and_verify(&payload, block_info.accounts_root_hash())
+                .unwrap();
+        assert_eq!(proof.key(), account.address());
+        assert_eq!(*proof.value(), AccountInfo::with_balance(123.into()));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_invalid_account_balance1() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+        assert!(
+            client
+                .get_account(libernet::GetAccountRequest {
+                    account_address: None,
+                    block_hash: Some(proto::encode_scalar(default_genesis_block_hash())),
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_invalid_account_balance2() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+        assert!(
+            client
+                .get_account(libernet::GetAccountRequest {
+                    account_address: None,
+                    block_hash: None,
                 })
                 .await
                 .is_err()
