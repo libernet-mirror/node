@@ -33,6 +33,7 @@ macro_rules! liber_proto_name {
 
 liber_proto_name!(libernet::AccountInfo, "AccountInfo");
 liber_proto_name!(libernet::BlockDescriptor, "BlockDescriptor");
+liber_proto_name!(libernet::BoundTransaction, "BoundTransaction");
 liber_proto_name!(libernet::MerkleProof, "MerkleProof");
 liber_proto_name!(libernet::Scalar, "Scalar");
 liber_proto_name!(libernet::node_identity::Payload, "NodeIdentity.Payload");

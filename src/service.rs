@@ -198,6 +198,27 @@ impl NodeServiceImpl {
                 }),
         }
     }
+
+    async fn get_transaction_impl(
+        &self,
+        request: &libernet::GetTransactionRequest,
+    ) -> Result<libernet::BoundTransaction, Status> {
+        let transaction_hash = match &request.transaction_hash {
+            Some(hash) => proto::decode_scalar(&hash)
+                .map_err(|_| Status::invalid_argument("invalid transaction hash"))?,
+            None => return Err(Status::invalid_argument("transaction hash field missing")),
+        };
+        match self.db.get_transaction(transaction_hash).await {
+            Some(transaction) => Ok(libernet::BoundTransaction {
+                parent_transaction_hash: Some(proto::encode_scalar(transaction.parent_hash())),
+                transaction: Some(transaction.diff()),
+            }),
+            None => Err(Status::not_found(format!(
+                "transaction hash {} not found",
+                utils::format_scalar(transaction_hash)
+            ))),
+        }
+    }
 }
 
 impl Drop for NodeServiceImpl {
@@ -302,16 +323,40 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetTransactionRequest>,
     ) -> Result<Response<libernet::GetTransactionResponse>, Status> {
-        // TODO
-        todo!()
+        let transaction = self.inner.get_transaction_impl(request.get_ref()).await?;
+        let (payload, signature) = self
+            .sign_message(&transaction)
+            .map_err(|_| Status::internal("internal error"))?;
+        Ok(Response::new(libernet::GetTransactionResponse {
+            payload: Some(payload),
+            signature: Some(signature),
+        }))
     }
 
     async fn broadcast_transaction(
         &self,
         request: Request<libernet::BroadcastTransactionRequest>,
     ) -> Result<Response<libernet::BroadcastTransactionResponse>, Status> {
-        // TODO
-        todo!()
+        let transaction = match &request.get_ref().transaction {
+            Some(transaction) => Ok(transaction),
+            None => Err(Status::invalid_argument("missing transaction data")),
+        }?;
+        let payload = match &transaction.payload {
+            Some(payload) => Ok(payload),
+            None => Err(Status::invalid_argument("missing transaction payload")),
+        }?;
+        let signature = match &transaction.signature {
+            Some(signature) => Ok(signature),
+            None => Err(Status::invalid_argument("missing transaction signature")),
+        }?;
+        Account::verify_signed_message(payload, signature)
+            .map_err(|_| Status::invalid_argument("invalid transaction signature"))?;
+        self.inner
+            .db
+            .add_transaction(transaction)
+            .await
+            .map_err(|_| Status::internal("transaction error"))?;
+        Ok(Response::new(libernet::BroadcastTransactionResponse {}))
     }
 
     async fn broadcast_new_block(
@@ -333,7 +378,8 @@ mod tests {
     };
     use crate::net;
     use crate::ssl;
-    use tokio::{sync::Notify, task::JoinHandle};
+    use primitive_types::H256;
+    use tokio::{sync::Notify, task::JoinHandle, task::yield_now};
     use tonic::transport::{Channel, Server};
 
     const TEST_CHAIN_ID: u64 = 42;
@@ -745,5 +791,76 @@ mod tests {
         );
     }
 
-    // TODO
+    #[tokio::test(start_paused = true)]
+    async fn test_invalid_transaction_lookup() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+        assert!(
+            client
+                .get_transaction(libernet::GetTransactionRequest {
+                    transaction_hash: None,
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_unknown_transaction() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+        assert!(
+            client
+                .get_transaction(libernet::GetTransactionRequest {
+                    transaction_hash: Some(proto::encode_h256(H256::zero())),
+                })
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_block_closure() {
+        let mut fixture = TestFixture::default().await.unwrap();
+
+        let response = fixture
+            .client
+            .get_block(libernet::GetBlockRequest { block_hash: None })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = &payload.to_msg::<libernet::BlockDescriptor>().unwrap();
+        assert_eq!(payload.block_number.unwrap(), 0);
+        assert_eq!(
+            proto::decode_scalar(payload.block_hash.as_ref().unwrap()).unwrap(),
+            default_genesis_block_hash()
+        );
+
+        fixture.clock().advance(Duration::from_secs(10)).await;
+        yield_now().await;
+
+        let response = fixture
+            .client
+            .get_block(libernet::GetBlockRequest { block_hash: None })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = &payload.to_msg::<libernet::BlockDescriptor>().unwrap();
+        assert_eq!(payload.block_number.unwrap(), 1);
+        assert_eq!(
+            proto::decode_scalar(payload.block_hash.as_ref().unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x66b465856500300ae284213d8a5f6a3d20446a096df9e1f5b6cd2ac13533a51b"
+            )
+            .unwrap()
+        );
+    }
 }
