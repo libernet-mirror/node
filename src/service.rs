@@ -2,10 +2,12 @@ use crate::account::Account;
 use crate::clock::Clock;
 use crate::db;
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
+use crate::net;
 use crate::proto;
 use crate::tree::AccountInfo;
 use crate::version;
-use blstrs::Scalar;
+use anyhow::Context;
+use blstrs::{G1Affine, Scalar};
 use crypto::utils;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -97,6 +99,22 @@ impl NodeServiceImpl {
         Ok(service)
     }
 
+    fn get_client_public_key<M>(&self, request: &Request<M>) -> anyhow::Result<G1Affine> {
+        let info = request
+            .extensions()
+            .get::<net::ConnectionInfo>()
+            .context("certificate not found")?;
+        Ok(info.peer_public_key())
+    }
+
+    fn get_client_wallet_address<M>(&self, request: &Request<M>) -> anyhow::Result<Scalar> {
+        let info = request
+            .extensions()
+            .get::<net::ConnectionInfo>()
+            .context("certificate not found")?;
+        Ok(info.peer_account_address())
+    }
+
     fn sign_message<M: prost::Message + prost::Name>(
         &self,
         message: &M,
@@ -118,6 +136,27 @@ impl NodeServiceImpl {
                 }
             }
         });
+    }
+
+    async fn get_block_impl(
+        &self,
+        request: &libernet::GetBlockRequest,
+    ) -> Result<db::BlockInfo, Status> {
+        match &request.block_hash {
+            Some(block_hash) => {
+                let block_hash = proto::decode_scalar(block_hash)
+                    .map_err(|_| Status::invalid_argument("invalid block hash"))?;
+                self.db
+                    .get_block_by_hash(block_hash)
+                    .await
+                    .context(format!(
+                        "block hash {} not found",
+                        utils::format_scalar(block_hash)
+                    ))
+                    .map_err(|error| Status::not_found(error.to_string()))
+            }
+            None => Ok(self.db.get_latest_block().await),
+        }
     }
 }
 
@@ -183,8 +222,15 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetBlockRequest>,
     ) -> Result<Response<libernet::GetBlockResponse>, Status> {
-        // TODO
-        todo!()
+        let block_info = self.inner.get_block_impl(request.get_ref()).await?;
+        let descriptor = block_info.encode();
+        let (payload, signature) = self
+            .sign_message(&descriptor)
+            .map_err(|_| Status::internal("signature error"))?;
+        Ok(Response::new(libernet::GetBlockResponse {
+            payload: Some(payload),
+            signature: Some(signature),
+        }))
     }
 
     async fn get_topology(
@@ -238,6 +284,7 @@ mod tests {
     };
     use crate::net;
     use crate::ssl;
+    use ff::Field;
     use tokio::{sync::Notify, task::JoinHandle};
     use tonic::transport::{Channel, Server};
 
@@ -289,7 +336,7 @@ mod tests {
             let server_ready = Arc::new(Notify::new());
             let start_client = server_ready.clone();
             let server_account2 = server_account.clone();
-            let server_handle = tokio::task::spawn(async move {
+            let server_handle = tokio::spawn(async move {
                 let future = Server::builder().add_service(service).serve_with_incoming(
                     net::IncomingWithMTls::new(
                         Arc::new(net::testing::MockListener::new(server_stream)),
@@ -351,6 +398,11 @@ mod tests {
         }
     }
 
+    fn default_genesis_block_hash() -> Scalar {
+        utils::parse_scalar("0x3d01dd777bb70ef8cd47e16acc29f109359ba55506ddbe66ff1ec444a0e333dd")
+            .unwrap()
+    }
+
     #[tokio::test(start_paused = true)]
     async fn test_identity() {
         let mut fixture = TestFixture::default().await.unwrap();
@@ -395,6 +447,123 @@ mod tests {
         assert_eq!(payload.network_address.unwrap(), "localhost");
         assert_eq!(payload.grpc_port.unwrap(), 4443u32);
         assert_eq!(payload.http_port.unwrap(), 8080u32);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_genesis_block() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+
+        let response = client
+            .get_block(libernet::GetBlockRequest {
+                block_hash: Some(proto::encode_scalar(default_genesis_block_hash())),
+            })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, &response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = payload.to_msg::<libernet::BlockDescriptor>().unwrap();
+
+        assert_eq!(
+            proto::decode_scalar(&payload.block_hash.unwrap()).unwrap(),
+            default_genesis_block_hash()
+        );
+        assert_eq!(payload.block_number.unwrap(), 0);
+        assert_eq!(
+            proto::decode_scalar(&payload.previous_block_hash.unwrap()).unwrap(),
+            Scalar::ZERO
+        );
+        assert_eq!(
+            proto::decode_scalar(&payload.network_topology_root_hash.unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x4800c8c37ce52cacc52188a8ee04dec60f9a88ab5e930334a4165861e14656cb"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            proto::decode_scalar(&payload.accounts_root_hash.unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x09d8fc5eccc46993858b47fb2da64d04118fac5ff0ce6664107550cab923c6a2"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            proto::decode_scalar(&payload.program_storage_root_hash.unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x0cb44d412f2b9149861b64c1719498665927e7ef138387bd597a96d3567058f2"
+            )
+            .unwrap()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_latest_block_at_genesis() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+
+        let response = client
+            .get_block(libernet::GetBlockRequest { block_hash: None })
+            .await
+            .unwrap();
+        let response = response.get_ref();
+        let payload = response.payload.as_ref().unwrap();
+        assert!(
+            Account::verify_signed_message(&payload, &response.signature.as_ref().unwrap()).is_ok()
+        );
+        let payload = payload.to_msg::<libernet::BlockDescriptor>().unwrap();
+
+        assert_eq!(
+            proto::decode_scalar(&payload.block_hash.unwrap()).unwrap(),
+            default_genesis_block_hash()
+        );
+        assert_eq!(payload.block_number.unwrap(), 0);
+        assert_eq!(
+            proto::decode_scalar(&payload.previous_block_hash.unwrap()).unwrap(),
+            Scalar::ZERO
+        );
+        assert_eq!(
+            proto::decode_scalar(&payload.network_topology_root_hash.unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x4800c8c37ce52cacc52188a8ee04dec60f9a88ab5e930334a4165861e14656cb"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            proto::decode_scalar(&payload.accounts_root_hash.unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x09d8fc5eccc46993858b47fb2da64d04118fac5ff0ce6664107550cab923c6a2"
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            proto::decode_scalar(&payload.program_storage_root_hash.unwrap()).unwrap(),
+            utils::parse_scalar(
+                "0x0cb44d412f2b9149861b64c1719498665927e7ef138387bd597a96d3567058f2"
+            )
+            .unwrap()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_get_unknown_block() {
+        let mut fixture = TestFixture::default().await.unwrap();
+        let client = &mut fixture.client;
+        assert!(
+            client
+                .get_block(libernet::GetBlockRequest {
+                    block_hash: Some(proto::encode_scalar(
+                        utils::parse_scalar(
+                            "0x375830d6862157562431f637dcb4aa91e2bba7220abfa58b7618a713e9bb8803"
+                        )
+                        .unwrap()
+                    )),
+                })
+                .await
+                .is_err()
+        );
     }
 
     // TODO

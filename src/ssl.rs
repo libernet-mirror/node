@@ -547,7 +547,7 @@ mod tests {
 
         let (client_stream, server_stream) = tokio::io::duplex(4096);
 
-        let server_task = tokio::task::spawn(async move {
+        let server_task = tokio::spawn(async move {
             let mut stream = acceptor.accept(server_stream).await.unwrap();
             let (_, connection) = stream.get_ref();
             assert!(check_peer(connection, &client_account).is_ok());

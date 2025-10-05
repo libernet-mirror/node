@@ -44,7 +44,7 @@ impl ConnectionInfo {
         self.peer_public_key
     }
 
-    pub fn peer_wallet_address(&self) -> Scalar {
+    pub fn peer_account_address(&self) -> Scalar {
         utils::hash_g1_to_scalar(self.peer_public_key)
     }
 }
@@ -548,7 +548,7 @@ mod tests {
                         .extensions()
                         .get::<ConnectionInfo>()
                         .unwrap()
-                        .peer_wallet_address()
+                        .peer_account_address()
                 );
                 let mut client_checked = client_checked2.lock().unwrap();
                 *client_checked = true;
@@ -562,7 +562,7 @@ mod tests {
         let server_ready = Arc::new(Notify::new());
         let start_client = server_ready.clone();
         let server_account2 = server_account.clone();
-        let server = tokio::task::spawn(async move {
+        let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
                 IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
                     .await
@@ -591,7 +591,7 @@ mod tests {
         );
         assert_eq!(
             server_account.address(),
-            connection_info.peer_wallet_address()
+            connection_info.peer_account_address()
         );
 
         let mut client = NodeServiceV1Client::new(channel);
@@ -646,7 +646,7 @@ mod tests {
         let server_ready = Arc::new(Notify::new());
         let start_client = server_ready.clone();
         let server_account2 = server_account.clone();
-        let server = tokio::task::spawn(async move {
+        let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
                 IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
                     .await
@@ -699,7 +699,7 @@ mod tests {
         let server_ready = Arc::new(Notify::new());
         let start_client = server_ready.clone();
         let server_account2 = server_account.clone();
-        let server = tokio::task::spawn(async move {
+        let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
                 IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
                     .await
@@ -729,7 +729,7 @@ mod tests {
                 );
                 assert_eq!(
                     server_account.address(),
-                    connection_info.peer_wallet_address()
+                    connection_info.peer_account_address()
                 );
                 let mut client = NodeServiceV1Client::new(channel);
                 client
@@ -765,7 +765,7 @@ mod tests {
         let server_ready = Arc::new(Notify::new());
         let start_client = server_ready.clone();
         let server_account2 = server_account.clone();
-        let server = tokio::task::spawn(async move {
+        let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
                 IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
                     .await
@@ -833,7 +833,7 @@ mod tests {
                         .extensions()
                         .get::<ConnectionInfo>()
                         .unwrap()
-                        .peer_wallet_address()
+                        .peer_account_address()
                 );
                 let mut client_checked = client_checked_ref.lock().unwrap();
                 *client_checked = true;
@@ -846,7 +846,7 @@ mod tests {
         let server_ready = Arc::new(Notify::new());
         let start_client = server_ready.clone();
         let server_account2 = server_account.clone();
-        let server = tokio::task::spawn(async move {
+        let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
                 IncomingWithMTls::new(
                     Arc::new(testing::MockListener::new(server_stream)),
@@ -871,7 +871,7 @@ mod tests {
         );
         assert_eq!(
             server_account.address(),
-            connection_info.peer_wallet_address()
+            connection_info.peer_account_address()
         );
 
         let mut client = NodeServiceV1Client::new(channel);
