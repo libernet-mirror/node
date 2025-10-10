@@ -42,8 +42,8 @@ impl Account {
         self.inner.address()
     }
 
-    pub fn export_ed25519_private_key(&self) -> Result<Zeroizing<Vec<u8>>> {
-        self.inner.export_ed25519_private_key()
+    pub fn export_ed25519_private_key_der(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.inner.export_ed25519_private_key_der()
     }
 
     pub fn bls_sign(&self, message: &[u8]) -> G2Affine {

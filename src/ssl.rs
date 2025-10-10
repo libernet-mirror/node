@@ -479,7 +479,7 @@ mod tests {
 
     fn extract_ed25519_private_key_der(account: &Account) -> &'static [u8] {
         &*account
-            .export_ed25519_private_key()
+            .export_ed25519_private_key_der()
             .unwrap()
             .deref()
             .clone()

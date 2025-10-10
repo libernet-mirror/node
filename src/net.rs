@@ -223,7 +223,11 @@ impl Listener<TcpStream> for TcpListenerAdapter {
 // This is atrocious but seems to be the only way to make the custom rustls configs work. The dang
 // rustls won't accept an external signing object.
 fn extract_ed25519_private_key_der(account: &Account) -> anyhow::Result<&'static [u8]> {
-    Ok(&*account.export_ed25519_private_key()?.deref().clone().leak())
+    Ok(&*account
+        .export_ed25519_private_key_der()?
+        .deref()
+        .clone()
+        .leak())
 }
 
 type TlsHandshakeFuture<IO> =
