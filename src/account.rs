@@ -2,7 +2,7 @@ use crate::libernet;
 use crate::proto;
 use anyhow::{Context, Result, anyhow};
 use blstrs::{G1Affine, G2Affine, Scalar};
-use crypto::{account::Account as LowLevelAccount, utils};
+use crypto::{account::Account as LowLevelAccount, ssl::Signer, utils};
 use curve25519_dalek::EdwardsPoint as Point25519;
 use primitive_types::H512;
 use zeroize::Zeroizing;
