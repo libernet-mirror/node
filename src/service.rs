@@ -8,7 +8,7 @@ use crate::tree::{self, AccountInfo};
 use crate::version;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
-use crypto::utils;
+use crypto::{signer::PartialVerifier, utils};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::{time::Duration, time::sleep};
@@ -104,7 +104,7 @@ impl NodeServiceImpl {
             .extensions()
             .get::<net::ConnectionInfo>()
             .context("certificate not found")?;
-        Ok(info.peer_public_key())
+        Ok(info.peer_account().public_key())
     }
 
     fn get_client_account_address<M>(&self, request: &Request<M>) -> anyhow::Result<Scalar> {
@@ -112,7 +112,7 @@ impl NodeServiceImpl {
             .extensions()
             .get::<net::ConnectionInfo>()
             .context("certificate not found")?;
-        Ok(info.peer_account_address())
+        Ok(info.peer_account().address())
     }
 
     fn sign_message<M: prost::Message + prost::Name>(
@@ -377,8 +377,8 @@ mod tests {
         node_service_v1_client::NodeServiceV1Client, node_service_v1_server::NodeServiceV1Server,
     };
     use crate::net;
-    use crate::ssl;
     use primitive_types::H256;
+    use rustls::pki_types::CertificateDer;
     use tokio::{sync::Notify, task::JoinHandle, task::yield_now};
     use tonic::transport::{Channel, Server};
 
@@ -397,15 +397,21 @@ mod tests {
             location: libernet::GeographicalLocation,
             initial_accounts: [(Scalar, AccountInfo); N],
         ) -> anyhow::Result<Self> {
+            let now = SystemTime::now();
+            let not_before = now - Duration::from_secs(123);
+            let not_after = now + Duration::from_secs(456);
+
             let server_account = Arc::new(testing::account1());
-            let server_certificate = Arc::new(
-                ssl::generate_certificate(&*server_account, vec!["server".to_string()]).unwrap(),
-            );
+            let server_certificate = server_account
+                .generate_ssl_certificate(not_before, not_after)
+                .unwrap();
+            let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
             let client_account = Arc::new(testing::account2());
-            let client_certificate = Arc::new(
-                ssl::generate_certificate(&*client_account, vec!["client".to_string()]).unwrap(),
-            );
+            let client_certificate = client_account
+                .generate_ssl_certificate(not_before, not_after)
+                .unwrap();
+            let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
             let clock: Arc<MockClock> = Arc::new(MockClock::new(
                 SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
@@ -448,7 +454,7 @@ mod tests {
             let (channel, _) = net::testing::mock_connect_with_mtls(
                 client_stream,
                 &*client_account,
-                client_certificate.clone(),
+                client_certificate,
             )
             .await
             .unwrap();

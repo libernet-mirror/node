@@ -4,7 +4,9 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use crypto::utils;
 use primitive_types::H512;
+use rustls::pki_types::CertificateDer;
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 use tonic::transport::Server;
 
 mod account;
@@ -99,10 +101,14 @@ async fn main() -> Result<()> {
     };
 
     let account = Arc::new(Account::from_secret_key(secret_key)?);
-    let certificate = Arc::new(ssl::generate_certificate(
-        &*account,
-        vec![args.public_address.clone()],
-    )?);
+    let certificate = {
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(1) * 3600 * 24;
+        let not_after = now + Duration::from_secs(1) * 3600 * 24 * 365;
+        let bytes = account.generate_ssl_certificate(not_before, not_after)?;
+        let bytes: &'static [u8] = bytes.leak();
+        CertificateDer::from_slice(bytes)
+    };
 
     let location = make_location(args.latitude, args.longitude)?;
     let server =

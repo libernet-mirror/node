@@ -2,9 +2,13 @@ use crate::libernet;
 use crate::proto;
 use anyhow::{Context, Result, anyhow};
 use blstrs::{G1Affine, G2Affine, Scalar};
-use crypto::{account::Account as LowLevelAccount, ssl::Signer, utils};
+use crypto::{
+    account::Account as LowLevelAccount, bls, remote::RemoteAccount, signer::PartialVerifier,
+    signer::Signer, signer::Verifier, utils,
+};
 use curve25519_dalek::EdwardsPoint as Point25519;
 use primitive_types::H512;
+use std::time::SystemTime;
 use zeroize::Zeroizing;
 
 /// A Libernet account with an associated BLS keypair, account address, and Ed25519 keypair for
@@ -30,16 +34,16 @@ impl Account {
         Self::new(LowLevelAccount::new(secret_key))
     }
 
+    pub fn address(&self) -> Scalar {
+        self.inner.address()
+    }
+
     pub fn public_key(&self) -> G1Affine {
         self.inner.public_key()
     }
 
     pub fn ed25519_public_key(&self) -> Point25519 {
         self.inner.ed25519_public_key()
-    }
-
-    pub fn address(&self) -> Scalar {
-        self.inner.address()
     }
 
     pub fn export_ed25519_private_key_der(&self) -> Result<Zeroizing<Vec<u8>>> {
@@ -51,11 +55,23 @@ impl Account {
     }
 
     pub fn bls_verify(public_key: G1Affine, message: &[u8], signature: G2Affine) -> Result<()> {
-        LowLevelAccount::bls_verify(public_key, message, signature)
+        bls::verify(public_key, message, signature)
     }
 
     pub fn bls_verify_own(&self, message: &[u8], signature: G2Affine) -> Result<()> {
-        self.inner.bls_verify_own(message, signature)
+        self.inner.bls_verify(message, signature)
+    }
+
+    pub fn generate_ssl_certificate(
+        &self,
+        not_before: SystemTime,
+        not_after: SystemTime,
+    ) -> Result<Vec<u8>> {
+        self.inner.generate_ssl_certificate(not_before, not_after)
+    }
+
+    pub fn verify_ssl_certificate(der: &[u8], now: SystemTime) -> Result<RemoteAccount> {
+        LowLevelAccount::verify_ssl_certificate(der, now)
     }
 
     pub fn sign_message<M: prost::Message + prost::Name>(
@@ -96,27 +112,7 @@ impl Account {
                 .context("missing signature field")?,
         )?;
         let payload = proto::encode_any_canonical(&payload);
-        Self::bls_verify(public_key, payload.as_slice(), signature)
-    }
-}
-
-impl rcgen::PublicKeyData for Account {
-    fn der_bytes(&self) -> &[u8] {
-        // NOTE: we're returning the raw bytes of the compressed key even though it really looks
-        // like this method should return the DER encoding. There seems to be a bug in rustls (or
-        // one of its dependencies) that causes a key mismatch if we pass the DER encoding. We're
-        // gonna have to update this code if the bug gets fixed in the future.
-        self.ed25519_public_key_bytes.as_slice()
-    }
-
-    fn algorithm(&self) -> &'static rcgen::SignatureAlgorithm {
-        &rcgen::PKCS_ED25519
-    }
-}
-
-impl rcgen::SigningKey for Account {
-    fn sign(&self, message: &[u8]) -> std::result::Result<Vec<u8>, rcgen::Error> {
-        Ok(self.inner.ed25519_sign(message).to_vec())
+        bls::verify(public_key, payload.as_slice(), signature)
     }
 }
 
@@ -154,12 +150,21 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use primitive_types::H256;
 
     #[test]
     fn test_account1() {
         let account = testing::account1();
+        assert_eq!(
+            account.address(),
+            utils::parse_scalar(
+                "0x28fe947cabf1257baba35b31ba1f1ae837d20c4b0dbcf15b23c5e2afa7d0e369"
+            )
+            .unwrap()
+        );
         assert_eq!(
             account.public_key(),
             utils::parse_g1("0xa0a63b0e43652fe3d2b5d5255df9eaf97ac522b929819db4d8655b29b2745695021dfda5f93a50f33d9fff9c95ab6fdc")
@@ -169,13 +174,6 @@ mod tests {
             account.ed25519_public_key(),
             utils::parse_point_25519(
                 "0x908ea6fbbb3d4979d185118b94762b127002e06ee43fdb8b62bba20e443dc71f"
-            )
-            .unwrap()
-        );
-        assert_eq!(
-            account.address(),
-            utils::parse_scalar(
-                "0x28fe947cabf1257baba35b31ba1f1ae837d20c4b0dbcf15b23c5e2afa7d0e369"
             )
             .unwrap()
         );
@@ -191,6 +189,13 @@ mod tests {
         );
         println!("{}", utils::format_scalar(account.address()));
         assert_eq!(
+            account.address(),
+            utils::parse_scalar(
+                "0x3725571def3264422951c9225e5f9c16bb68b15f1c58ccae131b8d13d15213f2"
+            )
+            .unwrap()
+        );
+        assert_eq!(
             account.public_key(),
             utils::parse_g1("0x90ae9b9e3c07d5eec8b3e4bc60ae7242a06816d0c4eb791b77958cd1f6feab226773bf3d049c5178dc9531271e9b0514")
                 .unwrap()
@@ -202,18 +207,18 @@ mod tests {
             )
             .unwrap()
         );
-        assert_eq!(
-            account.address(),
-            utils::parse_scalar(
-                "0x3725571def3264422951c9225e5f9c16bb68b15f1c58ccae131b8d13d15213f2"
-            )
-            .unwrap()
-        );
     }
 
     #[test]
     fn test_account3() {
         let account = testing::account3();
+        assert_eq!(
+            account.address(),
+            utils::parse_scalar(
+                "0x5858d1799bf539667a0c48bed0c019ac2da886f85218e902dd147c59a99c397"
+            )
+            .unwrap()
+        );
         assert_eq!(
             account.public_key(),
             utils::parse_g1("0x8a73da6df68c26747a0fcda2b311d866dfed5a47c864629073a04b52d4d89e21690507939d73987ce10a2a38ab7177eb")
@@ -223,13 +228,6 @@ mod tests {
             account.ed25519_public_key(),
             utils::parse_point_25519(
                 "0xcafd8587e708bb86514539c252213072660b7ecb4839f5e4bae2b806acabaca2"
-            )
-            .unwrap()
-        );
-        assert_eq!(
-            account.address(),
-            utils::parse_scalar(
-                "0x5858d1799bf539667a0c48bed0c019ac2da886f85218e902dd147c59a99c397"
             )
             .unwrap()
         );
@@ -318,5 +316,20 @@ mod tests {
         let (any, mut signature) = account1.sign_message(&message).unwrap();
         signature.signer = Some(proto::encode_scalar(account2.address()));
         assert!(Account::verify_signed_message(&any, &signature).is_err());
+    }
+
+    #[test]
+    fn test_ssl_certificate() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certificate = account
+            .generate_ssl_certificate(not_before, not_after)
+            .unwrap();
+        let remote = Account::verify_ssl_certificate(certificate.as_slice(), now).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+        assert_eq!(account.ed25519_public_key(), remote.ed25519_public_key());
     }
 }

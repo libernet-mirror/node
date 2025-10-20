@@ -2,8 +2,9 @@ use crate::account::Account;
 use crate::ssl;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
-use crypto::utils;
+use crypto::{remote::RemoteAccount, signer::PartialVerifier};
 use hyper::rt::{Read, ReadBufCursor, Write};
+use rustls::pki_types::CertificateDer;
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
 use std::ops::Deref;
@@ -17,35 +18,28 @@ use tokio::{
 use tokio_rustls::{TlsAcceptor, TlsConnector, client, server};
 use tonic::transport::{Channel, Uri, server::Connected};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub struct ConnectionInfo {
-    peer_certificate: rustls::pki_types::CertificateDer<'static>,
-    peer_public_key: G1Affine,
+    peer_account: RemoteAccount,
 }
 
 impl ConnectionInfo {
-    fn new(
-        peer_certificate: rustls::pki_types::CertificateDer<'static>,
-    ) -> anyhow::Result<ConnectionInfo> {
-        let (_, parsed_certificate) =
-            x509_parser::parse_x509_certificate(peer_certificate.as_ref())?;
-        let peer_public_key = ssl::recover_bls_public_key(&parsed_certificate)?;
+    pub fn new<'a>(peer_certificate: CertificateDer<'a>) -> anyhow::Result<Self> {
         Ok(Self {
-            peer_certificate,
-            peer_public_key,
+            peer_account: RemoteAccount::from_certificate(&peer_certificate)?,
         })
     }
 
-    pub fn peer_certificate(&self) -> rustls::pki_types::CertificateDer<'static> {
-        self.peer_certificate.clone()
+    pub fn peer_account(&self) -> &RemoteAccount {
+        &self.peer_account
+    }
+
+    pub fn peer_address(&self) -> Scalar {
+        self.peer_account.address()
     }
 
     pub fn peer_public_key(&self) -> G1Affine {
-        self.peer_public_key
-    }
-
-    pub fn peer_account_address(&self) -> Scalar {
-        utils::hash_g1_to_scalar(self.peer_public_key)
+        self.peer_account.public_key()
     }
 }
 
@@ -57,7 +51,7 @@ pub struct TlsServerStreamAdapter<IO: AsyncRead + AsyncWrite + Unpin> {
 impl<IO: AsyncRead + AsyncWrite + Unpin> TlsServerStreamAdapter<IO> {
     pub fn new(
         inner_stream: server::TlsStream<IO>,
-        peer_certificate: rustls::pki_types::CertificateDer<'static>,
+        peer_certificate: CertificateDer<'static>,
     ) -> std::io::Result<Self> {
         Ok(Self {
             info: ConnectionInfo::new(peer_certificate)
@@ -117,7 +111,7 @@ pub struct TlsClientStreamAdapter<IO: AsyncRead + AsyncWrite + Unpin> {
 impl<IO: AsyncRead + AsyncWrite + Unpin> TlsClientStreamAdapter<IO> {
     pub fn new(
         inner_stream: client::TlsStream<IO>,
-        peer_certificate: rustls::pki_types::CertificateDer<'static>,
+        peer_certificate: CertificateDer<'static>,
     ) -> std::io::Result<Self> {
         Ok(Self {
             info: ConnectionInfo::new(peer_certificate)
@@ -173,7 +167,7 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Write for TlsClientStreamAdapter<IO> {
 
 fn get_peer_certificate(
     connection: &rustls::CommonState,
-) -> std::io::Result<rustls::pki_types::CertificateDer<'static>> {
+) -> std::io::Result<CertificateDer<'static>> {
     let certificates = connection
         .peer_certificates()
         .context("certificate missing")
@@ -253,13 +247,13 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> IncomingWithMTls<IO> {
     pub async fn new(
         listener: Arc<dyn Listener<IO>>,
         account: &Account,
-        certificate: Arc<rcgen::Certificate>,
+        certificate: CertificateDer<'static>,
     ) -> anyhow::Result<Self> {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
             rustls::ServerConfig::builder()
                 .with_client_cert_verifier(Arc::new(ssl::LibernetClientCertVerifier::default()))
                 .with_single_cert(
-                    vec![certificate.der().clone()],
+                    vec![certificate],
                     rustls::pki_types::PrivateKeyDer::Pkcs8(
                         rustls::pki_types::PrivatePkcs8KeyDer::from(
                             extract_ed25519_private_key_der(account)?,
@@ -323,7 +317,7 @@ impl Connector<TcpStream> for TcpConnectorAdapter {
 struct ConnectorWithMTls<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> {
     tcp_connector: Arc<dyn Connector<IO>>,
     tls_connector: TlsConnector,
-    peer_certificate: Arc<Mutex<Option<rustls::pki_types::CertificateDer<'static>>>>,
+    peer_certificate: Arc<Mutex<Option<CertificateDer<'static>>>>,
 }
 
 impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> ConnectorWithMTls<IO> {
@@ -332,8 +326,8 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> ConnectorWithMTls<IO> 
     pub fn new(
         tcp_connector: Arc<dyn Connector<IO>>,
         account: &Account,
-        certificate: Arc<rcgen::Certificate>,
-        peer_certificate: Arc<Mutex<Option<rustls::pki_types::CertificateDer<'static>>>>,
+        certificate: CertificateDer<'static>,
+        peer_certificate: Arc<Mutex<Option<CertificateDer<'static>>>>,
     ) -> anyhow::Result<ConnectorWithMTls<IO>> {
         let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(
             rustls::ClientConfig::builder()
@@ -342,7 +336,7 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> ConnectorWithMTls<IO> 
                     ssl::LibernetServerCertVerifier::default(),
                 ))
                 .with_client_auth_cert(
-                    vec![certificate.der().clone()],
+                    vec![certificate],
                     rustls::pki_types::PrivateKeyDer::Pkcs8(
                         rustls::pki_types::PrivatePkcs8KeyDer::from(
                             extract_ed25519_private_key_der(account)?,
@@ -404,18 +398,16 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> tower::Service<Uri>
 
 pub async fn connect_with_mtls(
     account: &Account,
-    certificate: Arc<rcgen::Certificate>,
+    certificate: CertificateDer<'static>,
     uri: Uri,
 ) -> anyhow::Result<(Channel, ConnectionInfo)> {
-    let peer_certificate = Arc::new(Mutex::new(
-        None::<rustls::pki_types::CertificateDer<'static>>,
-    ));
+    let peer_certificate = Arc::new(Mutex::new(None::<CertificateDer<'static>>));
     let channel = Channel::builder(uri)
         .connect_with_connector(
             ConnectorWithMTls::new(
                 Arc::new(TcpConnectorAdapter::new()),
                 account,
-                certificate.clone(),
+                certificate,
                 peer_certificate.clone(),
             )
             .unwrap(),
@@ -430,7 +422,6 @@ pub async fn connect_with_mtls(
 pub mod testing {
     use super::*;
     use futures::future;
-    use std::sync::Mutex;
     use tokio::io::DuplexStream;
 
     pub struct MockListener {
@@ -485,17 +476,15 @@ pub mod testing {
     pub async fn mock_connect_with_mtls(
         stream: DuplexStream,
         account: &Account,
-        certificate: Arc<rcgen::Certificate>,
+        certificate: CertificateDer<'static>,
     ) -> anyhow::Result<(Channel, ConnectionInfo)> {
-        let peer_certificate = Arc::new(Mutex::new(
-            None::<rustls::pki_types::CertificateDer<'static>>,
-        ));
+        let peer_certificate = Arc::new(Mutex::new(None::<CertificateDer<'static>>));
         let channel = Channel::builder("http://fake".parse().unwrap())
             .connect_with_connector(
                 ConnectorWithMTls::new(
                     Arc::new(MockConnector::new(stream)),
                     account,
-                    certificate.clone(),
+                    certificate,
                     peer_certificate.clone(),
                 )
                 .unwrap(),
@@ -516,21 +505,28 @@ mod tests {
         self, node_service_v1_client::NodeServiceV1Client,
         node_service_v1_server::NodeServiceV1Server,
     };
-    use crate::ssl;
+    use anyhow::Result;
+    use std::time::{Duration, SystemTime};
     use tokio::sync::Notify;
     use tonic::{Request, transport::Server};
 
     #[tokio::test]
     async fn test_tcp_connection() {
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = Arc::new(
-            ssl::generate_certificate(&*server_account, vec!["server".to_string()]).unwrap(),
-        );
+        let server_certificate = server_account
+            .generate_ssl_certificate(not_before, not_after)
+            .unwrap();
+        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
         let client_account = Arc::pin(account_testing::account2());
-        let client_certificate = Arc::new(
-            ssl::generate_certificate(&*client_account, vec!["client".to_string()]).unwrap(),
-        );
+        let client_certificate = client_account
+            .generate_ssl_certificate(not_before, not_after)
+            .unwrap();
+        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let client_checked = Arc::new(Mutex::new(false));
         let client_checked2 = client_checked.clone();
@@ -552,7 +548,8 @@ mod tests {
                         .extensions()
                         .get::<ConnectionInfo>()
                         .unwrap()
-                        .peer_account_address()
+                        .peer_account()
+                        .address()
                 );
                 let mut client_checked = client_checked2.lock().unwrap();
                 *client_checked = true;
@@ -595,7 +592,7 @@ mod tests {
         );
         assert_eq!(
             server_account.address(),
-            connection_info.peer_account_address()
+            connection_info.peer_account().address()
         );
 
         let mut client = NodeServiceV1Client::new(channel);
@@ -608,33 +605,24 @@ mod tests {
         assert!(*(client_checked.lock().unwrap()));
     }
 
-    fn generate_invalid_certificate(account: &Account) -> anyhow::Result<rcgen::Certificate> {
-        let mut params = rcgen::CertificateParams::new(vec![])?;
-
-        let now = time::OffsetDateTime::now_utc();
-        params.not_before = now - time::Duration::days(1);
-        params.not_after = now + time::Duration::days(365);
-
-        params.distinguished_name = rcgen::DistinguishedName::new();
-        params.distinguished_name.push(
-            rcgen::DnType::CommonName,
-            utils::format_scalar(account.address()),
-        );
-
-        params.is_ca = rcgen::IsCa::ExplicitNoCa;
-
-        Ok(params.self_signed(&account)?)
-    }
-
     #[tokio::test]
     async fn test_invalid_server_certificate() {
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let server_not_after = now - Duration::from_secs(100);
+        let client_not_after = now + Duration::from_secs(456);
+
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = Arc::new(generate_invalid_certificate(&server_account).unwrap());
+        let server_certificate = server_account
+            .generate_ssl_certificate(not_before, server_not_after)
+            .unwrap();
+        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
         let client_account = account_testing::account2();
-        let client_certificate = Arc::new(
-            ssl::generate_certificate(&client_account, vec!["client".to_string()]).unwrap(),
-        );
+        let client_certificate = client_account
+            .generate_ssl_certificate(not_before, client_not_after)
+            .unwrap();
+        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let service = NodeServiceV1Server::with_interceptor(
             FakeNodeService {},
@@ -681,13 +669,22 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalid_client_certificate() {
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let server_not_after = now + Duration::from_secs(456);
+        let client_not_after = now - Duration::from_secs(100);
+
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = Arc::new(
-            ssl::generate_certificate(&*server_account, vec!["server".to_string()]).unwrap(),
-        );
+        let server_certificate = server_account
+            .generate_ssl_certificate(not_before, server_not_after)
+            .unwrap();
+        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
         let client_account = account_testing::account2();
-        let client_certificate = Arc::new(generate_invalid_certificate(&client_account).unwrap());
+        let client_certificate = client_account
+            .generate_ssl_certificate(not_before, client_not_after)
+            .unwrap();
+        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let service = NodeServiceV1Server::with_interceptor(
             FakeNodeService {},
@@ -733,7 +730,7 @@ mod tests {
                 );
                 assert_eq!(
                     server_account.address(),
-                    connection_info.peer_account_address()
+                    connection_info.peer_account().address()
                 );
                 let mut client = NodeServiceV1Client::new(channel);
                 client
@@ -750,10 +747,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_missing_client_certificate() {
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = Arc::new(
-            ssl::generate_certificate(&server_account, vec!["server".to_string()]).unwrap(),
-        );
+        let server_certificate = server_account
+            .generate_ssl_certificate(not_before, not_after)
+            .unwrap();
+        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
         let service = NodeServiceV1Server::with_interceptor(
             FakeNodeService {},
@@ -807,15 +809,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_mock_connection() {
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = Arc::new(
-            ssl::generate_certificate(&*server_account, vec!["server".to_string()]).unwrap(),
-        );
+        let server_certificate = server_account
+            .generate_ssl_certificate(not_before, not_after)
+            .unwrap();
+        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
         let client_account = Arc::pin(account_testing::account2());
-        let client_certificate = Arc::new(
-            ssl::generate_certificate(&*client_account, vec!["client".to_string()]).unwrap(),
-        );
+        let client_certificate = client_account
+            .generate_ssl_certificate(not_before, not_after)
+            .unwrap();
+        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let client_checked = Arc::new(Mutex::new(false));
         let client_checked_ref = client_checked.clone();
@@ -837,7 +845,8 @@ mod tests {
                         .extensions()
                         .get::<ConnectionInfo>()
                         .unwrap()
-                        .peer_account_address()
+                        .peer_account()
+                        .address()
                 );
                 let mut client_checked = client_checked_ref.lock().unwrap();
                 *client_checked = true;
@@ -875,7 +884,7 @@ mod tests {
         );
         assert_eq!(
             server_account.address(),
-            connection_info.peer_account_address()
+            connection_info.peer_account().address()
         );
 
         let mut client = NodeServiceV1Client::new(channel);
