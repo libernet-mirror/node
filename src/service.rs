@@ -499,7 +499,7 @@ mod tests {
     }
 
     fn default_genesis_block_hash() -> Scalar {
-        utils::parse_scalar("0x3d01dd777bb70ef8cd47e16acc29f109359ba55506ddbe66ff1ec444a0e333dd")
+        utils::parse_scalar("0x5eeae7a6b309c8843a8368e7c790df9929a161f2a6240c889877698fef62f4c7")
             .unwrap()
     }
 
@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(
             proto::decode_scalar(&payload.program_storage_root_hash.unwrap()).unwrap(),
             utils::parse_scalar(
-                "0x0cb44d412f2b9149861b64c1719498665927e7ef138387bd597a96d3567058f2"
+                "0x3c1316ed223e30eb6b4e6e2d2d2f13039301f08aee3ee06cc0a2318477a439e9"
             )
             .unwrap()
         );
@@ -641,7 +641,7 @@ mod tests {
         assert_eq!(
             proto::decode_scalar(&payload.program_storage_root_hash.unwrap()).unwrap(),
             utils::parse_scalar(
-                "0x0cb44d412f2b9149861b64c1719498665927e7ef138387bd597a96d3567058f2"
+                "0x3c1316ed223e30eb6b4e6e2d2d2f13039301f08aee3ee06cc0a2318477a439e9"
             )
             .unwrap()
         );
@@ -755,7 +755,7 @@ mod tests {
         assert_eq!(
             block_info.hash(),
             utils::parse_scalar(
-                "0x6c0700339becc41fbaeed76d4a70d7321007d27d5cf56245b2446fe6c2c1c03d"
+                "0x1abcdbb5ac82d5e17d8ae4f9b83da68e8b636e1c736be3a4691254911c18c7a1"
             )
             .unwrap()
         );
@@ -864,7 +864,7 @@ mod tests {
         assert_eq!(
             proto::decode_scalar(payload.block_hash.as_ref().unwrap()).unwrap(),
             utils::parse_scalar(
-                "0x66b465856500300ae284213d8a5f6a3d20446a096df9e1f5b6cd2ac13533a51b"
+                "0x170e647bfa7c9d1361c4554ed6ef02bef36033701cea301123d8c405aa05bc95"
             )
             .unwrap()
         );

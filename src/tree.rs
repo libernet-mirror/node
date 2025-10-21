@@ -809,8 +809,8 @@ impl DecodeFromAny for AccountInfo {
 pub type AccountTree = MerkleTree<Scalar, AccountInfo, 3, 161>;
 pub type AccountProof = MerkleProof<Scalar, AccountInfo, 3, 161>;
 
-pub type ProgramStorageTree = MerkleTree<Scalar, MerkleTreeVersion<u64, u64, 2, 64>, 3, 161>;
-pub type ProgramStorageProof = MerkleProof<u64, u64, 2, 64>;
+pub type ProgramStorageTree = MerkleTree<Scalar, MerkleTreeVersion<u64, u64, 2, 32>, 3, 161>;
+pub type ProgramStorageProof = MerkleProof<u64, u64, 2, 32>;
 
 #[cfg(test)]
 mod tests {
