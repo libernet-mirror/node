@@ -1,5 +1,5 @@
 use crate::account::Account;
-use crypto::{remote::RemoteAccount, signer::Verifier, ssl};
+use crypto::{remote::RemoteAccount, signer::Verifier};
 use rustls::{client::danger::ServerCertVerifier, server::danger::ClientCertVerifier};
 use std::time::{Duration, UNIX_EPOCH};
 
@@ -134,6 +134,7 @@ mod tests {
     use super::*;
     use crate::account::testing;
     use anyhow::{Context, anyhow};
+    use crypto::ssl;
     use rustls::pki_types::{CertificateDer, UnixTime};
     use std::ops::Deref;
     use std::sync::Arc;

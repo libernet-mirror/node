@@ -505,7 +505,6 @@ mod tests {
         self, node_service_v1_client::NodeServiceV1Client,
         node_service_v1_server::NodeServiceV1Server,
     };
-    use anyhow::Result;
     use std::time::{Duration, SystemTime};
     use tokio::sync::Notify;
     use tonic::{Request, transport::Server};
