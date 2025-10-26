@@ -8,7 +8,7 @@ use crate::tree::{self, AccountInfo};
 use crate::version;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
-use crypto::{signer::PartialVerifier, utils};
+use crypto::{signer::BlsVerifier, utils};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::{time::Duration, time::sleep};
@@ -378,7 +378,6 @@ mod tests {
     };
     use crate::net;
     use primitive_types::H256;
-    use rustls::pki_types::CertificateDer;
     use tokio::{sync::Notify, task::JoinHandle, task::yield_now};
     use tonic::transport::{Channel, Server};
 
@@ -402,16 +401,7 @@ mod tests {
             let not_after = now + Duration::from_secs(456);
 
             let server_account = Arc::new(testing::account1());
-            let server_certificate = server_account
-                .generate_ssl_certificate(not_before, not_after)
-                .unwrap();
-            let server_certificate = CertificateDer::from_slice(server_certificate.leak());
-
             let client_account = Arc::new(testing::account2());
-            let client_certificate = client_account
-                .generate_ssl_certificate(not_before, not_after)
-                .unwrap();
-            let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
             let clock: Arc<MockClock> = Arc::new(MockClock::new(
                 SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
@@ -440,8 +430,12 @@ mod tests {
                 let future = Server::builder().add_service(service).serve_with_incoming(
                     net::IncomingWithMTls::new(
                         Arc::new(net::testing::MockListener::new(server_stream)),
-                        &*server_account2,
-                        server_certificate,
+                        server_account2
+                            .generate_ed25519_certified_key(not_before, not_after)
+                            .unwrap(),
+                        server_account2
+                            .generate_ecdsa_certified_key(not_before, not_after)
+                            .unwrap(),
                     )
                     .await
                     .unwrap(),
@@ -453,8 +447,12 @@ mod tests {
 
             let (channel, _) = net::testing::mock_connect_with_mtls(
                 client_stream,
-                &*client_account,
-                client_certificate,
+                client_account
+                    .generate_ed25519_certified_key(not_before, not_after)
+                    .unwrap(),
+                client_account
+                    .generate_ecdsa_certified_key(not_before, not_after)
+                    .unwrap(),
             )
             .await
             .unwrap();

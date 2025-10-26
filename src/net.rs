@@ -1,13 +1,11 @@
-use crate::account::Account;
 use crate::ssl;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
-use crypto::{remote::RemoteAccount, signer::PartialVerifier};
+use crypto::{remote::PartialRemoteAccount, signer::BlsVerifier};
 use hyper::rt::{Read, ReadBufCursor, Write};
-use rustls::pki_types::CertificateDer;
+use rustls::{pki_types::CertificateDer, sign::CertifiedKey};
 use std::io::{Error, ErrorKind};
 use std::net::SocketAddr;
-use std::ops::Deref;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
@@ -20,17 +18,17 @@ use tonic::transport::{Channel, Uri, server::Connected};
 
 #[derive(Debug, Copy, Clone)]
 pub struct ConnectionInfo {
-    peer_account: RemoteAccount,
+    peer_account: PartialRemoteAccount,
 }
 
 impl ConnectionInfo {
     pub fn new<'a>(peer_certificate: CertificateDer<'a>) -> anyhow::Result<Self> {
         Ok(Self {
-            peer_account: RemoteAccount::from_certificate(&peer_certificate)?,
+            peer_account: PartialRemoteAccount::from_certificate(&peer_certificate)?,
         })
     }
 
-    pub fn peer_account(&self) -> &RemoteAccount {
+    pub fn peer_account(&self) -> &PartialRemoteAccount {
         &self.peer_account
     }
 
@@ -214,16 +212,6 @@ impl Listener<TcpStream> for TcpListenerAdapter {
     }
 }
 
-// This is atrocious but seems to be the only way to make the custom rustls configs work. The dang
-// rustls won't accept an external signing object.
-fn extract_ed25519_private_key_der(account: &Account) -> anyhow::Result<&'static [u8]> {
-    Ok(&*account
-        .export_ed25519_private_key_der()?
-        .deref()
-        .clone()
-        .leak())
-}
-
 type TlsHandshakeFuture<IO> =
     Pin<Box<dyn Future<Output = std::io::Result<TlsServerStreamAdapter<IO>>> + Send>>;
 
@@ -246,20 +234,16 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> IncomingWithMTls<IO> {
 
     pub async fn new(
         listener: Arc<dyn Listener<IO>>,
-        account: &Account,
-        certificate: CertificateDer<'static>,
+        ed25519_certified_key: Arc<CertifiedKey>,
+        ecdsa_certified_key: Arc<CertifiedKey>,
     ) -> anyhow::Result<Self> {
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
             rustls::ServerConfig::builder()
                 .with_client_cert_verifier(Arc::new(ssl::LibernetClientCertVerifier::default()))
-                .with_single_cert(
-                    vec![certificate],
-                    rustls::pki_types::PrivateKeyDer::Pkcs8(
-                        rustls::pki_types::PrivatePkcs8KeyDer::from(
-                            extract_ed25519_private_key_der(account)?,
-                        ),
-                    ),
-                )?,
+                .with_cert_resolver(Arc::new(ssl::ServerCertResolver::new(
+                    ed25519_certified_key,
+                    ecdsa_certified_key,
+                ))),
         ));
         let pending = Self::accept(listener.clone(), acceptor.clone());
         Ok(Self {
@@ -325,8 +309,8 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> ConnectorWithMTls<IO> 
 
     pub fn new(
         tcp_connector: Arc<dyn Connector<IO>>,
-        account: &Account,
-        certificate: CertificateDer<'static>,
+        ed25519_certified_key: Arc<CertifiedKey>,
+        ecdsa_certified_key: Arc<CertifiedKey>,
         peer_certificate: Arc<Mutex<Option<CertificateDer<'static>>>>,
     ) -> anyhow::Result<ConnectorWithMTls<IO>> {
         let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(
@@ -335,15 +319,10 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> ConnectorWithMTls<IO> 
                 .with_custom_certificate_verifier(Arc::new(
                     ssl::LibernetServerCertVerifier::default(),
                 ))
-                .with_client_auth_cert(
-                    vec![certificate],
-                    rustls::pki_types::PrivateKeyDer::Pkcs8(
-                        rustls::pki_types::PrivatePkcs8KeyDer::from(
-                            extract_ed25519_private_key_der(account)?,
-                        ),
-                    ),
-                )
-                .unwrap(),
+                .with_client_cert_resolver(Arc::new(ssl::ClientCertResolver::new(
+                    ed25519_certified_key,
+                    ecdsa_certified_key,
+                ))),
         ));
         {
             let mut guard = peer_certificate.lock().unwrap();
@@ -397,8 +376,8 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin + 'static> tower::Service<Uri>
 }
 
 pub async fn connect_with_mtls(
-    account: &Account,
-    certificate: CertificateDer<'static>,
+    ed25519_certified_key: Arc<CertifiedKey>,
+    ecdsa_certified_key: Arc<CertifiedKey>,
     uri: Uri,
 ) -> anyhow::Result<(Channel, ConnectionInfo)> {
     let peer_certificate = Arc::new(Mutex::new(None::<CertificateDer<'static>>));
@@ -406,8 +385,8 @@ pub async fn connect_with_mtls(
         .connect_with_connector(
             ConnectorWithMTls::new(
                 Arc::new(TcpConnectorAdapter::new()),
-                account,
-                certificate,
+                ed25519_certified_key,
+                ecdsa_certified_key,
                 peer_certificate.clone(),
             )
             .unwrap(),
@@ -475,16 +454,16 @@ pub mod testing {
 
     pub async fn mock_connect_with_mtls(
         stream: DuplexStream,
-        account: &Account,
-        certificate: CertificateDer<'static>,
+        ed25519_certified_key: Arc<CertifiedKey>,
+        ecdsa_certified_key: Arc<CertifiedKey>,
     ) -> anyhow::Result<(Channel, ConnectionInfo)> {
         let peer_certificate = Arc::new(Mutex::new(None::<CertificateDer<'static>>));
         let channel = Channel::builder("http://fake".parse().unwrap())
             .connect_with_connector(
                 ConnectorWithMTls::new(
                     Arc::new(MockConnector::new(stream)),
-                    account,
-                    certificate,
+                    ed25519_certified_key,
+                    ecdsa_certified_key,
                     peer_certificate.clone(),
                 )
                 .unwrap(),
@@ -516,16 +495,7 @@ mod tests {
         let not_after = now + Duration::from_secs(456);
 
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = server_account
-            .generate_ssl_certificate(not_before, not_after)
-            .unwrap();
-        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
-
         let client_account = Arc::pin(account_testing::account2());
-        let client_certificate = client_account
-            .generate_ssl_certificate(not_before, not_after)
-            .unwrap();
-        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let client_checked = Arc::new(Mutex::new(false));
         let client_checked2 = client_checked.clone();
@@ -564,9 +534,17 @@ mod tests {
         let server_account2 = server_account.clone();
         let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
-                IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
-                    .await
-                    .unwrap(),
+                IncomingWithMTls::new(
+                    server_listener,
+                    server_account2
+                        .generate_ed25519_certified_key(not_before, not_after)
+                        .unwrap(),
+                    server_account2
+                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
             );
             server_ready.notify_one();
             future.await.unwrap();
@@ -574,8 +552,12 @@ mod tests {
         start_client.notified().await;
 
         let (channel, connection_info) = connect_with_mtls(
-            &*client_account,
-            client_certificate,
+            client_account
+                .generate_ed25519_certified_key(not_before, not_after)
+                .unwrap(),
+            client_account
+                .generate_ecdsa_certified_key(not_before, not_after)
+                .unwrap(),
             format!(
                 "http://localhost:{}",
                 listener.local_address().unwrap().port()
@@ -612,16 +594,7 @@ mod tests {
         let client_not_after = now + Duration::from_secs(456);
 
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = server_account
-            .generate_ssl_certificate(not_before, server_not_after)
-            .unwrap();
-        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
-
         let client_account = account_testing::account2();
-        let client_certificate = client_account
-            .generate_ssl_certificate(not_before, client_not_after)
-            .unwrap();
-        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let service = NodeServiceV1Server::with_interceptor(
             FakeNodeService {},
@@ -639,9 +612,17 @@ mod tests {
         let server_account2 = server_account.clone();
         let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
-                IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
-                    .await
-                    .unwrap(),
+                IncomingWithMTls::new(
+                    server_listener,
+                    server_account2
+                        .generate_ed25519_certified_key(not_before, server_not_after)
+                        .unwrap(),
+                    server_account2
+                        .generate_ecdsa_certified_key(not_before, server_not_after)
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
             );
             server_ready.notify_one();
             let _ = future.await;
@@ -650,8 +631,12 @@ mod tests {
 
         assert!(
             connect_with_mtls(
-                &client_account,
-                client_certificate,
+                client_account
+                    .generate_ed25519_certified_key(not_before, client_not_after)
+                    .unwrap(),
+                client_account
+                    .generate_ecdsa_certified_key(not_before, client_not_after)
+                    .unwrap(),
                 format!(
                     "http://localhost:{}",
                     listener.local_address().unwrap().port()
@@ -674,16 +659,7 @@ mod tests {
         let client_not_after = now - Duration::from_secs(100);
 
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = server_account
-            .generate_ssl_certificate(not_before, server_not_after)
-            .unwrap();
-        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
-
         let client_account = account_testing::account2();
-        let client_certificate = client_account
-            .generate_ssl_certificate(not_before, client_not_after)
-            .unwrap();
-        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let service = NodeServiceV1Server::with_interceptor(
             FakeNodeService {},
@@ -701,9 +677,17 @@ mod tests {
         let server_account2 = server_account.clone();
         let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
-                IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
-                    .await
-                    .unwrap(),
+                IncomingWithMTls::new(
+                    server_listener,
+                    server_account2
+                        .generate_ed25519_certified_key(not_before, server_not_after)
+                        .unwrap(),
+                    server_account2
+                        .generate_ecdsa_certified_key(not_before, server_not_after)
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
             );
             server_ready.notify_one();
             let _ = future.await;
@@ -713,8 +697,12 @@ mod tests {
         assert!(
             async {
                 let (channel, connection_info) = connect_with_mtls(
-                    &client_account,
-                    client_certificate,
+                    client_account
+                        .generate_ed25519_certified_key(not_before, client_not_after)
+                        .unwrap(),
+                    client_account
+                        .generate_ecdsa_certified_key(not_before, client_not_after)
+                        .unwrap(),
                     format!(
                         "http://localhost:{}",
                         listener.local_address().unwrap().port()
@@ -751,10 +739,6 @@ mod tests {
         let not_after = now + Duration::from_secs(456);
 
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = server_account
-            .generate_ssl_certificate(not_before, not_after)
-            .unwrap();
-        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
 
         let service = NodeServiceV1Server::with_interceptor(
             FakeNodeService {},
@@ -772,9 +756,17 @@ mod tests {
         let server_account2 = server_account.clone();
         let server = tokio::spawn(async move {
             let future = Server::builder().add_service(service).serve_with_incoming(
-                IncomingWithMTls::new(server_listener, &*server_account2, server_certificate)
-                    .await
-                    .unwrap(),
+                IncomingWithMTls::new(
+                    server_listener,
+                    server_account2
+                        .generate_ed25519_certified_key(not_before, not_after)
+                        .unwrap(),
+                    server_account2
+                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
             );
             server_ready.notify_one();
             let _ = future.await;
@@ -813,16 +805,7 @@ mod tests {
         let not_after = now + Duration::from_secs(456);
 
         let server_account = Arc::pin(account_testing::account1());
-        let server_certificate = server_account
-            .generate_ssl_certificate(not_before, not_after)
-            .unwrap();
-        let server_certificate = CertificateDer::from_slice(server_certificate.leak());
-
         let client_account = Arc::pin(account_testing::account2());
-        let client_certificate = client_account
-            .generate_ssl_certificate(not_before, not_after)
-            .unwrap();
-        let client_certificate = CertificateDer::from_slice(client_certificate.leak());
 
         let client_checked = Arc::new(Mutex::new(false));
         let client_checked_ref = client_checked.clone();
@@ -862,8 +845,12 @@ mod tests {
             let future = Server::builder().add_service(service).serve_with_incoming(
                 IncomingWithMTls::new(
                     Arc::new(testing::MockListener::new(server_stream)),
-                    &*server_account2,
-                    server_certificate,
+                    server_account2
+                        .generate_ed25519_certified_key(not_before, not_after)
+                        .unwrap(),
+                    server_account2
+                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .unwrap(),
                 )
                 .await
                 .unwrap(),
@@ -873,10 +860,17 @@ mod tests {
         });
         start_client.notified().await;
 
-        let (channel, connection_info) =
-            testing::mock_connect_with_mtls(client_stream, &*client_account, client_certificate)
-                .await
-                .unwrap();
+        let (channel, connection_info) = testing::mock_connect_with_mtls(
+            client_stream,
+            client_account
+                .generate_ed25519_certified_key(not_before, not_after)
+                .unwrap(),
+            client_account
+                .generate_ecdsa_certified_key(not_before, not_after)
+                .unwrap(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             server_account.public_key(),
             connection_info.peer_public_key()

@@ -4,7 +4,6 @@ use anyhow::{Result, anyhow};
 use clap::Parser;
 use crypto::utils;
 use primitive_types::H512;
-use rustls::pki_types::CertificateDer;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tonic::transport::Server;
@@ -101,13 +100,14 @@ async fn main() -> Result<()> {
     };
 
     let account = Arc::new(Account::from_secret_key(secret_key)?);
-    let certificate = {
+    let (ed25519_certified_key, ecdsa_certified_key) = {
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(1) * 3600 * 24;
         let not_after = now + Duration::from_secs(1) * 3600 * 24 * 365;
-        let bytes = account.generate_ssl_certificate(not_before, not_after)?;
-        let bytes: &'static [u8] = bytes.leak();
-        CertificateDer::from_slice(bytes)
+        (
+            account.generate_ed25519_certified_key(not_before, not_after)?,
+            account.generate_ecdsa_certified_key(not_before, not_after)?,
+        )
     };
 
     let location = make_location(args.latitude, args.longitude)?;
@@ -130,8 +130,8 @@ async fn main() -> Result<()> {
         .serve_with_incoming(
             net::IncomingWithMTls::new(
                 Arc::new(net::TcpListenerAdapter::new(local_address).await.unwrap()),
-                &*account,
-                certificate,
+                ed25519_certified_key,
+                ecdsa_certified_key,
             )
             .await?,
         )

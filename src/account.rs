@@ -3,35 +3,46 @@ use crate::proto;
 use anyhow::{Context, Result, anyhow};
 use blstrs::{G1Affine, G2Affine, Scalar};
 use crypto::{
-    account::Account as LowLevelAccount, bls, remote::RemoteAccount, signer::PartialVerifier,
-    signer::Signer, signer::Verifier, utils,
+    account::Account as LowLevelAccount,
+    bls,
+    remote::PartialRemoteAccount,
+    signer::{BlsVerifier, EcDsaVerifier, Ed25519Verifier, Signer},
+    utils,
 };
 use curve25519_dalek::EdwardsPoint as Point25519;
+use p256::AffinePoint as PointP256;
 use primitive_types::H512;
+use rustls::sign::CertifiedKey;
+use std::sync::Arc;
 use std::time::SystemTime;
 use zeroize::Zeroizing;
 
-/// A Libernet account with an associated BLS keypair, account address, and Ed25519 keypair for
-/// generating TLS certificates.
+/// A Libernet account with an associated BLS keypair, account address, and ephemeral
+/// ECDSA / Ed25519 keypairs for generating TLS certificates.
 #[derive(Debug)]
 pub struct Account {
     inner: LowLevelAccount,
+    ecdsa_public_key_bytes: Vec<u8>,
     ed25519_public_key_bytes: Vec<u8>,
 }
 
 impl Account {
     pub fn new(inner: LowLevelAccount) -> Result<Self> {
+        let ecdsa_public_key_bytes = utils::compress_p256(inner.ecdsa_public_key())
+            .as_fixed_bytes()
+            .to_vec();
         let ed25519_public_key_bytes = utils::compress_point_25519(inner.ed25519_public_key())
             .as_fixed_bytes()
             .to_vec();
         Ok(Self {
             inner,
+            ecdsa_public_key_bytes,
             ed25519_public_key_bytes,
         })
     }
 
     pub fn from_secret_key(secret_key: H512) -> Result<Self> {
-        Self::new(LowLevelAccount::new(secret_key))
+        Self::new(LowLevelAccount::new(secret_key)?)
     }
 
     pub fn address(&self) -> Scalar {
@@ -40,6 +51,14 @@ impl Account {
 
     pub fn public_key(&self) -> G1Affine {
         self.inner.public_key()
+    }
+
+    pub fn ecdsa_public_key(&self) -> PointP256 {
+        self.inner.ecdsa_public_key()
+    }
+
+    pub fn export_ecdsa_private_key_der(&self) -> Result<Zeroizing<Vec<u8>>> {
+        self.inner.export_ecdsa_private_key_der()
     }
 
     pub fn ed25519_public_key(&self) -> Point25519 {
@@ -62,16 +81,56 @@ impl Account {
         self.inner.bls_verify(message, signature)
     }
 
-    pub fn generate_ssl_certificate(
+    pub fn generate_ecdsa_certificate(
         &self,
         not_before: SystemTime,
         not_after: SystemTime,
     ) -> Result<Vec<u8>> {
-        self.inner.generate_ssl_certificate(not_before, not_after)
+        self.inner.generate_ecdsa_certificate(not_before, not_after)
     }
 
-    pub fn verify_ssl_certificate(der: &[u8], now: SystemTime) -> Result<RemoteAccount> {
+    pub fn generate_ed25519_certificate(
+        &self,
+        not_before: SystemTime,
+        not_after: SystemTime,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .generate_ed25519_certificate(not_before, not_after)
+    }
+
+    pub fn verify_ssl_certificate(der: &[u8], now: SystemTime) -> Result<PartialRemoteAccount> {
         LowLevelAccount::verify_ssl_certificate(der, now)
+    }
+
+    pub fn generate_ed25519_certified_key(
+        &self,
+        not_before: SystemTime,
+        not_after: SystemTime,
+    ) -> Result<Arc<CertifiedKey>> {
+        let certificate = self.generate_ed25519_certificate(not_before, not_after)?;
+        let private_key = self.export_ed25519_private_key_der()?;
+        let signing_key =
+            rustls::crypto::aws_lc_rs::sign::any_eddsa_type(&private_key.as_slice().into())?;
+        Ok(Arc::new(CertifiedKey::new(
+            vec![certificate.into()],
+            signing_key,
+        )))
+    }
+
+    pub fn generate_ecdsa_certified_key(
+        &self,
+        not_before: SystemTime,
+        not_after: SystemTime,
+    ) -> Result<Arc<CertifiedKey>> {
+        let certificate = self.generate_ecdsa_certificate(not_before, not_after)?;
+        let private_key = self.export_ecdsa_private_key_der()?;
+        let signing_key = rustls::crypto::aws_lc_rs::sign::any_ecdsa_type(
+            &rustls::pki_types::PrivateKeyDer::Pkcs8(private_key.as_slice().into()),
+        )?;
+        Ok(Arc::new(CertifiedKey::new(
+            vec![certificate.into()],
+            signing_key,
+        )))
     }
 
     pub fn sign_message<M: prost::Message + prost::Name>(
@@ -121,39 +180,47 @@ pub mod testing {
     use super::*;
 
     pub fn account1() -> Account {
-        Account::new(LowLevelAccount::new(
-            "0x4191f15fdee5d58d9e829c72da3ff838a707a3e798e0cd67348dbdc628ad1565381456e6acde30debd3054224d3f684a8262550c5abc757d2dd4be979151997d"
-                .parse()
-                .unwrap(),
-        ))
+        Account::new(
+            LowLevelAccount::new(
+                "0x4191f15fdee5d58d9e829c72da3ff838a707a3e798e0cd67348dbdc628ad1565381456e6acde30debd3054224d3f684a8262550c5abc757d2dd4be979151997d"
+                    .parse()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
         .unwrap()
     }
 
     pub fn account2() -> Account {
-        Account::new(LowLevelAccount::new(
-            "0xac363bfd648af099278f7bc694633713999eb1089c33ef144496d52c9ee41d70b4503dac4448ad234747f3553fb4040c29cdf842f251cf116795dcd72be51ddc"
-                .parse()
-                .unwrap(),
-        ))
+        Account::new(
+            LowLevelAccount::new(
+                "0xac363bfd648af099278f7bc694633713999eb1089c33ef144496d52c9ee41d70b4503dac4448ad234747f3553fb4040c29cdf842f251cf116795dcd72be51ddc"
+                    .parse()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
         .unwrap()
     }
 
     pub fn account3() -> Account {
-        Account::new(LowLevelAccount::new(
-            "0xbee4977e23fd5a077def6fe641ebcf0c876484ff32b62095df046398c77eb93ab22161ccf87f3b9e1915a41578badafdce4f6608fdf6f9aafd02a11d13b4780d"
-                .parse()
-                .unwrap(),
-        ))
+        Account::new(
+            LowLevelAccount::new(
+                "0xbee4977e23fd5a077def6fe641ebcf0c876484ff32b62095df046398c77eb93ab22161ccf87f3b9e1915a41578badafdce4f6608fdf6f9aafd02a11d13b4780d"
+                    .parse()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
         .unwrap()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::*;
     use primitive_types::H256;
+    use std::time::Duration;
 
     #[test]
     fn test_account1() {
@@ -169,13 +236,6 @@ mod tests {
             account.public_key(),
             utils::parse_g1("0xa0a63b0e43652fe3d2b5d5255df9eaf97ac522b929819db4d8655b29b2745695021dfda5f93a50f33d9fff9c95ab6fdc")
                 .unwrap()
-        );
-        assert_eq!(
-            account.ed25519_public_key(),
-            utils::parse_point_25519(
-                "0x908ea6fbbb3d4979d185118b94762b127002e06ee43fdb8b62bba20e443dc71f"
-            )
-            .unwrap()
         );
     }
 
@@ -200,13 +260,6 @@ mod tests {
             utils::parse_g1("0x90ae9b9e3c07d5eec8b3e4bc60ae7242a06816d0c4eb791b77958cd1f6feab226773bf3d049c5178dc9531271e9b0514")
                 .unwrap()
         );
-        assert_eq!(
-            account.ed25519_public_key(),
-            utils::parse_point_25519(
-                "0xea9f8969a264ea7ebade38388c90add11ecd517389f94ad230c6e94b58b1bcdd"
-            )
-            .unwrap()
-        );
     }
 
     #[test]
@@ -223,13 +276,6 @@ mod tests {
             account.public_key(),
             utils::parse_g1("0x8a73da6df68c26747a0fcda2b311d866dfed5a47c864629073a04b52d4d89e21690507939d73987ce10a2a38ab7177eb")
                 .unwrap()
-        );
-        assert_eq!(
-            account.ed25519_public_key(),
-            utils::parse_point_25519(
-                "0xcafd8587e708bb86514539c252213072660b7ecb4839f5e4bae2b806acabaca2"
-            )
-            .unwrap()
         );
     }
 
@@ -319,17 +365,62 @@ mod tests {
     }
 
     #[test]
-    fn test_ssl_certificate() {
+    fn test_ecdsa_certificate() {
         let account = testing::account1();
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certificate = account
-            .generate_ssl_certificate(not_before, not_after)
+            .generate_ecdsa_certificate(not_before, not_after)
             .unwrap();
         let remote = Account::verify_ssl_certificate(certificate.as_slice(), now).unwrap();
         assert_eq!(account.address(), remote.address());
         assert_eq!(account.public_key(), remote.bls_public_key());
-        assert_eq!(account.ed25519_public_key(), remote.ed25519_public_key());
+    }
+
+    #[test]
+    fn test_ed25519_certificate() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certificate = account
+            .generate_ed25519_certificate(not_before, not_after)
+            .unwrap();
+        let remote = Account::verify_ssl_certificate(certificate.as_slice(), now).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+    }
+
+    #[test]
+    fn test_ecdsa_certified_key() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certified_key = account
+            .generate_ecdsa_certified_key(not_before, not_after)
+            .unwrap();
+        assert!(certified_key.keys_match().is_ok());
+        let certificate = certified_key.end_entity_cert().unwrap();
+        let remote = Account::verify_ssl_certificate(&*certificate, now).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+    }
+
+    #[test]
+    fn test_ed25519_certified_key() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certified_key = account
+            .generate_ed25519_certified_key(not_before, not_after)
+            .unwrap();
+        assert!(certified_key.keys_match().is_ok());
+        let certificate = certified_key.end_entity_cert().unwrap();
+        let remote = Account::verify_ssl_certificate(&*certificate, now).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
     }
 }
