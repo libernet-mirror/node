@@ -64,10 +64,6 @@ impl NodeServiceImpl {
     ) -> anyhow::Result<Arc<Self>> {
         println!("Public key: {}", utils::format_g1(account.public_key()));
         println!(
-            "Public key (Ed25519): {}",
-            utils::format_point_25519(account.ed25519_public_key())
-        );
-        println!(
             "Wallet address: {}",
             utils::format_scalar(account.address())
         );
