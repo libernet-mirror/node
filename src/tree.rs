@@ -2,70 +2,18 @@ use crate::libernet;
 use crate::proto::{self, DecodeFromAny, EncodeToAny};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
-use crypto::{utils, xits};
+use crypto::{
+    merkle::{AsScalar, FromScalar, Proof as LowLevelMerkleProof},
+    utils, xits,
+};
 use ff::Field;
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::{Arc, LazyLock, Mutex};
 
-/// Makes a type representable as a BLS12-381 scalar. Must be implemened by all Merkle tree values.
-///
-/// Typical implementations use the value itself when it fits in a single scalar (e.g. u64 or
-/// BLS12-381 scalars themselves), and use a Poseidon hash when it doesn't.
-///
-/// NOTE: the returned scalar must never change while the value is stored in the Merkle tree.
-/// Typical implementations are simply immutable so that the returned representation never changes.
-pub trait AsScalar {
-    fn as_scalar(&self) -> Scalar;
-}
-
-impl AsScalar for Scalar {
-    fn as_scalar(&self) -> Scalar {
-        *self
-    }
-}
-
-impl AsScalar for u64 {
-    fn as_scalar(&self) -> Scalar {
-        Scalar::from(*self)
-    }
-}
-
-/// Makes a type parseable from a BLS12-381 scalar. Must be implemented by all types used as keys in
-/// Merkle trees.
-///
-/// BLS12-381 scalars are encoded in 32 bytes (they are ~255 bits wide) but if the key type requires
-/// less than that then the least significant bytes must be used, not the most significant ones.
-/// That is because the least significant bits are the ones closer to the leaves, as opposed to the
-/// most significant ones which are closest to the root, and using the former allows for trees of
-/// lower height.
-pub trait FromScalar: Sized {
-    fn from_scalar(scalar: Scalar) -> Result<Self>;
-}
-
-impl FromScalar for Scalar {
-    fn from_scalar(scalar: Scalar) -> Result<Self> {
-        Ok(scalar)
-    }
-}
-
-impl FromScalar for u64 {
-    fn from_scalar(scalar: Scalar) -> Result<Self> {
-        let bytes32 = scalar.to_bytes_le();
-        for i in 8..32 {
-            if bytes32[i] != 0 {
-                return Err(anyhow!("invalid 64-bit scalar"));
-            }
-        }
-        let mut bytes8 = [0u8; 8];
-        bytes8.copy_from_slice(&bytes32[0..8]);
-        Ok(u64::from_le_bytes(bytes8))
-    }
-}
-
 trait Node<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
 >: Debug + Send + Sync + AsScalar + 'static
@@ -77,7 +25,7 @@ trait Node<
 
 #[derive(Debug)]
 struct PhantomNodes<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -86,7 +34,7 @@ struct PhantomNodes<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -98,7 +46,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const H: usize,
 > Default for PhantomNodes<K, V, 2, H>
@@ -116,7 +64,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const H: usize,
 > Default for PhantomNodes<K, V, 3, H>
@@ -143,7 +91,7 @@ struct MonomorphicPhantomNodes {
 
 impl MonomorphicPhantomNodes {
     fn get<
-        K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+        K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
         V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
         const W: usize,
         const H: usize,
@@ -202,7 +150,7 @@ impl<V: Debug + Default + Clone + Send + Sync + AsScalar + 'static> Leaf<V> {
     }
 }
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
 > Node<K, V, W> for Leaf<V>
@@ -232,7 +180,7 @@ impl<V: Debug + Default + Clone + Send + Sync + AsScalar + 'static> AsScalar for
 
 #[derive(Debug, Clone)]
 struct InternalNode<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
 > {
@@ -244,7 +192,7 @@ struct InternalNode<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
 > InternalNode<K, V, W>
@@ -271,19 +219,19 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
 > InternalNode<K, V, 2>
 {
     fn get_bit(&self, key: K) -> usize {
         let count = Scalar::from(self.level as u64 - 1);
-        let bit = xits::and1(xits::shr(key.into(), count));
+        let bit = xits::and1(xits::shr(key.as_scalar(), count));
         bit.to_bytes_le()[0] as usize
     }
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
 > Node<K, V, 2> for InternalNode<K, V, 2>
 {
@@ -311,19 +259,19 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
 > InternalNode<K, V, 3>
 {
     fn get_trit(&self, key: K) -> usize {
         let count = (self.level - 1) as u8;
-        let trit = xits::mod3(xits::div_pow3(key.into(), count));
+        let trit = xits::mod3(xits::div_pow3(key.as_scalar(), count));
         trit.to_bytes_le()[0] as usize
     }
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
 > Node<K, V, 3> for InternalNode<K, V, 3>
 {
@@ -351,7 +299,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
 > AsScalar for InternalNode<K, V, W>
@@ -363,130 +311,64 @@ impl<
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleProof<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
 > {
-    key: K,
-    value: V,
-    path: [[Scalar; W]; H],
-    root_hash: Scalar,
+    inner: LowLevelMerkleProof<K, V, W, H>,
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
 > MerkleProof<K, V, W, H>
 {
+    pub fn new(key: K, value: V, path: [[Scalar; W]; H], root_hash: Scalar) -> Self {
+        Self {
+            inner: LowLevelMerkleProof::<K, V, W, H>::new(key, value, path, root_hash),
+        }
+    }
+
     pub fn key(&self) -> K {
-        self.key
+        self.inner.key()
     }
 
     pub fn value(&self) -> &V {
-        &self.value
+        self.inner.value()
     }
 
     pub fn path(&self) -> &[[Scalar; W]; H] {
-        &self.path
+        self.inner.path()
     }
 
     pub fn root_hash(&self) -> Scalar {
-        self.root_hash
+        self.inner.root_hash()
     }
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const H: usize,
 > MerkleProof<K, V, 2, H>
 {
-    pub fn verify(&self, root_hash: Scalar) -> Result<()> {
-        if root_hash != self.root_hash {
-            return Err(anyhow!(
-                "root hash mismatch: got {:#x}, want {:#x}",
-                utils::scalar_to_u256(self.root_hash),
-                utils::scalar_to_u256(root_hash)
-            ));
-        }
-        let mut key = self.key.into();
-        let mut hash = self.value.as_scalar();
-        for children in self.path {
-            let bit = xits::and1(key);
-            let bit = bit.to_bytes_le()[0] as usize;
-            if hash != children[bit] {
-                return Err(anyhow!(
-                    "hash mismatch: got {:#x} or {:#x}, want {:#x}",
-                    utils::scalar_to_u256(children[0]),
-                    utils::scalar_to_u256(children[1]),
-                    utils::scalar_to_u256(hash),
-                ));
-            }
-            key = xits::shr1(key);
-            hash = utils::poseidon_hash(&children);
-        }
-        if hash != self.root_hash {
-            return Err(anyhow!(
-                "final hash mismatch: got {:#x}, want {:#x}",
-                utils::scalar_to_u256(self.root_hash),
-                utils::scalar_to_u256(hash),
-            ));
-        }
-        Ok(())
+    pub fn compressed_path(&self) -> [Scalar; H] {
+        self.inner.compressed_path()
+    }
+
+    pub fn verify(&self) -> Result<()> {
+        self.inner.verify()
     }
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
-    const H: usize,
-> MerkleProof<K, V, 3, H>
-{
-    pub fn verify(&self, root_hash: Scalar) -> Result<()> {
-        if root_hash != self.root_hash {
-            return Err(anyhow!(
-                "root hash mismatch: got {:#x}, want {:#x}",
-                utils::scalar_to_u256(self.root_hash),
-                utils::scalar_to_u256(root_hash)
-            ));
-        }
-        let mut key = self.key.into();
-        let mut hash = self.value.as_scalar();
-        for children in self.path {
-            let trit = xits::mod3(key);
-            let trit = trit.to_bytes_le()[0] as usize;
-            if hash != children[trit] {
-                return Err(anyhow!(
-                    "hash mismatch: got {:#x} or {:#x} or {:#x}, want {:#x}",
-                    utils::scalar_to_u256(children[0]),
-                    utils::scalar_to_u256(children[1]),
-                    utils::scalar_to_u256(children[2]),
-                    utils::scalar_to_u256(hash),
-                ));
-            }
-            key = xits::div3(key);
-            hash = utils::poseidon_hash(&children);
-        }
-        if hash != self.root_hash {
-            return Err(anyhow!(
-                "final hash mismatch: got {:#x}, want {:#x}",
-                utils::scalar_to_u256(self.root_hash),
-                utils::scalar_to_u256(hash),
-            ));
-        }
-        Ok(())
-    }
-}
-
-impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + EncodeToAny + 'static,
-    const W: usize,
     const H: usize,
-> MerkleProof<K, V, W, H>
+> MerkleProof<K, V, 2, H>
 {
     /// Encodes this proof into a `MerkleProof` protobuf. Note that the block descriptor must be
     /// provided by the caller.
@@ -496,13 +378,13 @@ impl<
     ) -> Result<libernet::MerkleProof> {
         Ok(libernet::MerkleProof {
             block_descriptor: Some(block_descriptor),
-            key: Some(proto::encode_scalar(self.key.into())),
-            value: Some(self.value.encode_to_any()?),
+            key: Some(proto::encode_scalar(self.inner.key().as_scalar())),
+            value: Some(self.inner.value().encode_to_any()?),
             path: self
-                .path
+                .compressed_path()
                 .iter()
-                .map(|children| libernet::merkle_proof::Node {
-                    child_hashes: children.map(proto::encode_scalar).to_vec(),
+                .map(|hash| libernet::merkle_proof::Node {
+                    child_hashes: vec![proto::encode_scalar(*hash)],
                 })
                 .collect(),
         })
@@ -510,15 +392,14 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
-    const W: usize,
     const H: usize,
-> MerkleProof<K, V, W, H>
+> MerkleProof<K, V, 2, H>
 {
     /// Decodes a Merkle proof from the provided protobuf. The `block_descriptor` is ignored. The
     /// resulting proof is not verified (use `decode_and_verify` to decode and verify it).
-    pub fn decode(proto: &libernet::MerkleProof) -> Result<Self> {
+    pub fn decode(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
         let key = match &proto.key {
             Some(key) => proto::decode_scalar(key),
             None => Err(anyhow!("invalid Merkle proof: the key is missing")),
@@ -528,7 +409,117 @@ impl<
             Some(value) => V::decode_from_any(value),
             None => Err(anyhow!("invalid Merkle proof: the value is missing")),
         }?;
-        let path: [[Scalar; W]; H] = proto
+        let path: [Scalar; H] = proto
+            .path
+            .iter()
+            .map(|node| {
+                let children = node
+                    .child_hashes
+                    .iter()
+                    .map(proto::decode_scalar)
+                    .collect::<Result<Vec<Scalar>>>()?;
+                if children.len() != 1 {
+                    Err(anyhow!(
+                        "invalid Merkle proof: found node with {} sister hashes (expected 1)",
+                        children.len()
+                    ))
+                } else {
+                    Ok(children[0])
+                }
+            })
+            .collect::<Result<Vec<Scalar>>>()?
+            .try_into()
+            .map_err(|vec: Vec<Scalar>| {
+                anyhow!(
+                    "invalid Merkle proof: incorrect lookup path length (got {}, want {})",
+                    vec.len(),
+                    H
+                )
+            })?;
+        Ok(Self {
+            inner: LowLevelMerkleProof::<K, V, 2, H>::from_compressed(
+                key, value, root_hash, &path,
+            )?,
+        })
+    }
+
+    /// Like `decode` but also validates the decoded proof against the provided root hash.
+    ///
+    /// Note that the root hash should be the same as one of the root hashes specified in the block
+    /// descriptor, depending on what storage component this proof is relative to. For example, if
+    /// the proof was generated from an account lookup the root hash must be the same as the one
+    /// encoded in `block_descriptor.accounts_root_hash`.
+    pub fn decode_and_verify(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
+        let proof = Self::decode(proto, root_hash)?;
+        proof.verify()?;
+        Ok(proof)
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    const H: usize,
+> MerkleProof<K, V, 3, H>
+{
+    pub fn compressed_path(&self) -> [[Scalar; 2]; H] {
+        self.inner.compressed_path()
+    }
+
+    pub fn verify(&self) -> Result<()> {
+        self.inner.verify()
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + EncodeToAny + 'static,
+    const H: usize,
+> MerkleProof<K, V, 3, H>
+{
+    /// Encodes this proof into a `MerkleProof` protobuf. Note that the block descriptor must be
+    /// provided by the caller.
+    pub fn encode(
+        &self,
+        block_descriptor: libernet::BlockDescriptor,
+    ) -> Result<libernet::MerkleProof> {
+        Ok(libernet::MerkleProof {
+            block_descriptor: Some(block_descriptor),
+            key: Some(proto::encode_scalar(self.inner.key().as_scalar())),
+            value: Some(self.inner.value().encode_to_any()?),
+            path: self
+                .compressed_path()
+                .iter()
+                .map(|children| libernet::merkle_proof::Node {
+                    child_hashes: vec![
+                        proto::encode_scalar(children[0]),
+                        proto::encode_scalar(children[1]),
+                    ],
+                })
+                .collect(),
+        })
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
+    const H: usize,
+> MerkleProof<K, V, 3, H>
+{
+    /// Decodes a Merkle proof from the provided protobuf. The `block_descriptor` is ignored. The
+    /// resulting proof is not verified (use `decode_and_verify` to decode and verify it).
+    pub fn decode(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
+        let key = match &proto.key {
+            Some(key) => proto::decode_scalar(key),
+            None => Err(anyhow!("invalid Merkle proof: the key is missing")),
+        }?;
+        let key = K::from_scalar(key)?;
+        let value = match &proto.value {
+            Some(value) => V::decode_from_any(value),
+            None => Err(anyhow!("invalid Merkle proof: the value is missing")),
+        }?;
+        let path: [[Scalar; 2]; H] = proto
             .path
             .iter()
             .map(|node| {
@@ -539,37 +530,27 @@ impl<
                     .try_into()
                     .map_err(|vec: Vec<Scalar>| {
                         anyhow!(
-                            "invalid Merkle proof: found node with {} child hashes (expected {})",
-                            vec.len(),
-                            W
+                            "invalid Merkle proof: found node with {} child hashes (expected 2)",
+                            vec.len()
                         )
                     })
             })
             .collect::<Result<Vec<_>>>()?
             .try_into()
-            .map_err(|vec: Vec<[Scalar; W]>| {
+            .map_err(|vec: Vec<[Scalar; 2]>| {
                 anyhow!(
                     "invalid Merkle proof: incorrect lookup path length (got {}, want {})",
                     vec.len(),
                     H
                 )
             })?;
-        let root_hash = utils::poseidon_hash(&path[H - 1]);
         Ok(Self {
-            key,
-            value,
-            path,
-            root_hash,
+            inner: LowLevelMerkleProof::<K, V, 3, H>::from_compressed(
+                key, value, root_hash, &path,
+            )?,
         })
     }
-}
 
-impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
-    const H: usize,
-> MerkleProof<K, V, 2, H>
-{
     /// Like `decode` but also validates the decoded proof against the provided root hash.
     ///
     /// Note that the root hash should be the same as one of the root hashes specified in the block
@@ -577,34 +558,22 @@ impl<
     /// the proof was generated from an account lookup the root hash must be the same as the one
     /// encoded in `block_descriptor.accounts_root_hash`.
     pub fn decode_and_verify(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
-        let proof = Self::decode(proto)?;
-        proof.verify(root_hash)?;
-        Ok(proof)
-    }
-}
-
-impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
-    const H: usize,
-> MerkleProof<K, V, 3, H>
-{
-    /// Like `decode` but also validates the decoded proof against the provided root hash.
-    ///
-    /// Note that the root hash should be the same as one of the root hashes specified in the block
-    /// descriptor, depending on what storage component this proof is relative to. For example, if
-    /// the proof was generated from an account lookup the root hash must be the same as the one
-    /// encoded in `block_descriptor.accounts_root_hash`.
-    pub fn decode_and_verify(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
-        let proof = Self::decode(proto)?;
-        proof.verify(root_hash)?;
+        let proof = Self::decode(proto, root_hash)?;
+        if proof.root_hash() != root_hash {
+            return Err(anyhow!(
+                "root hash mismatch: got {:#x}, want {:#x}",
+                utils::scalar_to_u256(proof.root_hash()),
+                utils::scalar_to_u256(root_hash)
+            ));
+        }
+        proof.verify()?;
         Ok(proof)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MerkleTreeVersion<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -613,7 +582,7 @@ pub struct MerkleTreeVersion<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -637,12 +606,12 @@ impl<
 
     pub fn get_proof(&self, key: K) -> MerkleProof<K, V, W, H> {
         let (value, path) = self.root.lookup(key);
-        MerkleProof {
+        MerkleProof::new(
             key,
-            value: value.clone(),
-            path: path.try_into().unwrap(),
-            root_hash: self.root.as_scalar(),
-        }
+            value.clone(),
+            path.try_into().unwrap(),
+            self.root.as_scalar(),
+        )
     }
 
     pub fn put(&self, key: K, value: V) -> Self {
@@ -653,7 +622,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -667,7 +636,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -679,7 +648,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -694,7 +663,7 @@ impl<
 
 #[derive(Debug, Clone)]
 pub struct MerkleTree<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -703,7 +672,7 @@ pub struct MerkleTree<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -745,7 +714,7 @@ impl<
 }
 
 impl<
-    K: Debug + Copy + Send + Sync + FromScalar + Into<Scalar> + 'static,
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
     V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
@@ -809,8 +778,8 @@ impl DecodeFromAny for AccountInfo {
 pub type AccountTree = MerkleTree<Scalar, AccountInfo, 3, 161>;
 pub type AccountProof = MerkleProof<Scalar, AccountInfo, 3, 161>;
 
-pub type ProgramStorageTree = MerkleTree<Scalar, MerkleTreeVersion<u64, u64, 2, 32>, 3, 161>;
-pub type ProgramStorageProof = MerkleProof<u64, u64, 2, 32>;
+pub type ProgramStorageTree = MerkleTree<Scalar, MerkleTreeVersion<u32, u32, 2, 32>, 3, 161>;
+pub type ProgramStorageProof = MerkleProof<u32, u32, 2, 32>;
 
 #[cfg(test)]
 mod tests {
@@ -862,7 +831,7 @@ mod tests {
         assert_eq!(proof.key(), key);
         assert_eq!(*proof.value(), Scalar::ZERO);
         assert_eq!(proof.root_hash(), tree.root_hash(version));
-        assert!(proof.verify(tree.root_hash(version)).is_ok());
+        assert!(proof.verify().is_ok());
     }
 
     #[test]
@@ -892,7 +861,7 @@ mod tests {
         assert_eq!(proof.key(), key);
         assert_eq!(*proof.value(), Scalar::ZERO);
         assert_eq!(proof.root_hash(), tree.root_hash(version));
-        assert!(proof.verify(tree.root_hash(version)).is_ok());
+        assert!(proof.verify().is_ok());
     }
 
     #[test]
@@ -927,7 +896,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree.root_hash(0));
         assert_eq!(proof1.root_hash(), tree.root_hash(1));
         assert_eq!(proof1.root_hash(), tree.root_hash(2));
-        assert!(proof1.verify(tree.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
@@ -939,7 +908,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree.root_hash(0));
         assert_eq!(proof2.root_hash(), tree.root_hash(1));
         assert_eq!(proof2.root_hash(), tree.root_hash(2));
-        assert!(proof2.verify(tree.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
     }
@@ -974,7 +943,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree1.root_hash(0));
         assert_eq!(proof1.root_hash(), tree1.root_hash(1));
         assert_eq!(proof1.root_hash(), tree1.root_hash(2));
-        assert!(proof1.verify(tree1.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree1.get_proof(key1, 1), proof1);
         assert_eq!(tree1.get_proof(key1, 2), proof1);
         assert_eq!(*tree1.get(key2, 0), Scalar::ZERO);
@@ -986,7 +955,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree1.root_hash(0));
         assert_eq!(proof2.root_hash(), tree1.root_hash(1));
         assert_eq!(proof2.root_hash(), tree1.root_hash(2));
-        assert!(proof2.verify(tree1.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree1.get_proof(key2, 1), proof2);
         assert_eq!(tree1.get_proof(key2, 2), proof2);
     }
@@ -1009,7 +978,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree.root_hash(0));
         assert_eq!(proof1.root_hash(), tree.root_hash(1));
         assert_eq!(proof1.root_hash(), tree.root_hash(2));
-        assert!(proof1.verify(tree.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
         assert_eq!(*tree.get(key2, 0), value2);
@@ -1021,7 +990,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree.root_hash(0));
         assert_eq!(proof2.root_hash(), tree.root_hash(1));
         assert_eq!(proof2.root_hash(), tree.root_hash(2));
-        assert!(proof2.verify(tree.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
     }
@@ -1061,7 +1030,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree1.root_hash(0));
         assert_eq!(proof1.root_hash(), tree1.root_hash(1));
         assert_eq!(proof1.root_hash(), tree1.root_hash(2));
-        assert!(proof1.verify(tree1.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree1.get_proof(key1, 1), proof1);
         assert_eq!(tree1.get_proof(key1, 2), proof1);
         assert_eq!(*tree1.get(key2, 0), value2);
@@ -1073,7 +1042,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree1.root_hash(0));
         assert_eq!(proof2.root_hash(), tree1.root_hash(1));
         assert_eq!(proof2.root_hash(), tree1.root_hash(2));
-        assert!(proof2.verify(tree1.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree1.get_proof(key2, 1), proof2);
         assert_eq!(tree1.get_proof(key2, 2), proof2);
     }
@@ -1096,7 +1065,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree.root_hash(0));
         assert_eq!(proof1.root_hash(), tree.root_hash(1));
         assert_eq!(proof1.root_hash(), tree.root_hash(2));
-        assert!(proof1.verify(tree.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
         assert_eq!(*tree.get(key2, 0), value2);
@@ -1108,7 +1077,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree.root_hash(0));
         assert_eq!(proof2.root_hash(), tree.root_hash(1));
         assert_eq!(proof2.root_hash(), tree.root_hash(2));
-        assert!(proof2.verify(tree.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
     }
@@ -1127,7 +1096,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree.root_hash(0));
         assert_eq!(proof1.root_hash(), tree.root_hash(1));
         assert_eq!(proof1.root_hash(), tree.root_hash(2));
-        assert!(proof1.verify(tree.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(value1, 1), proof1);
         assert_eq!(tree.get_proof(value1, 2), proof1);
         assert_eq!(*tree.get(value2, 0), value2);
@@ -1139,7 +1108,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree.root_hash(0));
         assert_eq!(proof2.root_hash(), tree.root_hash(1));
         assert_eq!(proof2.root_hash(), tree.root_hash(2));
-        assert!(proof2.verify(tree.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(value2, 1), proof2);
         assert_eq!(tree.get_proof(value2, 2), proof2);
         assert_eq!(*tree.get(value3, 0), value3);
@@ -1151,7 +1120,7 @@ mod tests {
         assert_eq!(proof3.root_hash(), tree.root_hash(0));
         assert_eq!(proof3.root_hash(), tree.root_hash(1));
         assert_eq!(proof3.root_hash(), tree.root_hash(2));
-        assert!(proof3.verify(tree.root_hash(0)).is_ok());
+        assert!(proof3.verify().is_ok());
         assert_eq!(tree.get_proof(value3, 1), proof3);
         assert_eq!(tree.get_proof(value3, 2), proof3);
     }
@@ -1204,7 +1173,7 @@ mod tests {
         assert_eq!(proof1.root_hash(), tree.root_hash(0));
         assert_eq!(proof1.root_hash(), tree.root_hash(1));
         assert_eq!(proof1.root_hash(), tree.root_hash(2));
-        assert!(proof1.verify(tree.root_hash(0)).is_ok());
+        assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
@@ -1216,7 +1185,7 @@ mod tests {
         assert_eq!(proof2.root_hash(), tree.root_hash(0));
         assert_eq!(proof2.root_hash(), tree.root_hash(1));
         assert_eq!(proof2.root_hash(), tree.root_hash(2));
-        assert!(proof2.verify(tree.root_hash(0)).is_ok());
+        assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
     }
@@ -1239,16 +1208,14 @@ mod tests {
         assert_eq!(proof11.root_hash(), tree.root_hash(0));
         assert_ne!(proof11.root_hash(), tree.root_hash(1));
         assert_ne!(proof11.root_hash(), tree.root_hash(2));
-        assert!(proof11.verify(tree.root_hash(0)).is_ok());
-        assert!(proof11.verify(tree.root_hash(1)).is_err());
+        assert!(proof11.verify().is_ok());
         let proof12 = tree.get_proof(key1, 1);
         assert_eq!(proof12.key(), key1);
         assert_eq!(*proof12.value(), value2);
         assert_ne!(proof12.root_hash(), tree.root_hash(0));
         assert_eq!(proof12.root_hash(), tree.root_hash(1));
         assert_eq!(proof12.root_hash(), tree.root_hash(2));
-        assert!(proof12.verify(tree.root_hash(0)).is_err());
-        assert!(proof12.verify(tree.root_hash(1)).is_ok());
+        assert!(proof12.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 2), proof12);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 1), Scalar::ZERO);
@@ -1259,16 +1226,14 @@ mod tests {
         assert_eq!(proof21.root_hash(), tree.root_hash(0));
         assert_ne!(proof21.root_hash(), tree.root_hash(1));
         assert_ne!(proof21.root_hash(), tree.root_hash(2));
-        assert!(proof21.verify(tree.root_hash(0)).is_ok());
-        assert!(proof21.verify(tree.root_hash(1)).is_err());
+        assert!(proof21.verify().is_ok());
         let proof22 = tree.get_proof(key2, 1);
         assert_eq!(proof22.key(), key2);
         assert_eq!(*proof22.value(), Scalar::ZERO);
         assert_ne!(proof22.root_hash(), tree.root_hash(0));
         assert_eq!(proof22.root_hash(), tree.root_hash(1));
         assert_eq!(proof22.root_hash(), tree.root_hash(2));
-        assert!(proof22.verify(tree.root_hash(0)).is_err());
-        assert!(proof22.verify(tree.root_hash(1)).is_ok());
+        assert!(proof22.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof22);
         assert_eq!(tree.get_proof(key2, 2), proof22);
     }
@@ -1291,18 +1256,14 @@ mod tests {
         assert_eq!(proof11.root_hash(), tree.root_hash(0));
         assert_eq!(proof11.root_hash(), tree.root_hash(1));
         assert_ne!(proof11.root_hash(), tree.root_hash(2));
-        assert!(proof11.verify(tree.root_hash(0)).is_ok());
-        assert!(proof11.verify(tree.root_hash(1)).is_ok());
-        assert!(proof11.verify(tree.root_hash(2)).is_err());
+        assert!(proof11.verify().is_ok());
         let proof12 = tree.get_proof(key1, 2);
         assert_eq!(proof12.key(), key1);
         assert_eq!(*proof12.value(), value2);
         assert_ne!(proof12.root_hash(), tree.root_hash(0));
         assert_ne!(proof12.root_hash(), tree.root_hash(1));
         assert_eq!(proof12.root_hash(), tree.root_hash(2));
-        assert!(proof12.verify(tree.root_hash(0)).is_err());
-        assert!(proof12.verify(tree.root_hash(1)).is_err());
-        assert!(proof12.verify(tree.root_hash(2)).is_ok());
+        assert!(proof12.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof11);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 1), Scalar::ZERO);
@@ -1313,18 +1274,14 @@ mod tests {
         assert_eq!(proof21.root_hash(), tree.root_hash(0));
         assert_eq!(proof21.root_hash(), tree.root_hash(1));
         assert_ne!(proof21.root_hash(), tree.root_hash(2));
-        assert!(proof21.verify(tree.root_hash(0)).is_ok());
-        assert!(proof21.verify(tree.root_hash(1)).is_ok());
-        assert!(proof21.verify(tree.root_hash(2)).is_err());
+        assert!(proof21.verify().is_ok());
         let proof22 = tree.get_proof(key2, 2);
         assert_eq!(proof22.key(), key2);
         assert_eq!(*proof22.value(), Scalar::ZERO);
         assert_ne!(proof22.root_hash(), tree.root_hash(0));
         assert_ne!(proof22.root_hash(), tree.root_hash(1));
         assert_eq!(proof22.root_hash(), tree.root_hash(2));
-        assert!(proof22.verify(tree.root_hash(0)).is_err());
-        assert!(proof22.verify(tree.root_hash(1)).is_err());
-        assert!(proof22.verify(tree.root_hash(2)).is_ok());
+        assert!(proof22.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof21);
     }
 
@@ -1348,18 +1305,14 @@ mod tests {
         assert_eq!(proof11.root_hash(), tree.root_hash(0));
         assert_eq!(proof11.root_hash(), tree.root_hash(1));
         assert_ne!(proof11.root_hash(), tree.root_hash(2));
-        assert!(proof11.verify(tree.root_hash(0)).is_ok());
-        assert!(proof11.verify(tree.root_hash(1)).is_ok());
-        assert!(proof11.verify(tree.root_hash(2)).is_err());
+        assert!(proof11.verify().is_ok());
         let proof12 = tree.get_proof(key1, 2);
         assert_eq!(proof12.key(), key1);
         assert_eq!(*proof12.value(), value1);
         assert_ne!(proof12.root_hash(), tree.root_hash(0));
         assert_ne!(proof12.root_hash(), tree.root_hash(1));
         assert_eq!(proof12.root_hash(), tree.root_hash(2));
-        assert!(proof12.verify(tree.root_hash(0)).is_err());
-        assert!(proof12.verify(tree.root_hash(1)).is_err());
-        assert!(proof12.verify(tree.root_hash(2)).is_ok());
+        assert!(proof12.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof11);
         assert_eq!(*tree.get(key2, 0), value2);
         assert_eq!(*tree.get(key2, 1), value2);
@@ -1370,18 +1323,14 @@ mod tests {
         assert_eq!(proof21.root_hash(), tree.root_hash(0));
         assert_eq!(proof21.root_hash(), tree.root_hash(1));
         assert_ne!(proof21.root_hash(), tree.root_hash(2));
-        assert!(proof21.verify(tree.root_hash(0)).is_ok());
-        assert!(proof21.verify(tree.root_hash(1)).is_ok());
-        assert!(proof21.verify(tree.root_hash(2)).is_err());
+        assert!(proof21.verify().is_ok());
         let proof22 = tree.get_proof(key2, 2);
         assert_eq!(proof22.key(), key2);
         assert_eq!(*proof22.value(), value3);
         assert_ne!(proof22.root_hash(), tree.root_hash(0));
         assert_ne!(proof22.root_hash(), tree.root_hash(1));
         assert_eq!(proof22.root_hash(), tree.root_hash(2));
-        assert!(proof22.verify(tree.root_hash(0)).is_err());
-        assert!(proof22.verify(tree.root_hash(1)).is_err());
-        assert!(proof22.verify(tree.root_hash(2)).is_ok());
+        assert!(proof22.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof21);
     }
 
@@ -1411,7 +1360,7 @@ mod tests {
                 program_storage_root_hash: None,
             })
             .unwrap();
-        assert_eq!(TestProof::decode(&proto).unwrap(), proof);
+        assert_eq!(TestProof::decode(&proto, tree.root_hash(0)).unwrap(), proof);
     }
 
     #[test]
@@ -1533,7 +1482,7 @@ mod tests {
             })
             .unwrap();
         proto.value = None;
-        assert!(TestProof::decode(&proto).is_err());
+        assert!(TestProof::decode(&proto, tree.root_hash(0)).is_err());
     }
 
     #[test]
