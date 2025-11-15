@@ -178,7 +178,7 @@ impl ClientCertVerifier for LibernetClientCertVerifier {
         now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
         let now = UNIX_EPOCH + Duration::from_secs(now.as_secs());
-        Account::verify_ssl_certificate(&end_entity, now).map_err(|_| {
+        Account::verify_ssl_certificate(&end_entity, now, None).map_err(|_| {
             rustls::Error::InvalidCertificate(
                 rustls::CertificateError::ApplicationVerificationFailure,
             )
@@ -262,16 +262,18 @@ impl ServerCertVerifier for LibernetServerCertVerifier {
         &self,
         end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
-        _server_name: &rustls::pki_types::ServerName<'_>,
+        server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         let now = UNIX_EPOCH + Duration::from_secs(now.as_secs());
-        Account::verify_ssl_certificate(&end_entity, now).map_err(|_| {
-            rustls::Error::InvalidCertificate(
-                rustls::CertificateError::ApplicationVerificationFailure,
-            )
-        })?;
+        Account::verify_ssl_certificate(&end_entity, now, Some(&*server_name.to_str())).map_err(
+            |_| {
+                rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::ApplicationVerificationFailure,
+                )
+            },
+        )?;
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -354,7 +356,7 @@ mod tests {
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certificate = account
-            .generate_ecdsa_certificate(not_before, not_after)
+            .generate_ecdsa_certificate(not_before, not_after, None)
             .unwrap();
         let certificate = CertificateDer::from_slice(certificate.as_slice());
         let verifier = LibernetClientCertVerifier::default();
@@ -372,7 +374,7 @@ mod tests {
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certificate = account
-            .generate_ed25519_certificate(not_before, not_after)
+            .generate_ed25519_certificate(not_before, not_after, None)
             .unwrap();
         let certificate = CertificateDer::from_slice(certificate.as_slice());
         let verifier = LibernetClientCertVerifier::default();
@@ -390,7 +392,7 @@ mod tests {
         let not_before = now + Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certificate = account
-            .generate_ed25519_certificate(not_before, not_after)
+            .generate_ed25519_certificate(not_before, not_after, None)
             .unwrap();
         let certificate = CertificateDer::from_slice(certificate.as_slice());
         let verifier = LibernetClientCertVerifier::default();
@@ -408,7 +410,7 @@ mod tests {
         let not_before = now - Duration::from_secs(456);
         let not_after = now - Duration::from_secs(123);
         let certificate = account
-            .generate_ed25519_certificate(not_before, not_after)
+            .generate_ed25519_certificate(not_before, not_after, None)
             .unwrap();
         let certificate = CertificateDer::from_slice(certificate.as_slice());
         let verifier = LibernetClientCertVerifier::default();
@@ -474,11 +476,11 @@ mod tests {
         let server_account = testing::account1();
         let server_certificate = if use_ed25519 {
             server_account
-                .generate_ed25519_certificate(not_before, not_after)
+                .generate_ed25519_certificate(not_before, not_after, Some("localhost"))
                 .unwrap()
         } else {
             server_account
-                .generate_ecdsa_certificate(not_before, not_after)
+                .generate_ecdsa_certificate(not_before, not_after, Some("localhost"))
                 .unwrap()
         };
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
@@ -500,11 +502,11 @@ mod tests {
         let client_account = testing::account2();
         let client_certificate = if use_ed25519 {
             client_account
-                .generate_ed25519_certificate(not_before, not_after)
+                .generate_ed25519_certificate(not_before, not_after, None)
                 .unwrap()
         } else {
             client_account
-                .generate_ecdsa_certificate(not_before, not_after)
+                .generate_ecdsa_certificate(not_before, not_after, None)
                 .unwrap()
         };
         let connector = tokio_rustls::TlsConnector::from(Arc::new(
@@ -573,10 +575,10 @@ mod tests {
                 .with_client_cert_verifier(Arc::new(LibernetClientCertVerifier::default()))
                 .with_cert_resolver(Arc::new(ServerCertResolver::new(
                     server_account
-                        .generate_ed25519_certified_key(not_before, not_after)
+                        .generate_ed25519_certified_key(not_before, not_after, Some("localhost"))
                         .unwrap(),
                     server_account
-                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .generate_ecdsa_certified_key(not_before, not_after, Some("localhost"))
                         .unwrap(),
                 ))),
         ));
@@ -584,11 +586,11 @@ mod tests {
         let client_account = testing::account2();
         let client_certificate = if use_ed25519 {
             client_account
-                .generate_ed25519_certificate(not_before, not_after)
+                .generate_ed25519_certificate(not_before, not_after, None)
                 .unwrap()
         } else {
             client_account
-                .generate_ecdsa_certificate(not_before, not_after)
+                .generate_ecdsa_certificate(not_before, not_after, None)
                 .unwrap()
         };
         let connector = tokio_rustls::TlsConnector::from(Arc::new(
@@ -654,11 +656,11 @@ mod tests {
         let server_account = testing::account1();
         let server_certificate = if use_ed25519 {
             server_account
-                .generate_ed25519_certificate(not_before, not_after)
+                .generate_ed25519_certificate(not_before, not_after, Some("localhost"))
                 .unwrap()
         } else {
             server_account
-                .generate_ecdsa_certificate(not_before, not_after)
+                .generate_ecdsa_certificate(not_before, not_after, Some("localhost"))
                 .unwrap()
         };
         let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(
@@ -684,10 +686,10 @@ mod tests {
                 .with_custom_certificate_verifier(Arc::new(LibernetServerCertVerifier::default()))
                 .with_client_cert_resolver(Arc::new(ClientCertResolver::new(
                     client_account
-                        .generate_ed25519_certified_key(not_before, not_after)
+                        .generate_ed25519_certified_key(not_before, not_after, None)
                         .unwrap(),
                     client_account
-                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .generate_ecdsa_certified_key(not_before, not_after, None)
                         .unwrap(),
                 ))),
         ));
@@ -742,10 +744,10 @@ mod tests {
                 .with_client_cert_verifier(Arc::new(LibernetClientCertVerifier::default()))
                 .with_cert_resolver(Arc::new(ServerCertResolver::new(
                     server_account
-                        .generate_ed25519_certified_key(not_before, not_after)
+                        .generate_ed25519_certified_key(not_before, not_after, Some("localhost"))
                         .unwrap(),
                     server_account
-                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .generate_ecdsa_certified_key(not_before, not_after, Some("localhost"))
                         .unwrap(),
                 ))),
         ));
@@ -757,10 +759,10 @@ mod tests {
                 .with_custom_certificate_verifier(Arc::new(LibernetServerCertVerifier::default()))
                 .with_client_cert_resolver(Arc::new(ClientCertResolver::new(
                     client_account
-                        .generate_ed25519_certified_key(not_before, not_after)
+                        .generate_ed25519_certified_key(not_before, not_after, None)
                         .unwrap(),
                     client_account
-                        .generate_ecdsa_certified_key(not_before, not_after)
+                        .generate_ecdsa_certified_key(not_before, not_after, None)
                         .unwrap(),
                 ))),
         ));

@@ -427,10 +427,10 @@ mod tests {
                     net::IncomingWithMTls::new(
                         Arc::new(net::testing::MockListener::new(server_stream)),
                         server_account2
-                            .generate_ed25519_certified_key(not_before, not_after)
+                            .generate_ed25519_certified_key(not_before, not_after, Some("fake"))
                             .unwrap(),
                         server_account2
-                            .generate_ecdsa_certified_key(not_before, not_after)
+                            .generate_ecdsa_certified_key(not_before, not_after, Some("fake"))
                             .unwrap(),
                     )
                     .await
@@ -444,10 +444,10 @@ mod tests {
             let (channel, _) = net::testing::mock_connect_with_mtls(
                 client_stream,
                 client_account
-                    .generate_ed25519_certified_key(not_before, not_after)
+                    .generate_ed25519_certified_key(not_before, not_after, None)
                     .unwrap(),
                 client_account
-                    .generate_ecdsa_certified_key(not_before, not_after)
+                    .generate_ecdsa_certified_key(not_before, not_after, None)
                     .unwrap(),
             )
             .await

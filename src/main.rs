@@ -104,9 +104,10 @@ async fn main() -> Result<()> {
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(1) * 3600 * 24;
         let not_after = now + Duration::from_secs(1) * 3600 * 24 * 365;
+        let server_address = Some(args.local_address.as_str());
         (
-            account.generate_ed25519_certified_key(not_before, not_after)?,
-            account.generate_ecdsa_certified_key(not_before, not_after)?,
+            account.generate_ed25519_certified_key(not_before, not_after, server_address)?,
+            account.generate_ecdsa_certified_key(not_before, not_after, server_address)?,
         )
     };
 

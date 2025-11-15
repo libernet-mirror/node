@@ -85,29 +85,38 @@ impl Account {
         &self,
         not_before: SystemTime,
         not_after: SystemTime,
+        server_address: Option<&str>,
     ) -> Result<Vec<u8>> {
-        self.inner.generate_ecdsa_certificate(not_before, not_after)
+        self.inner
+            .generate_ecdsa_certificate(not_before, not_after, server_address)
     }
 
     pub fn generate_ed25519_certificate(
         &self,
         not_before: SystemTime,
         not_after: SystemTime,
+        server_address: Option<&str>,
     ) -> Result<Vec<u8>> {
         self.inner
-            .generate_ed25519_certificate(not_before, not_after)
+            .generate_ed25519_certificate(not_before, not_after, server_address)
     }
 
-    pub fn verify_ssl_certificate(der: &[u8], now: SystemTime) -> Result<PartialRemoteAccount> {
-        LowLevelAccount::verify_ssl_certificate(der, now)
+    pub fn verify_ssl_certificate(
+        der: &[u8],
+        now: SystemTime,
+        server_address: Option<&str>,
+    ) -> Result<PartialRemoteAccount> {
+        LowLevelAccount::verify_ssl_certificate(der, now, server_address)
     }
 
     pub fn generate_ed25519_certified_key(
         &self,
         not_before: SystemTime,
         not_after: SystemTime,
+        server_address: Option<&str>,
     ) -> Result<Arc<CertifiedKey>> {
-        let certificate = self.generate_ed25519_certificate(not_before, not_after)?;
+        let certificate =
+            self.generate_ed25519_certificate(not_before, not_after, server_address)?;
         let private_key = self.export_ed25519_private_key_der()?;
         let signing_key =
             rustls::crypto::aws_lc_rs::sign::any_eddsa_type(&private_key.as_slice().into())?;
@@ -121,8 +130,9 @@ impl Account {
         &self,
         not_before: SystemTime,
         not_after: SystemTime,
+        server_address: Option<&str>,
     ) -> Result<Arc<CertifiedKey>> {
-        let certificate = self.generate_ecdsa_certificate(not_before, not_after)?;
+        let certificate = self.generate_ecdsa_certificate(not_before, not_after, server_address)?;
         let private_key = self.export_ecdsa_private_key_der()?;
         let signing_key = rustls::crypto::aws_lc_rs::sign::any_ecdsa_type(
             &rustls::pki_types::PrivateKeyDer::Pkcs8(private_key.as_slice().into()),
@@ -365,61 +375,123 @@ mod tests {
     }
 
     #[test]
-    fn test_ecdsa_certificate() {
+    fn test_client_ecdsa_certificate() {
         let account = testing::account1();
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certificate = account
-            .generate_ecdsa_certificate(not_before, not_after)
+            .generate_ecdsa_certificate(not_before, not_after, None)
             .unwrap();
-        let remote = Account::verify_ssl_certificate(certificate.as_slice(), now).unwrap();
+        let remote = Account::verify_ssl_certificate(certificate.as_slice(), now, None).unwrap();
         assert_eq!(account.address(), remote.address());
         assert_eq!(account.public_key(), remote.bls_public_key());
     }
 
     #[test]
-    fn test_ed25519_certificate() {
+    fn test_server_ecdsa_certificate() {
         let account = testing::account1();
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certificate = account
-            .generate_ed25519_certificate(not_before, not_after)
+            .generate_ecdsa_certificate(not_before, not_after, Some("server"))
             .unwrap();
-        let remote = Account::verify_ssl_certificate(certificate.as_slice(), now).unwrap();
+        let remote =
+            Account::verify_ssl_certificate(certificate.as_slice(), now, Some("server")).unwrap();
         assert_eq!(account.address(), remote.address());
         assert_eq!(account.public_key(), remote.bls_public_key());
     }
 
     #[test]
-    fn test_ecdsa_certified_key() {
+    fn test_client_ed25519_certificate() {
         let account = testing::account1();
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
-        let certified_key = account
-            .generate_ecdsa_certified_key(not_before, not_after)
+        let certificate = account
+            .generate_ed25519_certificate(not_before, not_after, None)
             .unwrap();
-        assert!(certified_key.keys_match().is_ok());
-        let certificate = certified_key.end_entity_cert().unwrap();
-        let remote = Account::verify_ssl_certificate(&*certificate, now).unwrap();
+        let remote = Account::verify_ssl_certificate(certificate.as_slice(), now, None).unwrap();
         assert_eq!(account.address(), remote.address());
         assert_eq!(account.public_key(), remote.bls_public_key());
     }
 
     #[test]
-    fn test_ed25519_certified_key() {
+    fn test_server_ed25519_certificate() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certificate = account
+            .generate_ed25519_certificate(not_before, not_after, Some("server"))
+            .unwrap();
+        let remote =
+            Account::verify_ssl_certificate(certificate.as_slice(), now, Some("server")).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+    }
+
+    #[test]
+    fn test_ecdsa_client_certified_key() {
         let account = testing::account1();
         let now = SystemTime::now();
         let not_before = now - Duration::from_secs(123);
         let not_after = now + Duration::from_secs(456);
         let certified_key = account
-            .generate_ed25519_certified_key(not_before, not_after)
+            .generate_ecdsa_certified_key(not_before, not_after, None)
             .unwrap();
         assert!(certified_key.keys_match().is_ok());
         let certificate = certified_key.end_entity_cert().unwrap();
-        let remote = Account::verify_ssl_certificate(&*certificate, now).unwrap();
+        let remote = Account::verify_ssl_certificate(&*certificate, now, None).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+    }
+
+    #[test]
+    fn test_ecdsa_server_certified_key() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certified_key = account
+            .generate_ecdsa_certified_key(not_before, not_after, Some("server"))
+            .unwrap();
+        assert!(certified_key.keys_match().is_ok());
+        let certificate = certified_key.end_entity_cert().unwrap();
+        let remote = Account::verify_ssl_certificate(&*certificate, now, Some("server")).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+    }
+
+    #[test]
+    fn test_ed25519_client_certified_key() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certified_key = account
+            .generate_ed25519_certified_key(not_before, not_after, None)
+            .unwrap();
+        assert!(certified_key.keys_match().is_ok());
+        let certificate = certified_key.end_entity_cert().unwrap();
+        let remote = Account::verify_ssl_certificate(&*certificate, now, None).unwrap();
+        assert_eq!(account.address(), remote.address());
+        assert_eq!(account.public_key(), remote.bls_public_key());
+    }
+
+    #[test]
+    fn test_ed25519_server_certified_key() {
+        let account = testing::account1();
+        let now = SystemTime::now();
+        let not_before = now - Duration::from_secs(123);
+        let not_after = now + Duration::from_secs(456);
+        let certified_key = account
+            .generate_ed25519_certified_key(not_before, not_after, Some("server"))
+            .unwrap();
+        assert!(certified_key.keys_match().is_ok());
+        let certificate = certified_key.end_entity_cert().unwrap();
+        let remote = Account::verify_ssl_certificate(&*certificate, now, Some("server")).unwrap();
         assert_eq!(account.address(), remote.address());
         assert_eq!(account.public_key(), remote.bls_public_key());
     }
