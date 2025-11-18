@@ -6,12 +6,19 @@ use crate::topology;
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
-use crypto::utils::{self, PoseidonHash};
+use crypto::{
+    merkle::AsScalar,
+    utils::{self, PoseidonHash},
+};
 use ff::Field;
-use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, atomic::AtomicU64, atomic::Ordering};
 use std::time::SystemTime;
-use tokio::sync::Mutex;
+use tokio::sync::{
+    Mutex,
+    mpsc::{Receiver, Sender, channel},
+};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct BlockInfo {
@@ -355,6 +362,124 @@ fn make_genesis_block(
     )
 }
 
+struct BlockListener {
+    id: u64,
+    sender: Sender<BlockInfo>,
+}
+
+impl BlockListener {
+    fn new(sender: Sender<BlockInfo>) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            sender,
+        }
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn notify(&self, block_info: BlockInfo) -> Result<()> {
+        Ok(self.sender.try_send(block_info)?)
+    }
+}
+
+impl PartialEq for BlockListener {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for BlockListener {}
+
+impl PartialOrd for BlockListener {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+
+impl Ord for BlockListener {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl Borrow<u64> for BlockListener {
+    fn borrow(&self) -> &u64 {
+        &self.id
+    }
+}
+
+#[derive(Clone)]
+pub struct AccountState {
+    block_info: BlockInfo,
+    proof: tree::AccountProof,
+}
+
+impl AccountState {
+    pub fn block_info(&self) -> &BlockInfo {
+        &self.block_info
+    }
+
+    pub fn account_info(&self) -> &tree::AccountInfo {
+        self.proof.value()
+    }
+
+    pub fn encode(&self) -> Result<libernet::MerkleProof> {
+        self.proof.encode(self.block_info.encode())
+    }
+}
+
+struct AccountListener {
+    id: u64,
+    sender: Sender<AccountState>,
+}
+
+impl AccountListener {
+    fn new(sender: Sender<AccountState>) -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            sender,
+        }
+    }
+
+    fn id(&self) -> u64 {
+        self.id
+    }
+
+    fn notify(&self, account_state: AccountState) -> Result<()> {
+        Ok(self.sender.try_send(account_state)?)
+    }
+}
+
+impl PartialEq for AccountListener {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for AccountListener {}
+
+impl PartialOrd for AccountListener {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.id.partial_cmp(&other.id)
+    }
+}
+
+impl Ord for AccountListener {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl Borrow<u64> for AccountListener {
+    fn borrow(&self) -> &u64 {
+        &self.id
+    }
+}
+
 struct Repr {
     chain_id: u64,
     blocks: Vec<BlockInfo>,
@@ -364,6 +489,9 @@ struct Repr {
     transactions_by_hash: BTreeMap<Scalar, usize>,
     accounts: tree::AccountTree,
     program_storage: tree::ProgramStorageTree,
+
+    block_listeners: BTreeSet<BlockListener>,
+    account_listeners: BTreeMap<Scalar, BTreeSet<AccountListener>>,
 }
 
 impl Repr {
@@ -390,6 +518,8 @@ impl Repr {
             transactions_by_hash: BTreeMap::new(),
             accounts,
             program_storage: tree::ProgramStorageTree::default(),
+            block_listeners: BTreeSet::default(),
+            account_listeners: BTreeMap::default(),
         })
     }
 
@@ -421,9 +551,10 @@ impl Repr {
         self.blocks[self.blocks.len() - 1]
     }
 
-    fn get_transaction(&self, hash: Scalar) -> Option<Transaction> {
-        let index = *(self.transactions_by_hash.get(&hash)?);
-        Some(self.transactions[index].clone())
+    fn listen_to_blocks(&mut self) -> Receiver<BlockInfo> {
+        let (sender, receiver) = channel(6);
+        self.block_listeners.insert(BlockListener::new(sender));
+        receiver
     }
 
     fn get_account_info(
@@ -449,6 +580,26 @@ impl Repr {
             block,
             self.accounts.get_proof(account_address, block.number),
         ))
+    }
+
+    fn listen_for_account_changes(&mut self, account_address: Scalar) -> Receiver<AccountState> {
+        let (sender, receiver) = channel(6);
+        let listener = AccountListener::new(sender);
+        match self.account_listeners.get_mut(&account_address) {
+            Some(listeners) => {
+                listeners.insert(listener);
+            }
+            None => {
+                self.account_listeners
+                    .insert(account_address, BTreeSet::from([listener]));
+            }
+        };
+        receiver
+    }
+
+    fn get_transaction(&self, hash: Scalar) -> Option<Transaction> {
+        let index = *(self.transactions_by_hash.get(&hash)?);
+        Some(self.transactions[index].clone())
     }
 
     fn apply_send_coins_transaction(
@@ -567,6 +718,49 @@ impl Repr {
             .insert(block_hash, block_number as usize);
         block
     }
+
+    fn notify_block(&mut self, block_info: &BlockInfo) {
+        let mut closed = vec![];
+        for listener in &self.block_listeners {
+            if listener.notify(*block_info).is_err() {
+                closed.push(listener.id());
+            }
+        }
+        for id in closed {
+            self.block_listeners.remove(&id);
+        }
+    }
+
+    fn notify_account_changes(&mut self, block_info: &BlockInfo) {
+        let previous_version = self.accounts.get_version((self.blocks.len() - 2) as u64);
+        let current_version = self.accounts.get_version((self.blocks.len() - 1) as u64);
+        let mut empty_accounts = vec![];
+        for (account_address, listeners) in &mut self.account_listeners {
+            let previous_hash = previous_version.get(*account_address).as_scalar();
+            let account = current_version.get(*account_address);
+            if account.as_scalar() != previous_hash {
+                let message = AccountState {
+                    block_info: *block_info,
+                    proof: current_version.get_proof(*account_address),
+                };
+                let mut closed = vec![];
+                for listener in &*listeners {
+                    if listener.notify(message.clone()).is_err() {
+                        closed.push(listener.id());
+                    }
+                }
+                for id in closed {
+                    listeners.remove(&id);
+                }
+                if listeners.is_empty() {
+                    empty_accounts.push(*account_address);
+                }
+            }
+        }
+        for address in &empty_accounts {
+            self.account_listeners.remove(address);
+        }
+    }
 }
 
 pub struct Db {
@@ -608,6 +802,10 @@ impl Db {
         self.repr.lock().await.get_latest_block()
     }
 
+    pub async fn listen_to_blocks(&self) -> Receiver<BlockInfo> {
+        self.repr.lock().await.listen_to_blocks()
+    }
+
     pub async fn get_account_info(
         &self,
         account_address: Scalar,
@@ -629,6 +827,16 @@ impl Db {
             .get_latest_account_info(account_address)
     }
 
+    pub async fn listen_for_account_changes(
+        &self,
+        account_address: Scalar,
+    ) -> Receiver<AccountState> {
+        self.repr
+            .lock()
+            .await
+            .listen_for_account_changes(account_address)
+    }
+
     pub async fn get_transaction(&self, hash: Scalar) -> Option<Transaction> {
         self.repr.lock().await.get_transaction(hash)
     }
@@ -639,7 +847,10 @@ impl Db {
 
     pub async fn close_block(&self) -> BlockInfo {
         let mut repr = self.repr.lock().await;
-        repr.close_block(self.clock.now())
+        let block_info = repr.close_block(self.clock.now());
+        repr.notify_block(&block_info);
+        repr.notify_account_changes(&block_info);
+        block_info
     }
 }
 

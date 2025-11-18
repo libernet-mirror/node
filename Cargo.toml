@@ -23,7 +23,7 @@ time = "0.3.44"
 tokio = { version = "1.47.1", features = ["full", "test-util"] }
 tokio-rustls = "0.26.4"
 tokio-util = "0.7.16"
-tonic = "0.14.2"
+tonic = { version = "0.14.2", features = ["gzip", "deflate", "zstd"] }
 tonic-prost = "0.14.2"
 tower = "0.5.2"
 x509-parser = "0.18.0"

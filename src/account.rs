@@ -224,6 +224,18 @@ pub mod testing {
         )
         .unwrap()
     }
+
+    pub fn account4() -> Account {
+        Account::new(
+            LowLevelAccount::new(
+                "0xf4dbf1fabde65c1f7fc3586541da1d0903ddc78eacc92757ab7c9183b23fd493899bd595757bf10a8505d9763c7753d02dbb08376e06b272041df8e2982ff400"
+                    .parse()
+                    .unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+    }
 }
 
 #[cfg(test)]

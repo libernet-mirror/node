@@ -1,5 +1,30 @@
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
+use futures::Stream;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use tonic::{Request, Response, Status};
+
+#[derive(Default)]
+pub struct SubscribeToBlocksStream {}
+
+impl Stream for SubscribeToBlocksStream {
+    type Item = Result<libernet::BlockSubscriptionResponse, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, _context: &mut Context) -> Poll<Option<Self::Item>> {
+        Poll::Ready(None)
+    }
+}
+
+#[derive(Default)]
+pub struct SubscribeToAccountStream {}
+
+impl Stream for SubscribeToAccountStream {
+    type Item = Result<libernet::AccountSubscriptionResponse, Status>;
+
+    fn poll_next(self: Pin<&mut Self>, _context: &mut Context) -> Poll<Option<Self::Item>> {
+        Poll::Ready(None)
+    }
+}
 
 #[cfg(test)]
 pub struct FakeNodeService {}
@@ -22,9 +47,17 @@ impl NodeServiceV1 for FakeNodeService {
         _request: Request<libernet::GetBlockRequest>,
     ) -> Result<Response<libernet::GetBlockResponse>, Status> {
         Ok(Response::new(libernet::GetBlockResponse {
-            payload: None,
-            signature: None,
+            block_descriptor: None,
         }))
+    }
+
+    type SubscribeToBlocksStream = SubscribeToBlocksStream;
+
+    async fn subscribe_to_blocks(
+        &self,
+        _request: Request<libernet::BlockSubscriptionRequest>,
+    ) -> Result<Response<Self::SubscribeToBlocksStream>, Status> {
+        Ok(Response::new(SubscribeToBlocksStream::default()))
     }
 
     async fn get_topology(
@@ -39,9 +72,17 @@ impl NodeServiceV1 for FakeNodeService {
         _request: Request<libernet::GetAccountRequest>,
     ) -> Result<Response<libernet::GetAccountResponse>, Status> {
         Ok(Response::new(libernet::GetAccountResponse {
-            payload: None,
-            signature: None,
+            account_proof: None,
         }))
+    }
+
+    type SubscribeToAccountStream = SubscribeToAccountStream;
+
+    async fn subscribe_to_account(
+        &self,
+        _request: Request<libernet::AccountSubscriptionRequest>,
+    ) -> Result<Response<Self::SubscribeToAccountStream>, Status> {
+        Ok(Response::new(SubscribeToAccountStream::default()))
     }
 
     async fn get_transaction(
@@ -49,8 +90,7 @@ impl NodeServiceV1 for FakeNodeService {
         _request: Request<libernet::GetTransactionRequest>,
     ) -> Result<Response<libernet::GetTransactionResponse>, Status> {
         Ok(Response::new(libernet::GetTransactionResponse {
-            payload: None,
-            signature: None,
+            transaction: None,
         }))
     }
 
