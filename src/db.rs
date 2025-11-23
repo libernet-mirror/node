@@ -491,6 +491,7 @@ struct Repr {
     program_storage: tree::ProgramStorageTree,
 
     block_listeners: BTreeSet<BlockListener>,
+    account_watchers: BTreeMap<Scalar, BTreeSet<AccountListener>>,
     account_listeners: BTreeMap<Scalar, BTreeSet<AccountListener>>,
 }
 
@@ -519,6 +520,7 @@ impl Repr {
             accounts,
             program_storage: tree::ProgramStorageTree::default(),
             block_listeners: BTreeSet::default(),
+            account_watchers: BTreeMap::default(),
             account_listeners: BTreeMap::default(),
         })
     }
@@ -580,6 +582,21 @@ impl Repr {
             block,
             self.accounts.get_proof(account_address, block.number),
         ))
+    }
+
+    fn watch_account(&mut self, account_address: Scalar) -> Receiver<AccountState> {
+        let (sender, receiver) = channel(6);
+        let watcher = AccountListener::new(sender);
+        match self.account_watchers.get_mut(&account_address) {
+            Some(watchers) => {
+                watchers.insert(watcher);
+            }
+            None => {
+                self.account_watchers
+                    .insert(account_address, BTreeSet::from([watcher]));
+            }
+        };
+        receiver
     }
 
     fn listen_for_account_changes(&mut self, account_address: Scalar) -> Receiver<AccountState> {
@@ -731,6 +748,32 @@ impl Repr {
         }
     }
 
+    fn notify_accounts(&mut self, block_info: &BlockInfo) {
+        let current_version = self.accounts.get_version((self.blocks.len() - 1) as u64);
+        let mut empty_accounts = vec![];
+        for (account_address, listeners) in &mut self.account_watchers {
+            let message = AccountState {
+                block_info: *block_info,
+                proof: current_version.get_proof(*account_address),
+            };
+            let mut closed = vec![];
+            for listener in &*listeners {
+                if listener.notify(message.clone()).is_err() {
+                    closed.push(listener.id());
+                }
+            }
+            for id in closed {
+                listeners.remove(&id);
+            }
+            if listeners.is_empty() {
+                empty_accounts.push(*account_address);
+            }
+        }
+        for address in &empty_accounts {
+            self.account_watchers.remove(address);
+        }
+    }
+
     fn notify_account_changes(&mut self, block_info: &BlockInfo) {
         let previous_version = self.accounts.get_version((self.blocks.len() - 2) as u64);
         let current_version = self.accounts.get_version((self.blocks.len() - 1) as u64);
@@ -827,6 +870,10 @@ impl Db {
             .get_latest_account_info(account_address)
     }
 
+    pub async fn watch_account(&self, account_address: Scalar) -> Receiver<AccountState> {
+        self.repr.lock().await.watch_account(account_address)
+    }
+
     pub async fn listen_for_account_changes(
         &self,
         account_address: Scalar,
@@ -849,6 +896,7 @@ impl Db {
         let mut repr = self.repr.lock().await;
         let block_info = repr.close_block(self.clock.now());
         repr.notify_block(&block_info);
+        repr.notify_accounts(&block_info);
         repr.notify_account_changes(&block_info);
         block_info
     }
@@ -857,6 +905,191 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+
+    fn parse_scalar(s: &str) -> Scalar {
+        utils::parse_scalar(s).unwrap()
+    }
+
+    #[test]
+    fn test_block_info1() {
+        let block_info = BlockInfo::new(
+            123,
+            12,
+            parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
+            parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68"),
+            parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce"),
+            parse_scalar("0x277b1387699dc9fe9636af621c72872278d290344266612ce6e79555664361c8"),
+            parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060"),
+        );
+        assert_eq!(
+            block_info.hash(),
+            parse_scalar("0x233ad3460c6a12bae72dbf6056ffdd08ef5a52016b345857153d0cb4ee8c6c9b")
+        );
+        assert_eq!(block_info.chain_id(), 123);
+        assert_eq!(block_info.number(), 12);
+        assert_eq!(
+            block_info.previous_block_hash(),
+            parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7")
+        );
+        assert_eq!(
+            block_info.timestamp(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(71104)
+        );
+        assert_eq!(
+            block_info.network_topology_root_hash(),
+            parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68")
+        );
+        assert_eq!(
+            block_info.last_transaction_hash(),
+            parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce")
+        );
+        assert_eq!(
+            block_info.accounts_root_hash(),
+            parse_scalar("0x277b1387699dc9fe9636af621c72872278d290344266612ce6e79555664361c8")
+        );
+        assert_eq!(
+            block_info.program_storage_root_hash(),
+            parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060")
+        );
+    }
+
+    #[test]
+    fn test_block_info2() {
+        let block_info = BlockInfo::new(
+            456,
+            34,
+            parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(40117),
+            parse_scalar("0x6850d697616cd6f003c99cc13840251db4c9e5bbf2a0daf24fdf371ed0fa0eb1"),
+            parse_scalar("0x5159768a2180cf64008a38917360b7811b1ca488390e76c71ed3c6602f48a51d"),
+            parse_scalar("0x367a546a703795bc1c3965eb037297dfe4956e4866b67e22d0b12995b9f4fbff"),
+            parse_scalar("0x5f2fd026dfc233c1e1adfbcd7c6b20280db9b33e12f493802a72b9a7f55f0a2"),
+        );
+        assert_eq!(
+            block_info.hash(),
+            parse_scalar("0x5cc2eaa017792482d14d6fbf56a432a28c4a390e0169e58892fae279c23ad022")
+        );
+        assert_eq!(block_info.chain_id(), 456);
+        assert_eq!(block_info.number(), 34);
+        assert_eq!(
+            block_info.previous_block_hash(),
+            parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b")
+        );
+        assert_eq!(
+            block_info.timestamp(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(40117)
+        );
+        assert_eq!(
+            block_info.network_topology_root_hash(),
+            parse_scalar("0x6850d697616cd6f003c99cc13840251db4c9e5bbf2a0daf24fdf371ed0fa0eb1")
+        );
+        assert_eq!(
+            block_info.last_transaction_hash(),
+            parse_scalar("0x5159768a2180cf64008a38917360b7811b1ca488390e76c71ed3c6602f48a51d")
+        );
+        assert_eq!(
+            block_info.accounts_root_hash(),
+            parse_scalar("0x367a546a703795bc1c3965eb037297dfe4956e4866b67e22d0b12995b9f4fbff")
+        );
+        assert_eq!(
+            block_info.program_storage_root_hash(),
+            parse_scalar("0x5f2fd026dfc233c1e1adfbcd7c6b20280db9b33e12f493802a72b9a7f55f0a2")
+        );
+    }
+
+    #[test]
+    fn test_encode_block_info1() {
+        let block_info = BlockInfo::new(
+            123,
+            12,
+            parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
+            parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68"),
+            parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce"),
+            parse_scalar("0x277b1387699dc9fe9636af621c72872278d290344266612ce6e79555664361c8"),
+            parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060"),
+        );
+        let block_descriptor = block_info.encode();
+        assert_eq!(block_info, BlockInfo::decode(&block_descriptor).unwrap());
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.block_hash.unwrap()).unwrap(),
+            parse_scalar("0x233ad3460c6a12bae72dbf6056ffdd08ef5a52016b345857153d0cb4ee8c6c9b")
+        );
+        assert_eq!(block_descriptor.chain_id, Some(123));
+        assert_eq!(block_descriptor.block_number, Some(12));
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.previous_block_hash.unwrap()).unwrap(),
+            parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7")
+        );
+        assert_eq!(
+            TryInto::<SystemTime>::try_into(block_descriptor.timestamp.unwrap()).unwrap(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(71104)
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.network_topology_root_hash.unwrap()).unwrap(),
+            parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68")
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.last_transaction_hash.unwrap()).unwrap(),
+            parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce")
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.accounts_root_hash.unwrap()).unwrap(),
+            parse_scalar("0x277b1387699dc9fe9636af621c72872278d290344266612ce6e79555664361c8")
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.program_storage_root_hash.unwrap()).unwrap(),
+            parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060")
+        );
+    }
+
+    #[test]
+    fn test_encode_block_info2() {
+        let block_info = BlockInfo::new(
+            456,
+            34,
+            parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(40117),
+            parse_scalar("0x6850d697616cd6f003c99cc13840251db4c9e5bbf2a0daf24fdf371ed0fa0eb1"),
+            parse_scalar("0x5159768a2180cf64008a38917360b7811b1ca488390e76c71ed3c6602f48a51d"),
+            parse_scalar("0x367a546a703795bc1c3965eb037297dfe4956e4866b67e22d0b12995b9f4fbff"),
+            parse_scalar("0x5f2fd026dfc233c1e1adfbcd7c6b20280db9b33e12f493802a72b9a7f55f0a2"),
+        );
+        let block_descriptor = block_info.encode();
+        assert_eq!(block_info, BlockInfo::decode(&block_descriptor).unwrap());
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.block_hash.unwrap()).unwrap(),
+            parse_scalar("0x5cc2eaa017792482d14d6fbf56a432a28c4a390e0169e58892fae279c23ad022")
+        );
+        assert_eq!(block_descriptor.chain_id, Some(456));
+        assert_eq!(block_descriptor.block_number, Some(34));
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.previous_block_hash.unwrap()).unwrap(),
+            parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b")
+        );
+        assert_eq!(
+            TryInto::<SystemTime>::try_into(block_descriptor.timestamp.unwrap()).unwrap(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(40117)
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.network_topology_root_hash.unwrap()).unwrap(),
+            parse_scalar("0x6850d697616cd6f003c99cc13840251db4c9e5bbf2a0daf24fdf371ed0fa0eb1")
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.last_transaction_hash.unwrap()).unwrap(),
+            parse_scalar("0x5159768a2180cf64008a38917360b7811b1ca488390e76c71ed3c6602f48a51d")
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.accounts_root_hash.unwrap()).unwrap(),
+            parse_scalar("0x367a546a703795bc1c3965eb037297dfe4956e4866b67e22d0b12995b9f4fbff")
+        );
+        assert_eq!(
+            proto::decode_scalar(&block_descriptor.program_storage_root_hash.unwrap()).unwrap(),
+            parse_scalar("0x5f2fd026dfc233c1e1adfbcd7c6b20280db9b33e12f493802a72b9a7f55f0a2")
+        );
+    }
 
     // TODO
 }
