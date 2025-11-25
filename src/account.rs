@@ -241,6 +241,7 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::parse_scalar;
     use primitive_types::H256;
     use std::time::Duration;
 
@@ -249,10 +250,7 @@ mod tests {
         let account = testing::account1();
         assert_eq!(
             account.address(),
-            utils::parse_scalar(
-                "0x28fe947cabf1257baba35b31ba1f1ae837d20c4b0dbcf15b23c5e2afa7d0e369"
-            )
-            .unwrap()
+            parse_scalar("0x28fe947cabf1257baba35b31ba1f1ae837d20c4b0dbcf15b23c5e2afa7d0e369")
         );
         assert_eq!(
             account.public_key(),
@@ -272,10 +270,7 @@ mod tests {
         println!("{}", utils::format_scalar(account.address()));
         assert_eq!(
             account.address(),
-            utils::parse_scalar(
-                "0x3725571def3264422951c9225e5f9c16bb68b15f1c58ccae131b8d13d15213f2"
-            )
-            .unwrap()
+            parse_scalar("0x3725571def3264422951c9225e5f9c16bb68b15f1c58ccae131b8d13d15213f2")
         );
         assert_eq!(
             account.public_key(),
@@ -289,10 +284,7 @@ mod tests {
         let account = testing::account3();
         assert_eq!(
             account.address(),
-            utils::parse_scalar(
-                "0x5858d1799bf539667a0c48bed0c019ac2da886f85218e902dd147c59a99c397"
-            )
-            .unwrap()
+            parse_scalar("0x5858d1799bf539667a0c48bed0c019ac2da886f85218e902dd147c59a99c397")
         );
         assert_eq!(
             account.public_key(),

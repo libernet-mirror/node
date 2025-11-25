@@ -48,6 +48,7 @@ impl NodeServiceV1 for FakeNodeService {
     ) -> Result<Response<libernet::GetBlockResponse>, Status> {
         Ok(Response::new(libernet::GetBlockResponse {
             block_descriptor: None,
+            transaction_hash: vec![],
         }))
     }
 

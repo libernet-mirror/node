@@ -215,6 +215,33 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    fn hash_block_reward_transaction(
+        parent_hash: Scalar,
+        chain_id: u64,
+        nonce: u64,
+        sender_address: Scalar,
+        transaction: &libernet::transaction::BlockReward,
+    ) -> Result<Scalar> {
+        Ok(utils::poseidon_hash(&[
+            parent_hash,
+            sender_address,
+            chain_id.into(),
+            nonce.into(),
+            proto::decode_scalar(
+                transaction
+                    .recipient
+                    .as_ref()
+                    .context("invalid block reward transaction: recipient field is missing")?,
+            )?,
+            proto::decode_scalar(
+                transaction
+                    .amount
+                    .as_ref()
+                    .context("invalid block reward transaction: amount field is missing")?,
+            )?,
+        ]))
+    }
+
     fn hash_send_coins_transaction(
         parent_hash: Scalar,
         chain_id: u64,
@@ -261,6 +288,15 @@ impl Transaction {
                 .context("invalid transaction signature")?,
         )?;
         let hash = match &decoded.transaction.context("invalid transaction")? {
+            libernet::transaction::payload::Transaction::BlockReward(transaction) => {
+                Self::hash_block_reward_transaction(
+                    parent_hash,
+                    chain_id,
+                    nonce,
+                    signer,
+                    transaction,
+                )
+            }
             libernet::transaction::payload::Transaction::SendCoins(transaction) => {
                 Self::hash_send_coins_transaction(parent_hash, chain_id, nonce, signer, transaction)
             }
@@ -287,14 +323,37 @@ impl Transaction {
         Self::from_proto_impl(parent_hash, payload, signature)
     }
 
-    pub fn make_coin_transfer_proto(
-        account: &account::Account,
+    pub fn make_block_reward_proto(
+        signer: &account::Account,
         chain_id: u64,
         nonce: u64,
         recipient_address: Scalar,
         amount: Scalar,
     ) -> Result<libernet::Transaction> {
-        let (payload, signature) = account.sign_message(&libernet::transaction::Payload {
+        let (payload, signature) = signer.sign_message(&libernet::transaction::Payload {
+            chain_id: Some(chain_id),
+            nonce: Some(nonce),
+            transaction: Some(libernet::transaction::payload::Transaction::BlockReward(
+                libernet::transaction::BlockReward {
+                    recipient: Some(proto::encode_scalar(recipient_address)),
+                    amount: Some(proto::encode_scalar(amount)),
+                },
+            )),
+        })?;
+        Ok(libernet::Transaction {
+            payload: Some(payload),
+            signature: Some(signature),
+        })
+    }
+
+    pub fn make_coin_transfer_proto(
+        signer: &account::Account,
+        chain_id: u64,
+        nonce: u64,
+        recipient_address: Scalar,
+        amount: Scalar,
+    ) -> Result<libernet::Transaction> {
+        let (payload, signature) = signer.sign_message(&libernet::transaction::Payload {
             chain_id: Some(chain_id),
             nonce: Some(nonce),
             transaction: Some(libernet::transaction::payload::Transaction::SendCoins(
@@ -513,7 +572,7 @@ impl Repr {
         Ok(Self {
             chain_id,
             blocks: vec![genesis_block],
-            block_numbers_by_hash: BTreeMap::from([(genesis_block.hash, 0)]),
+            block_numbers_by_hash: BTreeMap::from([(genesis_block.hash(), 0)]),
             network_topologies: BTreeMap::from([(0, network)]),
             transactions: vec![],
             transactions_by_hash: BTreeMap::new(),
@@ -563,25 +622,25 @@ impl Repr {
         &self,
         account_address: Scalar,
         block_hash: Scalar,
-    ) -> Result<(BlockInfo, tree::AccountProof)> {
+    ) -> Result<AccountState> {
         match self.get_block_by_hash(block_hash) {
-            Some(block) => Ok((
-                block,
-                self.accounts.get_proof(account_address, block.number),
+            Some(block) => Ok(AccountState {
+                block_info: block,
+                proof: self.accounts.get_proof(account_address, block.number()),
+            }),
+            None => Err(anyhow!(
+                "block {} not found",
+                utils::format_scalar(block_hash)
             )),
-            None => Err(anyhow!("block not found")),
         }
     }
 
-    fn get_latest_account_info(
-        &self,
-        account_address: Scalar,
-    ) -> Result<(BlockInfo, tree::AccountProof)> {
+    fn get_latest_account_info(&self, account_address: Scalar) -> Result<AccountState> {
         let block = self.get_latest_block();
-        Ok((
-            block,
-            self.accounts.get_proof(account_address, block.number),
-        ))
+        Ok(AccountState {
+            block_info: block,
+            proof: self.accounts.get_proof(account_address, block.number()),
+        })
     }
 
     fn watch_account(&mut self, account_address: Scalar) -> Receiver<AccountState> {
@@ -617,6 +676,50 @@ impl Repr {
     fn get_transaction(&self, hash: Scalar) -> Option<Transaction> {
         let index = *(self.transactions_by_hash.get(&hash)?);
         Some(self.transactions[index].clone())
+    }
+
+    fn get_all_block_transaction_hashes(&self, block_number: usize) -> Result<Vec<Scalar>> {
+        if block_number >= self.blocks.len() {
+            return Err(anyhow!("block #{} not found", block_number));
+        }
+        let block_info = self.blocks[block_number];
+        let previous_transaction_hash = if block_number > 0 {
+            self.blocks[block_number - 1].last_transaction_hash()
+        } else {
+            0.into()
+        };
+        let mut transaction_hashes = vec![];
+        let mut hash = block_info.last_transaction_hash();
+        while hash != previous_transaction_hash {
+            transaction_hashes.push(hash);
+            let index = *self.transactions_by_hash.get(&hash).unwrap();
+            hash = self.transactions[index].parent_hash();
+        }
+        transaction_hashes.reverse();
+        Ok(transaction_hashes)
+    }
+
+    fn apply_block_reward_transaction(
+        &mut self,
+        payload: &libernet::transaction::BlockReward,
+    ) -> Result<()> {
+        let version = self.current_version();
+        let recipient = proto::decode_scalar(
+            payload
+                .recipient
+                .as_ref()
+                .context("invalid block reward transaction payload: missing recipient")?,
+        )?;
+        let amount = proto::decode_scalar(
+            payload
+                .amount
+                .as_ref()
+                .context("invalid block reward transaction payload: missing amount")?,
+        )?;
+        let mut recipient_account = *self.accounts.get(recipient, version);
+        recipient_account.balance += amount;
+        self.accounts.put(recipient, recipient_account, version);
+        Ok(())
     }
 
     fn apply_send_coins_transaction(
@@ -655,7 +758,11 @@ impl Repr {
         Ok(())
     }
 
-    fn apply_transaction(&mut self, transaction: &Transaction) -> Result<()> {
+    fn apply_transaction(
+        &mut self,
+        transaction: &Transaction,
+        fail_on_block_reward: bool,
+    ) -> Result<()> {
         let signer = transaction.signer();
         let payload = &transaction.payload();
         if payload.chain_id() != self.chain_id {
@@ -677,6 +784,13 @@ impl Repr {
             ));
         }
         match &payload.transaction {
+            Some(libernet::transaction::payload::Transaction::BlockReward(payload)) => {
+                if fail_on_block_reward {
+                    Err(anyhow!("block reward transactions may not be broadcast"))
+                } else {
+                    self.apply_block_reward_transaction(payload)
+                }
+            }
             Some(libernet::transaction::payload::Transaction::SendCoins(payload)) => {
                 self.apply_send_coins_transaction(signer, payload)
             }
@@ -691,14 +805,18 @@ impl Repr {
         Ok(())
     }
 
-    fn add_transaction(&mut self, transaction: &libernet::Transaction) -> Result<Scalar> {
+    fn add_transaction(
+        &mut self,
+        transaction: &libernet::Transaction,
+        fail_on_block_reward: bool,
+    ) -> Result<Scalar> {
         let parent_hash = match self.transactions.last() {
             Some(last_transaction) => last_transaction.hash(),
             None => Scalar::ZERO,
         };
         let transaction = Transaction::from_proto(parent_hash, transaction.clone())?;
         let hash = transaction.hash();
-        self.apply_transaction(&transaction)?;
+        self.apply_transaction(&transaction, fail_on_block_reward)?;
         let index = self.transactions.len();
         self.transactions.push(transaction);
         self.transactions_by_hash.insert(hash, index);
@@ -853,17 +971,14 @@ impl Db {
         &self,
         account_address: Scalar,
         block_hash: Scalar,
-    ) -> Result<(BlockInfo, tree::AccountProof)> {
+    ) -> Result<AccountState> {
         self.repr
             .lock()
             .await
             .get_account_info(account_address, block_hash)
     }
 
-    pub async fn get_latest_account_info(
-        &self,
-        account_address: Scalar,
-    ) -> Result<(BlockInfo, tree::AccountProof)> {
+    pub async fn get_latest_account_info(&self, account_address: Scalar) -> Result<AccountState> {
         self.repr
             .lock()
             .await
@@ -888,8 +1003,28 @@ impl Db {
         self.repr.lock().await.get_transaction(hash)
     }
 
+    pub async fn get_all_block_transaction_hashes(
+        &self,
+        block_number: usize,
+    ) -> Result<Vec<Scalar>> {
+        self.repr
+            .lock()
+            .await
+            .get_all_block_transaction_hashes(block_number)
+    }
+
     pub async fn add_transaction(&self, transaction: &libernet::Transaction) -> Result<Scalar> {
-        self.repr.lock().await.add_transaction(transaction)
+        self.repr.lock().await.add_transaction(transaction, false)
+    }
+
+    /// This method is the same as `add_transaction` except that it fails if the payload is a block
+    /// reward transaction. The `BroadcastTransaction` RPC must be served using this method because
+    /// block reward transactions may not be broadcast.
+    pub async fn add_transaction_blocking_rewards(
+        &self,
+        transaction: &libernet::Transaction,
+    ) -> Result<Scalar> {
+        self.repr.lock().await.add_transaction(transaction, true)
     }
 
     pub async fn close_block(&self) -> BlockInfo {
@@ -905,11 +1040,8 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::parse_scalar;
     use std::time::Duration;
-
-    fn parse_scalar(s: &str) -> Scalar {
-        utils::parse_scalar(s).unwrap()
-    }
 
     #[test]
     fn test_block_info1() {

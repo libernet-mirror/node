@@ -1,11 +1,11 @@
 use crate::account::Account;
 use crate::clock::Clock;
+use crate::constants::{self, BLOCK_REWARD_DENOMINATOR_LOG2, BLOCK_REWARD_NUMERATOR};
 use crate::db;
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
 use crate::net;
 use crate::proto;
-use crate::tree::{self, AccountInfo};
-use crate::version;
+use crate::tree::AccountInfo;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
 use crypto::{signer::BlsVerifier, utils};
@@ -105,6 +105,7 @@ impl Stream for SubscribeToAccountStream {
 }
 
 pub struct NodeServiceImpl {
+    chain_id: u64,
     account: Arc<Account>,
     identity: libernet::node_identity::Payload,
     db: Arc<db::Db>,
@@ -114,9 +115,9 @@ pub struct NodeServiceImpl {
 impl NodeServiceImpl {
     fn get_protocol_version() -> libernet::ProtocolVersion {
         libernet::ProtocolVersion {
-            major: Some(version::PROTOCOL_VERSION_MAJOR),
-            minor: Some(version::PROTOCOL_VERSION_MINOR),
-            build: Some(version::PROTOCOL_VERSION_BUILD),
+            major: Some(constants::PROTOCOL_VERSION_MAJOR),
+            minor: Some(constants::PROTOCOL_VERSION_MINOR),
+            build: Some(constants::PROTOCOL_VERSION_BUILD),
         }
     }
 
@@ -167,6 +168,7 @@ impl NodeServiceImpl {
         );
         let (identity_payload, identity_signature) = account.sign_message(&identity)?;
         let service = Arc::new(Self {
+            chain_id,
             account,
             identity,
             db: Arc::new(db::Db::new(
@@ -207,9 +209,35 @@ impl NodeServiceImpl {
         self.account.sign_message(message)
     }
 
+    async fn add_block_rewards(&self) {
+        let account = self
+            .db
+            .get_latest_account_info(self.account.address())
+            .await
+            .unwrap();
+        let account = account.account_info();
+        let reward = (account.staking_balance * Scalar::from(BLOCK_REWARD_NUMERATOR))
+            .shr(BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
+            - account.staking_balance;
+        self.db
+            .add_transaction(
+                &db::Transaction::make_block_reward_proto(
+                    &*self.account,
+                    self.chain_id,
+                    account.last_nonce + 1,
+                    self.account.address(),
+                    reward,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+    }
+
     fn start_block_timer(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
+                self.add_block_rewards().await;
                 tokio::select! {
                     _ = sleep(Duration::from_secs(10)) => {
                         let block = self.db.close_block().await;
@@ -251,7 +279,7 @@ impl NodeServiceImpl {
     async fn get_account_impl(
         &self,
         request: &libernet::GetAccountRequest,
-    ) -> Result<(db::BlockInfo, tree::AccountProof), Status> {
+    ) -> Result<db::AccountState, Status> {
         let account_address = proto::decode_scalar(
             request
                 .account_address
@@ -324,6 +352,20 @@ impl NodeServiceImpl {
             ))),
         }
     }
+
+    async fn get_all_block_transaction_hashes(
+        &self,
+        block_number: u64,
+    ) -> Result<Vec<libernet::Scalar>, Status> {
+        Ok(self
+            .db
+            .get_all_block_transaction_hashes(block_number as usize)
+            .await
+            .map_err(|_| Status::internal("unable to fetch transaction hashes"))?
+            .iter()
+            .map(|hash| proto::encode_scalar(*hash))
+            .collect())
+    }
 }
 
 impl Drop for NodeServiceImpl {
@@ -388,9 +430,18 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetBlockRequest>,
     ) -> Result<Response<libernet::GetBlockResponse>, Status> {
-        let block_info = self.inner.get_block_impl(request.get_ref()).await?;
+        let request = request.get_ref();
+        let block_info = self.inner.get_block_impl(request).await?;
+        let transaction_hashes = if request.get_all_transaction_hashes() {
+            self.inner
+                .get_all_block_transaction_hashes(block_info.number())
+                .await?
+        } else {
+            vec![]
+        };
         Ok(Response::new(libernet::GetBlockResponse {
             block_descriptor: Some(block_info.encode()),
+            transaction_hash: transaction_hashes,
         }))
     }
 
@@ -415,9 +466,9 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetAccountRequest>,
     ) -> Result<Response<libernet::GetAccountResponse>, Status> {
-        let (block_info, proof) = self.inner.get_account_impl(request.get_ref()).await?;
-        let proof_proto = proof
-            .encode(block_info.encode())
+        let account = self.inner.get_account_impl(request.get_ref()).await?;
+        let proof_proto = account
+            .encode()
             .map_err(|_| Status::internal("internal error"))?;
         Ok(Response::new(libernet::GetAccountResponse {
             account_proof: Some(proof_proto),
@@ -467,7 +518,7 @@ impl NodeServiceV1 for NodeService {
             .map_err(|_| Status::invalid_argument("invalid transaction signature"))?;
         self.inner
             .db
-            .add_transaction(transaction)
+            .add_transaction_blocking_rewards(transaction)
             .await
             .map_err(|_| Status::internal("transaction error"))?;
         Ok(Response::new(libernet::BroadcastTransactionResponse {}))
@@ -491,20 +542,33 @@ mod tests {
         node_service_v1_client::NodeServiceV1Client, node_service_v1_server::NodeServiceV1Server,
     };
     use crate::net;
+    use crate::testing::parse_scalar;
+    use crate::tree;
     use anyhow::{Result, anyhow};
     use futures::StreamExt;
     use primitive_types::H256;
-    use tokio::{sync::Notify, task::JoinHandle, task::yield_now};
+    use tokio::{sync::Mutex, sync::Notify, task::JoinHandle, task::yield_now};
     use tonic::transport::{Channel, Server};
 
+    const COIN_UNIT: u64 = 1_000_000_000_000_000_000u64;
+
     const TEST_CHAIN_ID: u64 = 42;
+
+    fn coins(number: u64) -> Scalar {
+        Scalar::from(number) * Scalar::from(COIN_UNIT)
+    }
+
+    fn reward_for(stake: Scalar) -> Scalar {
+        (stake * Scalar::from(BLOCK_REWARD_NUMERATOR)).shr(BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
+            - stake
+    }
 
     struct TestFixture {
         clock: Arc<MockClock>,
         server_account: Arc<Account>,
         client_account: Arc<Account>,
         server_handle: JoinHandle<()>,
-        client: NodeServiceV1Client<Channel>,
+        client: Mutex<NodeServiceV1Client<Channel>>,
     }
 
     impl TestFixture {
@@ -572,7 +636,7 @@ mod tests {
             )
             .await
             .unwrap();
-            let client = NodeServiceV1Client::new(channel);
+            let client = Mutex::new(NodeServiceV1Client::new(channel));
 
             Ok(Self {
                 clock,
@@ -583,33 +647,66 @@ mod tests {
             })
         }
 
-        async fn with_initial_balances<const N: usize>(
-            initial_balances: [(Scalar, Scalar); N],
-        ) -> Result<Self> {
+        async fn default() -> Result<Self> {
+            let address1 = testing::account1().address();
+            let address2 = testing::account2().address();
+            let address3 = testing::account3().address();
+            let address4 = testing::account4().address();
             Self::new(
                 libernet::GeographicalLocation {
                     latitude: Some(71i32),
                     longitude: Some(104u32),
                 },
-                initial_balances
-                    .map(|(address, balance)| (address, AccountInfo::with_balance(balance))),
+                [
+                    (
+                        address1,
+                        AccountInfo {
+                            last_nonce: 12,
+                            balance: coins(90),
+                            staking_balance: coins(78),
+                        },
+                    ),
+                    (
+                        address2,
+                        AccountInfo {
+                            last_nonce: 34,
+                            balance: coins(56),
+                            staking_balance: 0.into(),
+                        },
+                    ),
+                    (
+                        address3,
+                        AccountInfo {
+                            last_nonce: 56,
+                            balance: coins(34),
+                            staking_balance: 0.into(),
+                        },
+                    ),
+                    (
+                        address4,
+                        AccountInfo {
+                            last_nonce: 78,
+                            balance: coins(12),
+                            staking_balance: 0.into(),
+                        },
+                    ),
+                ],
             )
             .await
-        }
-
-        async fn default() -> Result<Self> {
-            Self::with_initial_balances([]).await
         }
 
         fn clock(&self) -> &Arc<MockClock> {
             &self.clock
         }
 
-        async fn get_block(&mut self, block_hash: Option<Scalar>) -> Result<db::BlockInfo> {
+        async fn get_block(&self, block_hash: Option<Scalar>) -> Result<db::BlockInfo> {
             let response = self
                 .client
+                .lock()
+                .await
                 .get_block(libernet::GetBlockRequest {
                     block_hash: block_hash.map(proto::encode_scalar),
+                    get_all_transaction_hashes: Some(false),
                 })
                 .await?;
             let block_descriptor = response
@@ -620,13 +717,46 @@ mod tests {
             Ok(db::BlockInfo::decode(block_descriptor)?)
         }
 
+        async fn get_block_and_transactions(
+            &self,
+            block_hash: Option<Scalar>,
+        ) -> Result<(db::BlockInfo, Vec<db::Transaction>)> {
+            let response = self
+                .client
+                .lock()
+                .await
+                .get_block(libernet::GetBlockRequest {
+                    block_hash: block_hash.map(proto::encode_scalar),
+                    get_all_transaction_hashes: Some(true),
+                })
+                .await?
+                .into_inner();
+            let block_descriptor = response
+                .block_descriptor
+                .as_ref()
+                .context("missing block descriptor")?;
+            let tasks = response
+                .transaction_hash
+                .iter()
+                .map(async |hash| {
+                    Ok::<_, anyhow::Error>(self.get_transaction(proto::decode_scalar(hash)?).await?)
+                })
+                .collect::<Vec<_>>();
+            Ok((
+                db::BlockInfo::decode(block_descriptor)?,
+                futures::future::try_join_all(tasks).await?,
+            ))
+        }
+
         async fn get_account(
-            &mut self,
+            &self,
             address: Scalar,
             block_hash: Option<Scalar>,
         ) -> Result<AccountInfo> {
             let response = self
                 .client
+                .lock()
+                .await
                 .get_account(libernet::GetAccountRequest {
                     account_address: Some(proto::encode_scalar(address)),
                     block_hash: block_hash.map(proto::encode_scalar),
@@ -656,18 +786,17 @@ mod tests {
             Ok(*proof.value())
         }
 
-        async fn get_transaction(&mut self, transaction_hash: Scalar) -> Result<db::Transaction> {
-            let response = self
+        async fn get_transaction(&self, transaction_hash: Scalar) -> Result<db::Transaction> {
+            let transaction = self
                 .client
+                .lock()
+                .await
                 .get_transaction(libernet::GetTransactionRequest {
                     transaction_hash: Some(proto::encode_scalar(transaction_hash)),
                 })
-                .await
-                .unwrap();
-            let transaction = response
-                .get_ref()
+                .await?
+                .into_inner()
                 .transaction
-                .as_ref()
                 .context("missing transaction data")?;
             let parent_transaction_hash = proto::decode_scalar(
                 transaction
@@ -677,13 +806,44 @@ mod tests {
             )?;
             db::Transaction::from_proto_verify(
                 parent_transaction_hash,
-                response
-                    .into_inner()
-                    .transaction
-                    .unwrap()
+                transaction
                     .transaction
                     .context("missing transaction diff")?,
             )
+        }
+
+        async fn get_last_transaction(&self) -> Result<db::Transaction> {
+            let block_info = self.get_block(None).await?;
+            self.get_transaction(block_info.last_transaction_hash())
+                .await
+        }
+
+        async fn send_coins(
+            &self,
+            signer: &Account,
+            nonce: u64,
+            recipient_address: Scalar,
+            amount: Scalar,
+        ) -> Result<libernet::BroadcastTransactionResponse> {
+            Ok(self
+                .client
+                .lock()
+                .await
+                .broadcast_transaction(libernet::BroadcastTransactionRequest {
+                    transaction: Some(
+                        db::Transaction::make_coin_transfer_proto(
+                            signer,
+                            TEST_CHAIN_ID,
+                            nonce,
+                            recipient_address,
+                            amount,
+                        )
+                        .unwrap(),
+                    ),
+                    ttl: Some(1),
+                })
+                .await?
+                .into_inner())
         }
     }
 
@@ -694,16 +854,17 @@ mod tests {
     }
 
     fn default_genesis_block_hash() -> Scalar {
-        utils::parse_scalar("0x5eeae7a6b309c8843a8368e7c790df9929a161f2a6240c889877698fef62f4c7")
-            .unwrap()
+        parse_scalar("0x5f35dde73f21b5cccd444053add1c36cc9aaab4d4813a7c4d902d870245ca007")
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_identity() {
-        let mut fixture = TestFixture::default().await.unwrap();
-        let client = &mut fixture.client;
+        let fixture = TestFixture::default().await.unwrap();
 
-        let response = client
+        let response = fixture
+            .client
+            .lock()
+            .await
             .get_identity(libernet::GetIdentityRequest::default())
             .await
             .unwrap();
@@ -719,15 +880,15 @@ mod tests {
         let protocol_version = &payload.protocol_version.unwrap();
         assert_eq!(
             protocol_version.major.unwrap(),
-            version::PROTOCOL_VERSION_MAJOR
+            constants::PROTOCOL_VERSION_MAJOR
         );
         assert_eq!(
             protocol_version.minor.unwrap(),
-            version::PROTOCOL_VERSION_MINOR
+            constants::PROTOCOL_VERSION_MINOR
         );
         assert_eq!(
             protocol_version.build.unwrap(),
-            version::PROTOCOL_VERSION_BUILD
+            constants::PROTOCOL_VERSION_BUILD
         );
 
         assert_eq!(
@@ -746,7 +907,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_get_genesis_block() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
         let block_info = fixture
             .get_block(Some(default_genesis_block_hash()))
             .await
@@ -756,70 +917,52 @@ mod tests {
         assert_eq!(block_info.previous_block_hash(), 0.into());
         assert_eq!(
             block_info.network_topology_root_hash(),
-            utils::parse_scalar(
-                "0x4800c8c37ce52cacc52188a8ee04dec60f9a88ab5e930334a4165861e14656cb"
-            )
-            .unwrap()
+            parse_scalar("0x4800c8c37ce52cacc52188a8ee04dec60f9a88ab5e930334a4165861e14656cb")
         );
         assert_eq!(
             block_info.accounts_root_hash(),
-            utils::parse_scalar(
-                "0x09d8fc5eccc46993858b47fb2da64d04118fac5ff0ce6664107550cab923c6a2"
-            )
-            .unwrap()
+            parse_scalar("0x1f2837974618c83976dd58c70c30395fbe44112b89e04d9ae787197f75a95f89")
         );
         assert_eq!(
             block_info.program_storage_root_hash(),
-            utils::parse_scalar(
-                "0x3c1316ed223e30eb6b4e6e2d2d2f13039301f08aee3ee06cc0a2318477a439e9"
-            )
-            .unwrap()
+            parse_scalar("0x3c1316ed223e30eb6b4e6e2d2d2f13039301f08aee3ee06cc0a2318477a439e9")
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_get_latest_block_at_genesis() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
         let block_info = fixture.get_block(None).await.unwrap();
         assert_eq!(block_info.hash(), default_genesis_block_hash());
         assert_eq!(block_info.number(), 0);
         assert_eq!(block_info.previous_block_hash(), 0.into());
         assert_eq!(
             block_info.network_topology_root_hash(),
-            utils::parse_scalar(
-                "0x4800c8c37ce52cacc52188a8ee04dec60f9a88ab5e930334a4165861e14656cb"
-            )
-            .unwrap()
+            parse_scalar("0x4800c8c37ce52cacc52188a8ee04dec60f9a88ab5e930334a4165861e14656cb")
         );
         assert_eq!(
             block_info.accounts_root_hash(),
-            utils::parse_scalar(
-                "0x09d8fc5eccc46993858b47fb2da64d04118fac5ff0ce6664107550cab923c6a2"
-            )
-            .unwrap()
+            parse_scalar("0x1f2837974618c83976dd58c70c30395fbe44112b89e04d9ae787197f75a95f89")
         );
         assert_eq!(
             block_info.program_storage_root_hash(),
-            utils::parse_scalar(
-                "0x3c1316ed223e30eb6b4e6e2d2d2f13039301f08aee3ee06cc0a2318477a439e9"
-            )
-            .unwrap()
+            parse_scalar("0x3c1316ed223e30eb6b4e6e2d2d2f13039301f08aee3ee06cc0a2318477a439e9")
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_get_unknown_block() {
-        let mut fixture = TestFixture::default().await.unwrap();
-        let client = &mut fixture.client;
+        let fixture = TestFixture::default().await.unwrap();
         assert!(
-            client
+            fixture
+                .client
+                .lock()
+                .await
                 .get_block(libernet::GetBlockRequest {
-                    block_hash: Some(proto::encode_scalar(
-                        utils::parse_scalar(
-                            "0x375830d6862157562431f637dcb4aa91e2bba7220abfa58b7618a713e9bb8803"
-                        )
-                        .unwrap()
-                    )),
+                    block_hash: Some(proto::encode_scalar(parse_scalar(
+                        "0x375830d6862157562431f637dcb4aa91e2bba7220abfa58b7618a713e9bb8803"
+                    ))),
+                    get_all_transaction_hashes: Some(false),
                 })
                 .await
                 .is_err()
@@ -828,7 +971,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_get_default_initial_account_balance() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
         let account_info = fixture
             .get_account(
                 testing::account3().address(),
@@ -836,60 +979,41 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(account_info, AccountInfo::with_balance(0.into()));
+        assert_eq!(
+            account_info,
+            AccountInfo {
+                last_nonce: 56,
+                balance: coins(34),
+                staking_balance: 0.into(),
+            }
+        );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_get_latest_account_balance_at_genesis() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
         let account_info = fixture
             .get_account(testing::account3().address(), None)
             .await
             .unwrap();
-        assert_eq!(account_info, AccountInfo::with_balance(0.into()));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_get_initial_account_state() {
-        let account = testing::account3();
-
-        let mut fixture = TestFixture::with_initial_balances([(account.address(), 123.into())])
-            .await
-            .unwrap();
-        let client = &mut fixture.client;
-
-        let response = client
-            .get_account(libernet::GetAccountRequest {
-                account_address: Some(proto::encode_scalar(account.address())),
-                block_hash: None,
-            })
-            .await
-            .unwrap();
-        let proof_proto = response.get_ref().account_proof.as_ref().unwrap();
-
-        let block_info =
-            db::BlockInfo::decode(proof_proto.block_descriptor.as_ref().unwrap()).unwrap();
         assert_eq!(
-            block_info.hash(),
-            utils::parse_scalar(
-                "0x1abcdbb5ac82d5e17d8ae4f9b83da68e8b636e1c736be3a4691254911c18c7a1"
-            )
-            .unwrap()
+            account_info,
+            AccountInfo {
+                last_nonce: 56,
+                balance: coins(34),
+                staking_balance: 0.into(),
+            }
         );
-
-        let proof =
-            tree::AccountProof::decode_and_verify(&proof_proto, block_info.accounts_root_hash())
-                .unwrap();
-        assert_eq!(proof.key(), account.address());
-        assert_eq!(*proof.value(), AccountInfo::with_balance(123.into()));
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_get_invalid_account_balance1() {
-        let mut fixture = TestFixture::default().await.unwrap();
-        let client = &mut fixture.client;
+        let fixture = TestFixture::default().await.unwrap();
         assert!(
-            client
+            fixture
+                .client
+                .lock()
+                .await
                 .get_account(libernet::GetAccountRequest {
                     account_address: None,
                     block_hash: Some(proto::encode_scalar(default_genesis_block_hash())),
@@ -901,10 +1025,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_get_invalid_account_balance2() {
-        let mut fixture = TestFixture::default().await.unwrap();
-        let client = &mut fixture.client;
+        let fixture = TestFixture::default().await.unwrap();
         assert!(
-            client
+            fixture
+                .client
+                .lock()
+                .await
                 .get_account(libernet::GetAccountRequest {
                     account_address: None,
                     block_hash: None,
@@ -916,10 +1042,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_invalid_transaction_lookup() {
-        let mut fixture = TestFixture::default().await.unwrap();
-        let client = &mut fixture.client;
+        let fixture = TestFixture::default().await.unwrap();
         assert!(
-            client
+            fixture
+                .client
+                .lock()
+                .await
                 .get_transaction(libernet::GetTransactionRequest {
                     transaction_hash: None,
                 })
@@ -930,10 +1058,12 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_get_unknown_transaction() {
-        let mut fixture = TestFixture::default().await.unwrap();
-        let client = &mut fixture.client;
+        let fixture = TestFixture::default().await.unwrap();
         assert!(
-            client
+            fixture
+                .client
+                .lock()
+                .await
                 .get_transaction(libernet::GetTransactionRequest {
                     transaction_hash: Some(proto::encode_h256(H256::zero())),
                 })
@@ -944,7 +1074,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_block_closure() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         let block_info = fixture.get_block(None).await.unwrap();
         assert_eq!(block_info.number(), 0);
@@ -957,10 +1087,50 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.hash(),
-            utils::parse_scalar(
-                "0x170e647bfa7c9d1361c4554ed6ef02bef36033701cea301123d8c405aa05bc95"
-            )
-            .unwrap()
+            parse_scalar("0x35fa6c9f9339b96651417e2ed86605d28318842d5feba66b4f95db78830e7066")
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_reward_transaction() {
+        let account1 = testing::account1();
+        let fixture = TestFixture::default().await.unwrap();
+
+        fixture.clock().advance(Duration::from_secs(10)).await;
+        yield_now().await;
+
+        let (block_info, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
+        assert_eq!(transactions.len(), 1);
+
+        let transaction = &transactions[0];
+        assert_eq!(block_info.last_transaction_hash(), transaction.hash());
+        let payload = transaction.payload();
+        assert_eq!(transaction.parent_hash(), 0.into());
+        assert_eq!(transaction.signer(), account1.address());
+        assert_eq!(payload.chain_id(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce(), 13);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::BlockReward(payload) => {
+                assert_eq!(
+                    proto::decode_scalar(payload.recipient.as_ref().unwrap()).unwrap(),
+                    account1.address()
+                );
+                assert_eq!(
+                    proto::decode_scalar(payload.amount.as_ref().unwrap()).unwrap(),
+                    reward_for(coins(78))
+                );
+            }
+            _ => panic!(),
+        }
+
+        let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
+        assert_eq!(
+            account1_info,
+            AccountInfo {
+                last_nonce: 13,
+                balance: coins(90) + reward_for(coins(78)),
+                staking_balance: coins(78),
+            }
         );
     }
 
@@ -968,197 +1138,147 @@ mod tests {
     async fn test_pending_transaction() {
         let account1 = testing::account3();
         let account2 = testing::account4();
-
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
-
-        let transaction = db::Transaction::from_proto(
-            0.into(),
-            db::Transaction::make_coin_transfer_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                1,
-                account2.address(),
-                12.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(transaction.diff()),
-                ttl: Some(1),
-            })
+            .send_coins(&account1, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
-        let response = fixture
-            .client
-            .get_transaction(libernet::GetTransactionRequest {
-                transaction_hash: Some(proto::encode_scalar(transaction.hash())),
-            })
-            .await
-            .unwrap();
-        let transaction = response.get_ref().transaction.as_ref().unwrap();
-        assert_eq!(
-            proto::decode_scalar(transaction.parent_transaction_hash.as_ref().unwrap()).unwrap(),
-            0.into()
-        );
-        let diff = transaction.transaction.as_ref().unwrap();
-        let payload = diff.payload.as_ref().unwrap();
-        assert!(Account::verify_signed_message(payload, diff.signature.as_ref().unwrap()).is_ok());
-        let payload = payload.to_msg::<libernet::transaction::Payload>().unwrap();
-        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
-        assert_eq!(payload.nonce.unwrap(), 1);
-        match payload.transaction.as_ref().unwrap() {
-            libernet::transaction::payload::Transaction::SendCoins(send_coins) => {
-                assert_eq!(
-                    proto::decode_scalar(send_coins.recipient.as_ref().unwrap()).unwrap(),
-                    account2.address(),
-                );
-                assert_eq!(
-                    proto::decode_scalar(send_coins.amount.as_ref().unwrap()).unwrap(),
-                    12.into()
-                );
-            }
-            _ => panic!(),
-        }
+        let (_, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
+        assert!(transactions.is_empty());
+
+        assert!(fixture.get_last_transaction().await.is_err());
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 0);
-        assert_eq!(account1_info.balance, 56.into());
+        assert_eq!(account1_info.last_nonce, 56);
+        assert_eq!(account1_info.balance, coins(34));
         assert_eq!(account1_info.staking_balance, 0.into());
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 0);
-        assert_eq!(account2_info.balance, 34.into());
+        assert_eq!(account2_info.last_nonce, 78);
+        assert_eq!(account2_info.balance, coins(12));
         assert_eq!(account2_info.staking_balance, 0.into());
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_transaction() {
-        let account1 = testing::account3();
-        let account2 = testing::account4();
-
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
-
-        let transaction = db::Transaction::from_proto(
-            0.into(),
-            db::Transaction::make_coin_transfer_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                1,
-                account2.address(),
-                12.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+    async fn test_coin_transfer_transaction() {
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let account3 = testing::account3();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(transaction.diff()),
-                ttl: Some(1),
-            })
+            .send_coins(&account2, 35, account3.address(), coins(12))
             .await
             .unwrap();
 
         fixture.clock().advance(Duration::from_secs(10)).await;
         yield_now().await;
 
-        let transaction = fixture.get_transaction(transaction.hash()).await.unwrap();
+        let (block_info, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
+        assert_eq!(block_info.number(), 1);
+        assert_eq!(transactions.len(), 2);
+
+        let transaction = &transactions[0];
         assert_eq!(transaction.parent_hash(), 0.into());
+        assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
-        assert_eq!(payload.nonce.unwrap(), 1);
+        assert_eq!(payload.nonce.unwrap(), 13);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::BlockReward(block_reward) => {
+                assert_eq!(
+                    proto::decode_scalar(block_reward.recipient.as_ref().unwrap()).unwrap(),
+                    account1.address(),
+                );
+                assert_eq!(
+                    proto::decode_scalar(block_reward.amount.as_ref().unwrap()).unwrap(),
+                    reward_for(coins(78))
+                );
+            }
+            _ => panic!(),
+        }
+
+        let transaction = &transactions[1];
+        assert_eq!(block_info.last_transaction_hash(), transaction.hash());
+        assert_eq!(transaction.parent_hash(), transactions[0].hash());
+        assert_eq!(transaction.signer(), account2.address());
+        let payload = transaction.payload();
+        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce.unwrap(), 35);
         match payload.transaction.as_ref().unwrap() {
             libernet::transaction::payload::Transaction::SendCoins(send_coins) => {
                 assert_eq!(
                     proto::decode_scalar(send_coins.recipient.as_ref().unwrap()).unwrap(),
-                    account2.address(),
+                    account3.address(),
                 );
                 assert_eq!(
                     proto::decode_scalar(send_coins.amount.as_ref().unwrap()).unwrap(),
-                    12.into()
+                    coins(12)
                 );
             }
             _ => panic!(),
         }
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 1);
-        assert_eq!(account1_info.balance, 44.into());
-        assert_eq!(account1_info.staking_balance, 0.into());
+        assert_eq!(account1_info.last_nonce, 13);
+        assert_eq!(account1_info.balance, coins(90) + reward_for(coins(78)));
+        assert_eq!(account1_info.staking_balance, coins(78));
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 0);
-        assert_eq!(account2_info.balance, 46.into());
+        assert_eq!(account2_info.last_nonce, 35);
+        assert_eq!(account2_info.balance, coins(44));
         assert_eq!(account2_info.staking_balance, 0.into());
+
+        let account3_info = fixture.get_account(account3.address(), None).await.unwrap();
+        assert_eq!(account3_info.last_nonce, 56);
+        assert_eq!(account3_info.balance, coins(46));
+        assert_eq!(account3_info.staking_balance, 0.into());
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_two_transactions() {
-        let account1 = testing::account3();
-        let account2 = testing::account4();
-
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
-
-        let transaction1 = db::Transaction::from_proto(
-            0.into(),
-            db::Transaction::make_coin_transfer_proto(
-                &account2,
-                TEST_CHAIN_ID,
-                1,
-                account1.address(),
-                12.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let account3 = testing::account3();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture
             .client
+            .lock()
+            .await
             .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(transaction1.diff()),
+                transaction: Some(
+                    db::Transaction::make_coin_transfer_proto(
+                        &account3,
+                        TEST_CHAIN_ID,
+                        57,
+                        account2.address(),
+                        coins(12),
+                    )
+                    .unwrap(),
+                ),
                 ttl: Some(1),
             })
             .await
             .unwrap();
 
-        let transaction2 = db::Transaction::from_proto(
-            transaction1.hash(),
-            db::Transaction::make_coin_transfer_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                1,
-                account2.address(),
-                21.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
         fixture
             .client
+            .lock()
+            .await
             .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(transaction2.diff()),
+                transaction: Some(
+                    db::Transaction::make_coin_transfer_proto(
+                        &account2,
+                        TEST_CHAIN_ID,
+                        35,
+                        account3.address(),
+                        coins(21),
+                    )
+                    .unwrap(),
+                ),
                 ttl: Some(1),
             })
             .await
@@ -1167,11 +1287,36 @@ mod tests {
         fixture.clock().advance(Duration::from_secs(10)).await;
         yield_now().await;
 
-        let transaction = fixture.get_transaction(transaction2.hash()).await.unwrap();
-        assert_eq!(transaction.parent_hash(), transaction1.hash());
+        let (block_info, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
+        assert_eq!(block_info.number(), 1);
+        assert_eq!(transactions.len(), 3);
+
+        let transaction = &transactions[0];
+        assert_eq!(transaction.parent_hash(), 0.into());
+        assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
-        assert_eq!(payload.nonce.unwrap(), 1);
+        assert_eq!(payload.nonce.unwrap(), 13);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::BlockReward(block_reward) => {
+                assert_eq!(
+                    proto::decode_scalar(block_reward.recipient.as_ref().unwrap()).unwrap(),
+                    account1.address(),
+                );
+                assert_eq!(
+                    proto::decode_scalar(block_reward.amount.as_ref().unwrap()).unwrap(),
+                    reward_for(coins(78))
+                );
+            }
+            _ => panic!(),
+        }
+
+        let transaction = &transactions[1];
+        assert_eq!(transaction.parent_hash(), transactions[0].hash());
+        assert_eq!(transaction.signer(), account3.address());
+        let payload = transaction.payload();
+        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce.unwrap(), 57);
         match payload.transaction.as_ref().unwrap() {
             libernet::transaction::payload::Transaction::SendCoins(send_coins) => {
                 assert_eq!(
@@ -1180,98 +1325,106 @@ mod tests {
                 );
                 assert_eq!(
                     proto::decode_scalar(send_coins.amount.as_ref().unwrap()).unwrap(),
-                    21.into()
+                    coins(12)
+                );
+            }
+            _ => panic!(),
+        }
+
+        let transaction = &transactions[2];
+        assert_eq!(block_info.last_transaction_hash(), transaction.hash());
+        assert_eq!(transaction.parent_hash(), transactions[1].hash());
+        assert_eq!(transaction.signer(), account2.address());
+        let payload = transaction.payload();
+        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce.unwrap(), 35);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::SendCoins(send_coins) => {
+                assert_eq!(
+                    proto::decode_scalar(send_coins.recipient.as_ref().unwrap()).unwrap(),
+                    account3.address(),
+                );
+                assert_eq!(
+                    proto::decode_scalar(send_coins.amount.as_ref().unwrap()).unwrap(),
+                    coins(21)
                 );
             }
             _ => panic!(),
         }
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 1);
-        assert_eq!(account1_info.balance, 47.into());
-        assert_eq!(account1_info.staking_balance, 0.into());
+        assert_eq!(account1_info.last_nonce, 13);
+        assert_eq!(account1_info.balance, coins(90) + reward_for(coins(78)));
+        assert_eq!(account1_info.staking_balance, coins(78));
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 1);
-        assert_eq!(account2_info.balance, 43.into());
+        assert_eq!(account2_info.last_nonce, 35);
+        assert_eq!(account2_info.balance, coins(47));
         assert_eq!(account2_info.staking_balance, 0.into());
+
+        let account3_info = fixture.get_account(account3.address(), None).await.unwrap();
+        assert_eq!(account3_info.last_nonce, 57);
+        assert_eq!(account3_info.balance, coins(43));
+        assert_eq!(account3_info.staking_balance, 0.into());
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_transaction_in_second_block() {
-        let account1 = testing::account3();
-        let account2 = testing::account4();
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let account3 = testing::account3();
 
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
-
-        let transaction1 = db::Transaction::from_proto(
-            0.into(),
-            db::Transaction::make_coin_transfer_proto(
-                &account2,
-                TEST_CHAIN_ID,
-                1,
-                account1.address(),
-                12.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(transaction1.diff()),
-                ttl: Some(1),
-            })
+            .send_coins(&account3, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
         fixture.clock().advance(Duration::from_secs(10)).await;
         yield_now().await;
 
-        let block_info1 = fixture.get_block(None).await.unwrap();
+        let (block_info1, transactions1) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(block_info1.number(), 1);
-        assert_eq!(block_info1.last_transaction_hash(), transaction1.hash());
-
-        let transaction2 = db::Transaction::from_proto(
-            transaction1.hash(),
-            db::Transaction::make_coin_transfer_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                1,
-                account2.address(),
-                21.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(transaction2.diff()),
-                ttl: Some(1),
-            })
+            .send_coins(&account2, 35, account3.address(), coins(21))
             .await
             .unwrap();
 
         fixture.clock().advance(Duration::from_secs(10)).await;
         yield_now().await;
 
-        let block_info2 = fixture.get_block(None).await.unwrap();
+        let (block_info2, transactions2) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(block_info2.number(), 2);
-        assert_eq!(block_info2.last_transaction_hash(), transaction2.hash());
 
-        let transaction = fixture.get_transaction(transaction2.hash()).await.unwrap();
-        assert_eq!(transaction.parent_hash(), transaction1.hash());
+        let transaction = &transactions1[0];
+        assert_eq!(transaction.parent_hash(), 0.into());
+        assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
-        assert_eq!(payload.nonce.unwrap(), 1);
+        assert_eq!(payload.nonce.unwrap(), 13);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::BlockReward(block_reward) => {
+                assert_eq!(
+                    proto::decode_scalar(block_reward.recipient.as_ref().unwrap()).unwrap(),
+                    account1.address(),
+                );
+                assert_eq!(
+                    proto::decode_scalar(block_reward.amount.as_ref().unwrap()).unwrap(),
+                    reward_for(coins(78))
+                );
+            }
+            _ => panic!(),
+        }
+
+        let transaction = &transactions1[1];
+        assert_eq!(block_info1.last_transaction_hash(), transaction.hash());
+        assert_eq!(transaction.parent_hash(), transactions1[0].hash());
+        assert_eq!(transaction.signer(), account3.address());
+        let payload = transaction.payload();
+        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce.unwrap(), 57);
         match payload.transaction.as_ref().unwrap() {
             libernet::transaction::payload::Transaction::SendCoins(send_coins) => {
                 assert_eq!(
@@ -1280,29 +1433,80 @@ mod tests {
                 );
                 assert_eq!(
                     proto::decode_scalar(send_coins.amount.as_ref().unwrap()).unwrap(),
-                    21.into()
+                    coins(12)
+                );
+            }
+            _ => panic!(),
+        }
+
+        let transaction = &transactions2[0];
+        assert_eq!(transaction.parent_hash(), transactions1[1].hash());
+        assert_eq!(transaction.signer(), account1.address());
+        let payload = transaction.payload();
+        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce.unwrap(), 14);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::BlockReward(block_reward) => {
+                assert_eq!(
+                    proto::decode_scalar(block_reward.recipient.as_ref().unwrap()).unwrap(),
+                    account1.address(),
+                );
+                assert_eq!(
+                    proto::decode_scalar(block_reward.amount.as_ref().unwrap()).unwrap(),
+                    reward_for(coins(78))
+                );
+            }
+            _ => panic!(),
+        }
+
+        let transaction = &transactions2[1];
+        assert_eq!(block_info2.last_transaction_hash(), transaction.hash());
+        assert_eq!(transaction.parent_hash(), transactions2[0].hash());
+        assert_eq!(transaction.signer(), account2.address());
+        let payload = transaction.payload();
+        assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
+        assert_eq!(payload.nonce.unwrap(), 35);
+        match payload.transaction.as_ref().unwrap() {
+            libernet::transaction::payload::Transaction::SendCoins(send_coins) => {
+                assert_eq!(
+                    proto::decode_scalar(send_coins.recipient.as_ref().unwrap()).unwrap(),
+                    account3.address(),
+                );
+                assert_eq!(
+                    proto::decode_scalar(send_coins.amount.as_ref().unwrap()).unwrap(),
+                    coins(21)
                 );
             }
             _ => panic!(),
         }
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 1);
-        assert_eq!(account1_info.balance, 47.into());
-        assert_eq!(account1_info.staking_balance, 0.into());
+        assert_eq!(account1_info.last_nonce, 14);
+        assert_eq!(
+            account1_info.balance,
+            coins(90) + reward_for(coins(78)) * Scalar::from(2)
+        );
+        assert_eq!(account1_info.staking_balance, coins(78));
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 1);
-        assert_eq!(account2_info.balance, 43.into());
+        assert_eq!(account2_info.last_nonce, 35);
+        assert_eq!(account2_info.balance, coins(47));
         assert_eq!(account2_info.staking_balance, 0.into());
+
+        let account3_info = fixture.get_account(account3.address(), None).await.unwrap();
+        assert_eq!(account3_info.last_nonce, 57);
+        assert_eq!(account3_info.balance, coins(43));
+        assert_eq!(account3_info.staking_balance, 0.into());
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_block_subscription1() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_blocks(libernet::BlockSubscriptionRequest {})
             .await
             .unwrap()
@@ -1324,7 +1528,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_block_subscription2() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture.clock().advance(Duration::from_secs(10)).await;
         yield_now().await;
@@ -1335,6 +1539,8 @@ mod tests {
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_blocks(libernet::BlockSubscriptionRequest {})
             .await
             .unwrap()
@@ -1354,7 +1560,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_block_subscription3() {
-        let mut fixture = TestFixture::default().await.unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture.clock().advance(Duration::from_secs(10)).await;
         yield_now().await;
@@ -1365,6 +1571,8 @@ mod tests {
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_blocks(libernet::BlockSubscriptionRequest {})
             .await
             .unwrap()
@@ -1397,33 +1605,17 @@ mod tests {
         let account1 = testing::account3();
         let account2 = testing::account4();
 
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(
-                    db::Transaction::make_coin_transfer_proto(
-                        &account1,
-                        TEST_CHAIN_ID,
-                        1,
-                        account2.address(),
-                        12.into(),
-                    )
-                    .unwrap(),
-                ),
-                ttl: Some(1),
-            })
+            .send_coins(&account1, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_account(libernet::AccountSubscriptionRequest {
                 account_address: Some(proto::encode_scalar(account1.address())),
                 every_block: Some(every_block),
@@ -1444,18 +1636,15 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.previous_block_hash(),
-            utils::parse_scalar(
-                "0x59e6925f0eddc6c861c10050554ce311bf92746af13af2b86940ee73d4e92741"
-            )
-            .unwrap()
+            default_genesis_block_hash()
         );
 
         let proof =
             tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 1);
-        assert_eq!(account_info.balance, 44.into());
+        assert_eq!(account_info.last_nonce, 57);
+        assert_eq!(account_info.balance, coins(22));
         assert_eq!(account_info.staking_balance, 0.into());
     }
 
@@ -1473,33 +1662,17 @@ mod tests {
         let account1 = testing::account3();
         let account2 = testing::account4();
 
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(
-                    db::Transaction::make_coin_transfer_proto(
-                        &account1,
-                        TEST_CHAIN_ID,
-                        1,
-                        account2.address(),
-                        12.into(),
-                    )
-                    .unwrap(),
-                ),
-                ttl: Some(1),
-            })
+            .send_coins(&account1, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_account(libernet::AccountSubscriptionRequest {
                 account_address: Some(proto::encode_scalar(account2.address())),
                 every_block: Some(every_block),
@@ -1520,18 +1693,15 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.previous_block_hash(),
-            utils::parse_scalar(
-                "0x59e6925f0eddc6c861c10050554ce311bf92746af13af2b86940ee73d4e92741"
-            )
-            .unwrap()
+            default_genesis_block_hash()
         );
 
         let proof =
             tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account2.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 0);
-        assert_eq!(account_info.balance, 46.into());
+        assert_eq!(account_info.last_nonce, 78);
+        assert_eq!(account_info.balance, coins(24));
         assert_eq!(account_info.staking_balance, 0.into());
     }
 
@@ -1550,15 +1720,12 @@ mod tests {
         let account1 = testing::account3();
         let account2 = testing::account4();
 
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_account(libernet::AccountSubscriptionRequest {
                 account_address: Some(proto::encode_scalar(account1.address())),
                 every_block: Some(false),
@@ -1571,20 +1738,7 @@ mod tests {
         yield_now().await;
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(
-                    db::Transaction::make_coin_transfer_proto(
-                        &account1,
-                        TEST_CHAIN_ID,
-                        1,
-                        account2.address(),
-                        12.into(),
-                    )
-                    .unwrap(),
-                ),
-                ttl: Some(1),
-            })
+            .send_coins(&account1, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
@@ -1600,18 +1754,15 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            utils::parse_scalar(
-                "0x6ca0683c37f0354caea83da13b88ee7b5f0503c31f38db453b7cb447e84540fe"
-            )
-            .unwrap()
+            parse_scalar("0x35fa6c9f9339b96651417e2ed86605d28318842d5feba66b4f95db78830e7066")
         );
 
         let proof =
             tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 1);
-        assert_eq!(account_info.balance, 44.into());
+        assert_eq!(account_info.last_nonce, 57);
+        assert_eq!(account_info.balance, coins(22));
         assert_eq!(account_info.staking_balance, 0.into());
     }
 
@@ -1620,15 +1771,12 @@ mod tests {
         let account1 = testing::account3();
         let account2 = testing::account4();
 
-        let mut fixture = TestFixture::with_initial_balances([
-            (account1.address(), 56.into()),
-            (account2.address(), 34.into()),
-        ])
-        .await
-        .unwrap();
+        let fixture = TestFixture::default().await.unwrap();
 
         let mut stream = fixture
             .client
+            .lock()
+            .await
             .subscribe_to_account(libernet::AccountSubscriptionRequest {
                 account_address: Some(proto::encode_scalar(account1.address())),
                 every_block: Some(true),
@@ -1649,35 +1797,19 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.previous_block_hash(),
-            utils::parse_scalar(
-                "0x59e6925f0eddc6c861c10050554ce311bf92746af13af2b86940ee73d4e92741"
-            )
-            .unwrap()
+            default_genesis_block_hash()
         );
 
         let proof =
             tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 0);
-        assert_eq!(account_info.balance, 56.into());
+        assert_eq!(account_info.last_nonce, 56);
+        assert_eq!(account_info.balance, coins(34));
         assert_eq!(account_info.staking_balance, 0.into());
 
         fixture
-            .client
-            .broadcast_transaction(libernet::BroadcastTransactionRequest {
-                transaction: Some(
-                    db::Transaction::make_coin_transfer_proto(
-                        &account1,
-                        TEST_CHAIN_ID,
-                        1,
-                        account2.address(),
-                        12.into(),
-                    )
-                    .unwrap(),
-                ),
-                ttl: Some(1),
-            })
+            .send_coins(&account1, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
@@ -1693,18 +1825,15 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            utils::parse_scalar(
-                "0x6ca0683c37f0354caea83da13b88ee7b5f0503c31f38db453b7cb447e84540fe"
-            )
-            .unwrap()
+            parse_scalar("0x35fa6c9f9339b96651417e2ed86605d28318842d5feba66b4f95db78830e7066")
         );
 
         let proof =
             tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 1);
-        assert_eq!(account_info.balance, 44.into());
+        assert_eq!(account_info.last_nonce, 57);
+        assert_eq!(account_info.balance, coins(22));
         assert_eq!(account_info.staking_balance, 0.into());
     }
 }

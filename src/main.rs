@@ -1,3 +1,6 @@
+// Copyright 2025 The Libernet Team
+// SPDX-License-Identifier: Apache-2.0
+
 use crate::account::Account;
 use crate::libernet::node_service_v1_server::NodeServiceV1Server;
 use anyhow::{Result, anyhow};
@@ -10,6 +13,7 @@ use tonic::transport::Server;
 
 mod account;
 mod clock;
+mod constants;
 mod db;
 mod net;
 mod proto;
@@ -17,10 +21,12 @@ mod service;
 mod ssl;
 mod topology;
 mod tree;
-mod version;
 
 #[cfg(test)]
 mod fake;
+
+#[cfg(test)]
+mod testing;
 
 pub mod libernet {
     tonic::include_proto!("libernet");

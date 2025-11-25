@@ -784,6 +784,7 @@ pub type ProgramStorageProof = MerkleProof<u32, u32, 2, 32>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::parse_scalar;
 
     type TestTree = MerkleTree<Scalar, Scalar, 3, 161>;
     type TestProof = MerkleProof<Scalar, Scalar, 3, 161>;
@@ -815,10 +816,8 @@ mod tests {
     #[test]
     fn test_initial_root_hash() {
         let tree = TestTree::default();
-        let hash = utils::parse_scalar(
-            "0x135e8102d60f086dc416d39a754991573b7a85551a0f06098c847a118cdb9cb5",
-        )
-        .unwrap();
+        let hash =
+            parse_scalar("0x135e8102d60f086dc416d39a754991573b7a85551a0f06098c847a118cdb9cb5");
         assert_eq!(tree.root_hash(0), hash);
         assert_eq!(tree.root_hash(1), hash);
         assert_eq!(tree.root_hash(2), hash);
