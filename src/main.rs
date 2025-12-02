@@ -14,6 +14,7 @@ use tonic::transport::Server;
 mod account;
 mod clock;
 mod constants;
+mod data;
 mod db;
 mod net;
 mod proto;
@@ -78,6 +79,13 @@ struct Args {
     /// is left empty this node will start a new network.
     #[arg(long, default_value = "")]
     bootstrap_list: Vec<String>,
+
+    /// The block time, in milliseconds. Ignored if --bootstrap_list is provided.
+    ///
+    /// NOTE: this is currently ignored because the block time is hard-coded in constants.rs. We
+    /// need to make it configurable.
+    #[arg(long, default_value = "10000")]
+    block_time_ms: u32,
 }
 
 fn make_location(latitude: f64, longitude: f64) -> Result<libernet::GeographicalLocation> {

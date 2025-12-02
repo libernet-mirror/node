@@ -6,7 +6,6 @@ use crypto::{
     merkle::{AsScalar, FromScalar, Proof as LowLevelMerkleProof},
     utils, xits,
 };
-use ff::Field;
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
@@ -116,12 +115,10 @@ impl MonomorphicPhantomNodes {
         //
         // NOTE: we'll be able to simplify this code when Rust provides a reentrant lock
         // implementation (see https://github.com/rust-lang/rust/issues/121440).
-        let nodes: Arc<dyn Any + Send + Sync> = if W == 2 {
-            Arc::new(PhantomNodes::<K, V, 2, H>::default())
-        } else if W == 3 {
-            Arc::new(PhantomNodes::<K, V, 3, H>::default())
-        } else {
-            unimplemented!()
+        let nodes: Arc<dyn Any + Send + Sync> = match W {
+            2 => Arc::new(PhantomNodes::<K, V, 2, H>::default()),
+            3 => Arc::new(PhantomNodes::<K, V, 3, H>::default()),
+            _ => unimplemented!(),
         };
         {
             let mut map = self.map.lock().unwrap();
@@ -312,7 +309,7 @@ impl<
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerkleProof<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
 > {
@@ -321,7 +318,7 @@ pub struct MerkleProof<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
 > MerkleProof<K, V, W, H>
@@ -340,6 +337,19 @@ impl<
         self.inner.value()
     }
 
+    pub fn take_value(self) -> V {
+        self.inner.take_value()
+    }
+
+    pub fn map<U: Debug + Clone + Send + Sync + AsScalar + 'static>(
+        self,
+        new_value: U,
+    ) -> Result<MerkleProof<K, U, W, H>> {
+        Ok(MerkleProof {
+            inner: self.inner.map(new_value)?,
+        })
+    }
+
     pub fn path(&self) -> &[[Scalar; W]; H] {
         self.inner.path()
     }
@@ -351,7 +361,7 @@ impl<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + 'static,
     const H: usize,
 > MerkleProof<K, V, 2, H>
 {
@@ -366,7 +376,7 @@ impl<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + EncodeToAny + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + EncodeToAny + 'static,
     const H: usize,
 > MerkleProof<K, V, 2, H>
 {
@@ -393,7 +403,7 @@ impl<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
     const H: usize,
 > MerkleProof<K, V, 2, H>
 {
@@ -449,8 +459,19 @@ impl<
     /// descriptor, depending on what storage component this proof is relative to. For example, if
     /// the proof was generated from an account lookup the root hash must be the same as the one
     /// encoded in `block_descriptor.accounts_root_hash`.
+    ///
+    /// WARNING: this method validates the Merkle proof but NOT the block descriptor! The caller is
+    /// still responsible for decoding and hashing the latter and checking that the hash corresponds
+    /// to the serialized block hash.
     pub fn decode_and_verify(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
         let proof = Self::decode(proto, root_hash)?;
+        if proof.root_hash() != root_hash {
+            return Err(anyhow!(
+                "root hash mismatch: got {:#x}, want {:#x}",
+                utils::scalar_to_u256(proof.root_hash()),
+                utils::scalar_to_u256(root_hash)
+            ));
+        }
         proof.verify()?;
         Ok(proof)
     }
@@ -458,7 +479,7 @@ impl<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + 'static,
     const H: usize,
 > MerkleProof<K, V, 3, H>
 {
@@ -473,7 +494,7 @@ impl<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + EncodeToAny + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + EncodeToAny + 'static,
     const H: usize,
 > MerkleProof<K, V, 3, H>
 {
@@ -503,7 +524,7 @@ impl<
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
-    V: Debug + Default + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
+    V: Debug + Clone + Send + Sync + AsScalar + DecodeFromAny + 'static,
     const H: usize,
 > MerkleProof<K, V, 3, H>
 {
@@ -557,6 +578,11 @@ impl<
     /// descriptor, depending on what storage component this proof is relative to. For example, if
     /// the proof was generated from an account lookup the root hash must be the same as the one
     /// encoded in `block_descriptor.accounts_root_hash`.
+    ///
+    /// WARNING: this method validates the Merkle proof but NOT the block descriptor! The caller is
+    /// still responsible for decoding and hashing the latter and check that the hash corresponds to
+    /// the block hash. For a more comprehensive validation see one of the other
+    /// `decode_and_verify_*` methods.
     pub fn decode_and_verify(proto: &libernet::MerkleProof, root_hash: Scalar) -> Result<Self> {
         let proof = Self::decode(proto, root_hash)?;
         if proof.root_hash() != root_hash {
@@ -727,64 +753,11 @@ impl<
     }
 }
 
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-pub struct AccountInfo {
-    pub last_nonce: u64,
-    pub balance: Scalar,
-    pub staking_balance: Scalar,
-}
-
-impl AccountInfo {
-    pub fn with_balance(balance: Scalar) -> Self {
-        Self {
-            last_nonce: 0,
-            balance,
-            staking_balance: Scalar::ZERO,
-        }
-    }
-}
-
-impl AsScalar for AccountInfo {
-    fn as_scalar(&self) -> Scalar {
-        utils::poseidon_hash(&[self.last_nonce.into(), self.balance, self.staking_balance])
-    }
-}
-
-impl EncodeToAny for AccountInfo {
-    fn encode_to_any(&self) -> Result<prost_types::Any> {
-        Ok(prost_types::Any::from_msg(&libernet::AccountInfo {
-            last_nonce: Some(self.last_nonce),
-            balance: Some(proto::encode_scalar(self.balance)),
-            staking_balance: Some(proto::encode_scalar(self.staking_balance)),
-        })?)
-    }
-}
-
-impl DecodeFromAny for AccountInfo {
-    fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
-        let proto = proto.to_msg::<libernet::AccountInfo>()?;
-        Ok(Self {
-            last_nonce: proto.last_nonce(),
-            balance: proto
-                .balance
-                .map_or(Ok(Scalar::ZERO), |balance| proto::decode_scalar(&balance))?,
-            staking_balance: proto
-                .staking_balance
-                .map_or(Ok(Scalar::ZERO), |balance| proto::decode_scalar(&balance))?,
-        })
-    }
-}
-
-pub type AccountTree = MerkleTree<Scalar, AccountInfo, 3, 161>;
-pub type AccountProof = MerkleProof<Scalar, AccountInfo, 3, 161>;
-
-pub type ProgramStorageTree = MerkleTree<Scalar, MerkleTreeVersion<u32, u32, 2, 32>, 3, 161>;
-pub type ProgramStorageProof = MerkleProof<u32, u32, 2, 32>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::parse_scalar;
+    use ff::Field;
 
     type TestTree = MerkleTree<Scalar, Scalar, 3, 161>;
     type TestProof = MerkleProof<Scalar, Scalar, 3, 161>;
@@ -831,6 +804,7 @@ mod tests {
         assert_eq!(*proof.value(), Scalar::ZERO);
         assert_eq!(proof.root_hash(), tree.root_hash(version));
         assert!(proof.verify().is_ok());
+        assert_eq!(proof.take_value(), Scalar::ZERO);
     }
 
     #[test]
@@ -861,6 +835,7 @@ mod tests {
         assert_eq!(*proof.value(), Scalar::ZERO);
         assert_eq!(proof.root_hash(), tree.root_hash(version));
         assert!(proof.verify().is_ok());
+        assert_eq!(proof.take_value(), Scalar::ZERO);
     }
 
     #[test]
@@ -898,6 +873,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
+        assert_eq!(proof1.take_value(), value);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 1), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 2), Scalar::ZERO);
@@ -910,6 +886,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
+        assert_eq!(proof2.take_value(), Scalar::ZERO);
     }
 
     #[test]
@@ -945,6 +922,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree1.get_proof(key1, 1), proof1);
         assert_eq!(tree1.get_proof(key1, 2), proof1);
+        assert_eq!(proof1.take_value(), value);
         assert_eq!(*tree1.get(key2, 0), Scalar::ZERO);
         assert_eq!(*tree1.get(key2, 1), Scalar::ZERO);
         assert_eq!(*tree1.get(key2, 2), Scalar::ZERO);
@@ -957,6 +935,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree1.get_proof(key2, 1), proof2);
         assert_eq!(tree1.get_proof(key2, 2), proof2);
+        assert_eq!(proof2.take_value(), Scalar::ZERO);
     }
 
     #[test]
@@ -980,6 +959,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
+        assert_eq!(proof1.take_value(), value1);
         assert_eq!(*tree.get(key2, 0), value2);
         assert_eq!(*tree.get(key2, 1), value2);
         assert_eq!(*tree.get(key2, 2), value2);
@@ -992,6 +972,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
+        assert_eq!(proof2.take_value(), value2);
     }
 
     #[test]
@@ -1032,6 +1013,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree1.get_proof(key1, 1), proof1);
         assert_eq!(tree1.get_proof(key1, 2), proof1);
+        assert_eq!(proof1.take_value(), value1);
         assert_eq!(*tree1.get(key2, 0), value2);
         assert_eq!(*tree1.get(key2, 1), value2);
         assert_eq!(*tree1.get(key2, 2), value2);
@@ -1044,6 +1026,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree1.get_proof(key2, 1), proof2);
         assert_eq!(tree1.get_proof(key2, 2), proof2);
+        assert_eq!(proof2.take_value(), value2);
     }
 
     #[test]
@@ -1067,6 +1050,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
+        assert_eq!(proof1.take_value(), value1);
         assert_eq!(*tree.get(key2, 0), value2);
         assert_eq!(*tree.get(key2, 1), value2);
         assert_eq!(*tree.get(key2, 2), value2);
@@ -1079,6 +1063,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
+        assert_eq!(proof2.take_value(), value2);
     }
 
     fn test_insert_three(value1: Scalar, value2: Scalar, value3: Scalar) {
@@ -1098,6 +1083,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(value1, 1), proof1);
         assert_eq!(tree.get_proof(value1, 2), proof1);
+        assert_eq!(proof1.take_value(), value1);
         assert_eq!(*tree.get(value2, 0), value2);
         assert_eq!(*tree.get(value2, 1), value2);
         assert_eq!(*tree.get(value2, 2), value2);
@@ -1110,6 +1096,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(value2, 1), proof2);
         assert_eq!(tree.get_proof(value2, 2), proof2);
+        assert_eq!(proof2.take_value(), value2);
         assert_eq!(*tree.get(value3, 0), value3);
         assert_eq!(*tree.get(value3, 1), value3);
         assert_eq!(*tree.get(value3, 2), value3);
@@ -1122,6 +1109,7 @@ mod tests {
         assert!(proof3.verify().is_ok());
         assert_eq!(tree.get_proof(value3, 1), proof3);
         assert_eq!(tree.get_proof(value3, 2), proof3);
+        assert_eq!(proof3.take_value(), value3);
     }
 
     #[test]
@@ -1175,6 +1163,7 @@ mod tests {
         assert!(proof1.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 1), proof1);
         assert_eq!(tree.get_proof(key1, 2), proof1);
+        assert_eq!(proof1.take_value(), value2);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 1), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 2), Scalar::ZERO);
@@ -1187,6 +1176,7 @@ mod tests {
         assert!(proof2.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof2);
         assert_eq!(tree.get_proof(key2, 2), proof2);
+        assert_eq!(proof2.take_value(), Scalar::ZERO);
     }
 
     #[test]
@@ -1208,6 +1198,7 @@ mod tests {
         assert_ne!(proof11.root_hash(), tree.root_hash(1));
         assert_ne!(proof11.root_hash(), tree.root_hash(2));
         assert!(proof11.verify().is_ok());
+        assert_eq!(proof11.take_value(), value1);
         let proof12 = tree.get_proof(key1, 1);
         assert_eq!(proof12.key(), key1);
         assert_eq!(*proof12.value(), value2);
@@ -1216,6 +1207,7 @@ mod tests {
         assert_eq!(proof12.root_hash(), tree.root_hash(2));
         assert!(proof12.verify().is_ok());
         assert_eq!(tree.get_proof(key1, 2), proof12);
+        assert_eq!(proof12.take_value(), value2);
         assert_eq!(*tree.get(key2, 0), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 1), Scalar::ZERO);
         assert_eq!(*tree.get(key2, 2), Scalar::ZERO);
@@ -1226,6 +1218,7 @@ mod tests {
         assert_ne!(proof21.root_hash(), tree.root_hash(1));
         assert_ne!(proof21.root_hash(), tree.root_hash(2));
         assert!(proof21.verify().is_ok());
+        assert_eq!(proof21.take_value(), Scalar::ZERO);
         let proof22 = tree.get_proof(key2, 1);
         assert_eq!(proof22.key(), key2);
         assert_eq!(*proof22.value(), Scalar::ZERO);
@@ -1235,6 +1228,7 @@ mod tests {
         assert!(proof22.verify().is_ok());
         assert_eq!(tree.get_proof(key2, 1), proof22);
         assert_eq!(tree.get_proof(key2, 2), proof22);
+        assert_eq!(proof22.take_value(), Scalar::ZERO);
     }
 
     #[test]
@@ -1354,7 +1348,7 @@ mod tests {
                 previous_block_hash: None,
                 timestamp: None,
                 network_topology_root_hash: None,
-                last_transaction_hash: None,
+                transactions_root_hash: None,
                 accounts_root_hash: Some(proto::encode_scalar(tree.root_hash(0))),
                 program_storage_root_hash: None,
             })
@@ -1383,7 +1377,7 @@ mod tests {
                 previous_block_hash: None,
                 timestamp: None,
                 network_topology_root_hash: None,
-                last_transaction_hash: None,
+                transactions_root_hash: None,
                 accounts_root_hash: Some(proto::encode_scalar(tree.root_hash(0))),
                 program_storage_root_hash: None,
             })
@@ -1415,7 +1409,7 @@ mod tests {
                 previous_block_hash: None,
                 timestamp: None,
                 network_topology_root_hash: None,
-                last_transaction_hash: None,
+                transactions_root_hash: None,
                 accounts_root_hash: Some(proto::encode_scalar(tree.root_hash(0))),
                 program_storage_root_hash: None,
             })
@@ -1445,7 +1439,7 @@ mod tests {
                 previous_block_hash: None,
                 timestamp: None,
                 network_topology_root_hash: None,
-                last_transaction_hash: None,
+                transactions_root_hash: None,
                 accounts_root_hash: Some(proto::encode_scalar(tree.root_hash(0))),
                 program_storage_root_hash: None,
             })
@@ -1475,7 +1469,7 @@ mod tests {
                 previous_block_hash: None,
                 timestamp: None,
                 network_topology_root_hash: None,
-                last_transaction_hash: None,
+                transactions_root_hash: None,
                 accounts_root_hash: Some(proto::encode_scalar(tree.root_hash(0))),
                 program_storage_root_hash: None,
             })

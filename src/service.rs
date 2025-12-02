@@ -1,11 +1,13 @@
 use crate::account::Account;
 use crate::clock::Clock;
-use crate::constants::{self, BLOCK_REWARD_DENOMINATOR_LOG2, BLOCK_REWARD_NUMERATOR};
+use crate::constants::{
+    self, BLOCK_REWARD_DENOMINATOR_LOG2, BLOCK_REWARD_NUMERATOR, BLOCK_TIME_MS,
+};
+use crate::data;
 use crate::db;
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
 use crate::net;
 use crate::proto;
-use crate::tree::AccountInfo;
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
 use crypto::{signer::BlsVerifier, utils};
@@ -148,7 +150,7 @@ impl NodeServiceImpl {
         location: libernet::GeographicalLocation,
         chain_id: u64,
         public_address: &str,
-        initial_accounts: [(Scalar, AccountInfo); N],
+        initial_accounts: [(Scalar, data::AccountInfo); N],
         grpc_port: u16,
         http_port: u16,
     ) -> anyhow::Result<Arc<Self>> {
@@ -221,7 +223,7 @@ impl NodeServiceImpl {
             - account.staking_balance;
         self.db
             .add_transaction(
-                &db::Transaction::make_block_reward_proto(
+                data::Transaction::make_block_reward_proto(
                     &*self.account,
                     self.chain_id,
                     account.last_nonce + 1,
@@ -239,9 +241,9 @@ impl NodeServiceImpl {
             loop {
                 self.add_block_rewards().await;
                 tokio::select! {
-                    _ = sleep(Duration::from_secs(10)) => {
+                    _ = sleep(Duration::from_millis(BLOCK_TIME_MS)) => {
                         let block = self.db.close_block().await;
-                        println!("mined block {}: {}", block.number(), utils::format_scalar(block.hash()));
+                        println!("added block {}: {}", block.number(), utils::format_scalar(block.hash()));
                     },
                     _ = self.cancel.cancelled() => {
                         break;
@@ -254,7 +256,7 @@ impl NodeServiceImpl {
     async fn get_block_impl(
         &self,
         request: &libernet::GetBlockRequest,
-    ) -> Result<db::BlockInfo, Status> {
+    ) -> Result<data::BlockInfo, Status> {
         match &request.block_hash {
             Some(block_hash) => {
                 let block_hash = proto::decode_scalar(block_hash)
@@ -290,7 +292,7 @@ impl NodeServiceImpl {
         .map_err(|_| Status::invalid_argument("invalid account address"))?;
         match &request.block_hash {
             Some(block_hash) => {
-                let block_hash = proto::decode_scalar(&block_hash)
+                let block_hash = proto::decode_scalar(block_hash)
                     .map_err(|_| Status::invalid_argument("invalid block hash"))?;
                 self.db
                     .get_account_info(account_address, block_hash)
@@ -335,22 +337,24 @@ impl NodeServiceImpl {
     async fn get_transaction_impl(
         &self,
         request: &libernet::GetTransactionRequest,
-    ) -> Result<libernet::BoundTransaction, Status> {
-        let transaction_hash = match &request.transaction_hash {
-            Some(hash) => proto::decode_scalar(&hash)
-                .map_err(|_| Status::invalid_argument("invalid transaction hash"))?,
-            None => return Err(Status::invalid_argument("transaction hash field missing")),
-        };
-        match self.db.get_transaction(transaction_hash).await {
-            Some(transaction) => Ok(libernet::BoundTransaction {
-                parent_transaction_hash: Some(proto::encode_scalar(transaction.parent_hash())),
-                transaction: Some(transaction.diff()),
-            }),
-            None => Err(Status::not_found(format!(
-                "transaction hash {} not found",
-                utils::format_scalar(transaction_hash)
-            ))),
-        }
+    ) -> Result<libernet::MerkleProof, Status> {
+        let hash = proto::decode_scalar(
+            request
+                .transaction_hash
+                .as_ref()
+                .context("transaction hash field missing")
+                .map_err(|error| Status::invalid_argument(error.to_string()))?,
+        )
+        .map_err(|_| Status::invalid_argument("invalid transaction hash"))?;
+        let (block_info, proof) = self
+            .db
+            .get_transaction(hash)
+            .await
+            .context("transaction not found")
+            .map_err(|error| Status::invalid_argument(error.to_string()))?;
+        proof
+            .encode(block_info.encode())
+            .map_err(|_| Status::internal("encoding error"))
     }
 
     async fn get_all_block_transaction_hashes(
@@ -365,6 +369,95 @@ impl NodeServiceImpl {
             .iter()
             .map(|hash| proto::encode_scalar(*hash))
             .collect())
+    }
+
+    async fn query_transactions_impl(
+        &self,
+        request: libernet::QueryTransactionsRequest,
+    ) -> Result<Vec<libernet::MerkleProof>, Status> {
+        let signer = request.from_filter.map(|address| {
+            proto::decode_scalar(&address)
+                .map_err(|_| Status::invalid_argument("invalid `from` filter"))
+        });
+        let recipient = request.to_filter.map(|address| {
+            proto::decode_scalar(&address)
+                .map_err(|_| Status::invalid_argument("invalid `to` filter"))
+        });
+        let sort_order = match request.sort_order.map(|sort_order| {
+            libernet::query_transactions_request::SortOrder::try_from(sort_order)
+                .map_err(|_| Status::invalid_argument("invalid sort order"))
+        }) {
+            Some(Ok(
+                libernet::query_transactions_request::SortOrder::TransactionSortOrderAscending,
+            )) => Ok(db::SortOrder::Ascending),
+            Some(Ok(
+                libernet::query_transactions_request::SortOrder::TransactionSortOrderDescending,
+            )) => Ok(db::SortOrder::Descending),
+            Some(Err(status)) => Err(status),
+            None => Ok(db::SortOrder::Descending),
+        }?;
+        let max_count = match request.max_count {
+            Some(max_count) => max_count as usize,
+            None => usize::MAX,
+        };
+        let start_block = match request.start_block_filter {
+            Some(libernet::query_transactions_request::StartBlockFilter::StartBlockHash(
+                block_hash,
+            )) => Some(db::BlockFilter::BlockHash(
+                proto::decode_scalar(&block_hash).map_err(|_| {
+                    Status::invalid_argument("invalid block hash in start block filter")
+                })?,
+            )),
+            Some(libernet::query_transactions_request::StartBlockFilter::StartBlockNumber(
+                block_number,
+            )) => Some(db::BlockFilter::BlockNumber(block_number as usize)),
+            None => None,
+        };
+        let end_block = match request.end_block_filter {
+            Some(libernet::query_transactions_request::EndBlockFilter::EndBlockHash(
+                block_hash,
+            )) => Some(db::BlockFilter::BlockHash(
+                proto::decode_scalar(&block_hash).map_err(|_| {
+                    Status::invalid_argument("invalid block hash in end block filter")
+                })?,
+            )),
+            Some(libernet::query_transactions_request::EndBlockFilter::EndBlockNumber(
+                block_number,
+            )) => Some(db::BlockFilter::BlockNumber(block_number as usize)),
+            None => None,
+        };
+        let results = match (signer, recipient) {
+            (None, None) => self
+                .db
+                .query_transactions(start_block, end_block, sort_order, max_count)
+                .await
+                .map_err(|_| Status::aborted("query error"))?,
+            (Some(signer), None) => self
+                .db
+                .query_transactions_from(signer?, start_block, end_block, sort_order, max_count)
+                .await
+                .map_err(|_| Status::aborted("query error"))?,
+            (None, Some(recipient)) => self
+                .db
+                .query_transactions_to(recipient?, start_block, end_block, sort_order, max_count)
+                .await
+                .map_err(|_| Status::aborted("query error"))?,
+            (Some(signer), Some(recipient)) => self
+                .db
+                .query_transactions_between(
+                    signer?,
+                    recipient?,
+                    start_block,
+                    end_block,
+                    sort_order,
+                    max_count,
+                )
+                .await
+                .map_err(|_| Status::aborted("query error"))?,
+        };
+        results
+            .encode()
+            .map_err(|_| Status::internal("internal error"))
     }
 }
 
@@ -385,7 +478,7 @@ impl NodeService {
         location: libernet::GeographicalLocation,
         chain_id: u64,
         public_address: &str,
-        initial_accounts: [(Scalar, AccountInfo); N],
+        initial_accounts: [(Scalar, data::AccountInfo); N],
         grpc_port: u16,
         http_port: u16,
     ) -> anyhow::Result<Self> {
@@ -430,8 +523,8 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetBlockRequest>,
     ) -> Result<Response<libernet::GetBlockResponse>, Status> {
-        let request = request.get_ref();
-        let block_info = self.inner.get_block_impl(request).await?;
+        let request = request.into_inner();
+        let block_info = self.inner.get_block_impl(&request).await?;
         let transaction_hashes = if request.get_all_transaction_hashes() {
             self.inner
                 .get_all_block_transaction_hashes(block_info.number())
@@ -492,9 +585,26 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::GetTransactionRequest>,
     ) -> Result<Response<libernet::GetTransactionResponse>, Status> {
-        let transaction = self.inner.get_transaction_impl(request.get_ref()).await?;
         Ok(Response::new(libernet::GetTransactionResponse {
-            transaction: Some(transaction),
+            transaction_proof: Some(self.inner.get_transaction_impl(request.get_ref()).await?),
+        }))
+    }
+
+    async fn query_transactions(
+        &self,
+        request: Request<libernet::QueryTransactionsRequest>,
+    ) -> Result<Response<libernet::QueryTransactionsResponse>, Status> {
+        Ok(Response::new(libernet::QueryTransactionsResponse {
+            transaction_proofs: Some(
+                libernet::query_transactions_response::TransactionProofs::IndividualProofs(
+                    libernet::query_transactions_response::IndividualProofs {
+                        individual_proof: self
+                            .inner
+                            .query_transactions_impl(request.into_inner())
+                            .await?,
+                    },
+                ),
+            ),
         }))
     }
 
@@ -502,7 +612,7 @@ impl NodeServiceV1 for NodeService {
         &self,
         request: Request<libernet::BroadcastTransactionRequest>,
     ) -> Result<Response<libernet::BroadcastTransactionResponse>, Status> {
-        let transaction = match &request.get_ref().transaction {
+        let transaction = match request.into_inner().transaction {
             Some(transaction) => Ok(transaction),
             None => Err(Status::invalid_argument("missing transaction data")),
         }?;
@@ -538,15 +648,14 @@ mod tests {
     use super::*;
     use crate::account::testing;
     use crate::clock::testing::MockClock;
+    use crate::data::{Transaction, TransactionInclusionProof, TransactionTree};
     use crate::libernet::{
         node_service_v1_client::NodeServiceV1Client, node_service_v1_server::NodeServiceV1Server,
     };
     use crate::net;
     use crate::testing::parse_scalar;
-    use crate::tree;
     use anyhow::{Result, anyhow};
     use futures::StreamExt;
-    use primitive_types::H256;
     use tokio::{sync::Mutex, sync::Notify, task::JoinHandle, task::yield_now};
     use tonic::transport::{Channel, Server};
 
@@ -574,7 +683,7 @@ mod tests {
     impl TestFixture {
         async fn new<const N: usize>(
             location: libernet::GeographicalLocation,
-            initial_accounts: [(Scalar, AccountInfo); N],
+            initial_accounts: [(Scalar, data::AccountInfo); N],
         ) -> Result<Self> {
             let now = SystemTime::now();
             let not_before = now - Duration::from_secs(123);
@@ -660,7 +769,7 @@ mod tests {
                 [
                     (
                         address1,
-                        AccountInfo {
+                        data::AccountInfo {
                             last_nonce: 12,
                             balance: coins(90),
                             staking_balance: coins(78),
@@ -668,7 +777,7 @@ mod tests {
                     ),
                     (
                         address2,
-                        AccountInfo {
+                        data::AccountInfo {
                             last_nonce: 34,
                             balance: coins(56),
                             staking_balance: 0.into(),
@@ -676,7 +785,7 @@ mod tests {
                     ),
                     (
                         address3,
-                        AccountInfo {
+                        data::AccountInfo {
                             last_nonce: 56,
                             balance: coins(34),
                             staking_balance: 0.into(),
@@ -684,7 +793,7 @@ mod tests {
                     ),
                     (
                         address4,
-                        AccountInfo {
+                        data::AccountInfo {
                             last_nonce: 78,
                             balance: coins(12),
                             staking_balance: 0.into(),
@@ -699,7 +808,14 @@ mod tests {
             &self.clock
         }
 
-        async fn get_block(&self, block_hash: Option<Scalar>) -> Result<db::BlockInfo> {
+        async fn advance_to_next_block(&self) {
+            self.clock
+                .advance(Duration::from_millis(BLOCK_TIME_MS))
+                .await;
+            yield_now().await;
+        }
+
+        async fn get_block(&self, block_hash: Option<Scalar>) -> Result<data::BlockInfo> {
             let response = self
                 .client
                 .lock()
@@ -714,13 +830,13 @@ mod tests {
                 .block_descriptor
                 .as_ref()
                 .context("missing block descriptor")?;
-            Ok(db::BlockInfo::decode(block_descriptor)?)
+            Ok(data::BlockInfo::decode(block_descriptor)?)
         }
 
         async fn get_block_and_transactions(
             &self,
             block_hash: Option<Scalar>,
-        ) -> Result<(db::BlockInfo, Vec<db::Transaction>)> {
+        ) -> Result<(data::BlockInfo, Vec<data::Transaction>)> {
             let response = self
                 .client
                 .lock()
@@ -742,17 +858,28 @@ mod tests {
                     Ok::<_, anyhow::Error>(self.get_transaction(proto::decode_scalar(hash)?).await?)
                 })
                 .collect::<Vec<_>>();
-            Ok((
-                db::BlockInfo::decode(block_descriptor)?,
-                futures::future::try_join_all(tasks).await?,
-            ))
+            let block_info = data::BlockInfo::decode(block_descriptor)?;
+            let transactions = futures::future::try_join_all(tasks).await?;
+            let mut transaction_tree = TransactionTree::default();
+            for i in 0..transactions.len() {
+                transaction_tree =
+                    transaction_tree.put(Scalar::from(i as u64), transactions[i].hash());
+            }
+            if transaction_tree.root_hash() != block_info.transactions_root_hash() {
+                return Err(anyhow!(
+                    "incorrect transactions root hash (got {}, want {})",
+                    transaction_tree.root_hash(),
+                    block_info.transactions_root_hash()
+                ));
+            }
+            Ok((block_info, transactions))
         }
 
         async fn get_account(
             &self,
             address: Scalar,
             block_hash: Option<Scalar>,
-        ) -> Result<AccountInfo> {
+        ) -> Result<data::AccountInfo> {
             let response = self
                 .client
                 .lock()
@@ -767,27 +894,13 @@ mod tests {
                 .account_proof
                 .as_ref()
                 .context("missing Merkle proof")?;
-            let block_info = db::BlockInfo::decode(
-                proof_proto
-                    .block_descriptor
-                    .as_ref()
-                    .context("missing block descriptor")?,
-            )?;
-            if let Some(block_hash) = block_hash {
-                if block_info.hash() != block_hash {
-                    return Err(anyhow!("block hash mismatch"));
-                }
-            }
-            let proof = tree::AccountProof::decode_and_verify(
-                proof_proto,
-                block_info.accounts_root_hash(),
-            )?;
+            let (_, proof) = data::AccountProof::decode_and_verify_account_proof(proof_proto)?;
             assert_eq!(proof.key(), address);
-            Ok(*proof.value())
+            Ok(proof.take_value())
         }
 
-        async fn get_transaction(&self, transaction_hash: Scalar) -> Result<db::Transaction> {
-            let transaction = self
+        async fn get_transaction(&self, transaction_hash: Scalar) -> Result<data::Transaction> {
+            let proof = self
                 .client
                 .lock()
                 .await
@@ -796,26 +909,11 @@ mod tests {
                 })
                 .await?
                 .into_inner()
-                .transaction
+                .transaction_proof
                 .context("missing transaction data")?;
-            let parent_transaction_hash = proto::decode_scalar(
-                transaction
-                    .parent_transaction_hash
-                    .as_ref()
-                    .context("missing parent transaction hash")?,
-            )?;
-            db::Transaction::from_proto_verify(
-                parent_transaction_hash,
-                transaction
-                    .transaction
-                    .context("missing transaction diff")?,
-            )
-        }
-
-        async fn get_last_transaction(&self) -> Result<db::Transaction> {
-            let block_info = self.get_block(None).await?;
-            self.get_transaction(block_info.last_transaction_hash())
-                .await
+            let (_, proof) =
+                TransactionInclusionProof::decode_and_verify_transaction_proof(&proof)?;
+            Ok(proof.take_value())
         }
 
         async fn send_coins(
@@ -831,7 +929,7 @@ mod tests {
                 .await
                 .broadcast_transaction(libernet::BroadcastTransactionRequest {
                     transaction: Some(
-                        db::Transaction::make_coin_transfer_proto(
+                        data::Transaction::make_coin_transfer_proto(
                             signer,
                             TEST_CHAIN_ID,
                             nonce,
@@ -854,7 +952,7 @@ mod tests {
     }
 
     fn default_genesis_block_hash() -> Scalar {
-        parse_scalar("0x5f35dde73f21b5cccd444053add1c36cc9aaab4d4813a7c4d902d870245ca007")
+        parse_scalar("0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d")
     }
 
     #[tokio::test(start_paused = true)]
@@ -981,7 +1079,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             account_info,
-            AccountInfo {
+            data::AccountInfo {
                 last_nonce: 56,
                 balance: coins(34),
                 staking_balance: 0.into(),
@@ -998,7 +1096,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             account_info,
-            AccountInfo {
+            data::AccountInfo {
                 last_nonce: 56,
                 balance: coins(34),
                 staking_balance: 0.into(),
@@ -1065,7 +1163,7 @@ mod tests {
                 .lock()
                 .await
                 .get_transaction(libernet::GetTransactionRequest {
-                    transaction_hash: Some(proto::encode_h256(H256::zero())),
+                    transaction_hash: Some(proto::encode_scalar(0.into())),
                 })
                 .await
                 .is_err()
@@ -1080,14 +1178,13 @@ mod tests {
         assert_eq!(block_info.number(), 0);
         assert_eq!(block_info.hash(), default_genesis_block_hash());
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let block_info = fixture.get_block(None).await.unwrap();
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.hash(),
-            parse_scalar("0x35fa6c9f9339b96651417e2ed86605d28318842d5feba66b4f95db78830e7066")
+            parse_scalar("0x19fc6e9517f053243ea7660897f9b2e6def915d74baf46f254e9b667e14b27d5")
         );
     }
 
@@ -1096,16 +1193,13 @@ mod tests {
         let account1 = testing::account1();
         let fixture = TestFixture::default().await.unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
-        let (block_info, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
+        let (_, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(transactions.len(), 1);
 
         let transaction = &transactions[0];
-        assert_eq!(block_info.last_transaction_hash(), transaction.hash());
         let payload = transaction.payload();
-        assert_eq!(transaction.parent_hash(), 0.into());
         assert_eq!(transaction.signer(), account1.address());
         assert_eq!(payload.chain_id(), TEST_CHAIN_ID);
         assert_eq!(payload.nonce(), 13);
@@ -1126,7 +1220,7 @@ mod tests {
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
         assert_eq!(
             account1_info,
-            AccountInfo {
+            data::AccountInfo {
                 last_nonce: 13,
                 balance: coins(90) + reward_for(coins(78)),
                 staking_balance: coins(78),
@@ -1147,8 +1241,6 @@ mod tests {
 
         let (_, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
         assert!(transactions.is_empty());
-
-        assert!(fixture.get_last_transaction().await.is_err());
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
         assert_eq!(account1_info.last_nonce, 56);
@@ -1173,15 +1265,13 @@ mod tests {
             .await
             .unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let (block_info, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(block_info.number(), 1);
         assert_eq!(transactions.len(), 2);
 
         let transaction = &transactions[0];
-        assert_eq!(transaction.parent_hash(), 0.into());
         assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1201,8 +1291,6 @@ mod tests {
         }
 
         let transaction = &transactions[1];
-        assert_eq!(block_info.last_transaction_hash(), transaction.hash());
-        assert_eq!(transaction.parent_hash(), transactions[0].hash());
         assert_eq!(transaction.signer(), account2.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1250,7 +1338,7 @@ mod tests {
             .await
             .broadcast_transaction(libernet::BroadcastTransactionRequest {
                 transaction: Some(
-                    db::Transaction::make_coin_transfer_proto(
+                    data::Transaction::make_coin_transfer_proto(
                         &account3,
                         TEST_CHAIN_ID,
                         57,
@@ -1270,7 +1358,7 @@ mod tests {
             .await
             .broadcast_transaction(libernet::BroadcastTransactionRequest {
                 transaction: Some(
-                    db::Transaction::make_coin_transfer_proto(
+                    data::Transaction::make_coin_transfer_proto(
                         &account2,
                         TEST_CHAIN_ID,
                         35,
@@ -1284,15 +1372,13 @@ mod tests {
             .await
             .unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let (block_info, transactions) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(block_info.number(), 1);
         assert_eq!(transactions.len(), 3);
 
         let transaction = &transactions[0];
-        assert_eq!(transaction.parent_hash(), 0.into());
         assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1312,7 +1398,6 @@ mod tests {
         }
 
         let transaction = &transactions[1];
-        assert_eq!(transaction.parent_hash(), transactions[0].hash());
         assert_eq!(transaction.signer(), account3.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1332,8 +1417,6 @@ mod tests {
         }
 
         let transaction = &transactions[2];
-        assert_eq!(block_info.last_transaction_hash(), transaction.hash());
-        assert_eq!(transaction.parent_hash(), transactions[1].hash());
         assert_eq!(transaction.signer(), account2.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1381,8 +1464,7 @@ mod tests {
             .await
             .unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let (block_info1, transactions1) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(block_info1.number(), 1);
@@ -1392,14 +1474,12 @@ mod tests {
             .await
             .unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let (block_info2, transactions2) = fixture.get_block_and_transactions(None).await.unwrap();
         assert_eq!(block_info2.number(), 2);
 
         let transaction = &transactions1[0];
-        assert_eq!(transaction.parent_hash(), 0.into());
         assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1419,8 +1499,6 @@ mod tests {
         }
 
         let transaction = &transactions1[1];
-        assert_eq!(block_info1.last_transaction_hash(), transaction.hash());
-        assert_eq!(transaction.parent_hash(), transactions1[0].hash());
         assert_eq!(transaction.signer(), account3.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1440,7 +1518,6 @@ mod tests {
         }
 
         let transaction = &transactions2[0];
-        assert_eq!(transaction.parent_hash(), transactions1[1].hash());
         assert_eq!(transaction.signer(), account1.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1460,8 +1537,6 @@ mod tests {
         }
 
         let transaction = &transactions2[1];
-        assert_eq!(block_info2.last_transaction_hash(), transaction.hash());
-        assert_eq!(transaction.parent_hash(), transactions2[0].hash());
         assert_eq!(transaction.signer(), account2.address());
         let payload = transaction.payload();
         assert_eq!(payload.chain_id.unwrap(), TEST_CHAIN_ID);
@@ -1512,12 +1587,12 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.block_descriptor.len(), 1);
-        let block_info = db::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
+        let block_info =
+            data::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
         assert_eq!(block_info.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info.number(), 1);
         assert_eq!(
@@ -1530,8 +1605,7 @@ mod tests {
     async fn test_block_subscription2() {
         let fixture = TestFixture::default().await.unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let block_info1 = fixture.get_block(None).await.unwrap();
         assert_eq!(block_info1.chain_id(), TEST_CHAIN_ID);
@@ -1546,13 +1620,12 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.block_descriptor.len(), 1);
         let block_info2 =
-            db::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
+            data::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
         assert_eq!(block_info2.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info2.number(), 2);
         assert_eq!(block_info2.previous_block_hash(), block_info1.hash());
@@ -1562,8 +1635,7 @@ mod tests {
     async fn test_block_subscription3() {
         let fixture = TestFixture::default().await.unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let block_info1 = fixture.get_block(None).await.unwrap();
         assert_eq!(block_info1.chain_id(), TEST_CHAIN_ID);
@@ -1578,24 +1650,22 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.block_descriptor.len(), 1);
         let block_info2 =
-            db::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
+            data::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
         assert_eq!(block_info2.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info2.number(), 2);
         assert_eq!(block_info2.previous_block_hash(), block_info1.hash());
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.block_descriptor.len(), 1);
         let block_info3 =
-            db::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
+            data::BlockInfo::decode(response.block_descriptor.first().unwrap()).unwrap();
         assert_eq!(block_info3.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info3.number(), 3);
         assert_eq!(block_info3.previous_block_hash(), block_info2.hash());
@@ -1624,14 +1694,14 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.account_proof.len(), 1);
         let proof = response.account_proof.first().unwrap();
+        let (block_info, proof) =
+            data::AccountProof::decode_and_verify_account_proof(proof).unwrap();
 
-        let block_info = db::BlockInfo::decode(proof.block_descriptor.as_ref().unwrap()).unwrap();
         assert_eq!(block_info.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info.number(), 1);
         assert_eq!(
@@ -1639,8 +1709,6 @@ mod tests {
             default_genesis_block_hash()
         );
 
-        let proof =
-            tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
         assert_eq!(account_info.last_nonce, 57);
@@ -1681,14 +1749,14 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.account_proof.len(), 1);
         let proof = response.account_proof.first().unwrap();
+        let (block_info, proof) =
+            data::AccountProof::decode_and_verify_account_proof(proof).unwrap();
 
-        let block_info = db::BlockInfo::decode(proof.block_descriptor.as_ref().unwrap()).unwrap();
         assert_eq!(block_info.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info.number(), 1);
         assert_eq!(
@@ -1696,8 +1764,6 @@ mod tests {
             default_genesis_block_hash()
         );
 
-        let proof =
-            tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account2.address());
         let account_info = proof.value();
         assert_eq!(account_info.last_nonce, 78);
@@ -1734,31 +1800,28 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         fixture
             .send_coins(&account1, 57, account2.address(), coins(12))
             .await
             .unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.account_proof.len(), 1);
         let proof = response.account_proof.first().unwrap();
+        let (block_info, proof) =
+            data::AccountProof::decode_and_verify_account_proof(proof).unwrap();
 
-        let block_info = db::BlockInfo::decode(proof.block_descriptor.as_ref().unwrap()).unwrap();
         assert_eq!(block_info.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x35fa6c9f9339b96651417e2ed86605d28318842d5feba66b4f95db78830e7066")
+            parse_scalar("0x19fc6e9517f053243ea7660897f9b2e6def915d74baf46f254e9b667e14b27d5")
         );
 
-        let proof =
-            tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
         assert_eq!(account_info.last_nonce, 57);
@@ -1785,14 +1848,14 @@ mod tests {
             .unwrap()
             .into_inner();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.account_proof.len(), 1);
         let proof = response.account_proof.first().unwrap();
+        let (block_info, proof) =
+            data::AccountProof::decode_and_verify_account_proof(proof).unwrap();
 
-        let block_info = db::BlockInfo::decode(proof.block_descriptor.as_ref().unwrap()).unwrap();
         assert_eq!(block_info.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info.number(), 1);
         assert_eq!(
@@ -1800,8 +1863,6 @@ mod tests {
             default_genesis_block_hash()
         );
 
-        let proof =
-            tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
         assert_eq!(account_info.last_nonce, 56);
@@ -1813,27 +1874,528 @@ mod tests {
             .await
             .unwrap();
 
-        fixture.clock().advance(Duration::from_secs(10)).await;
-        yield_now().await;
+        fixture.advance_to_next_block().await;
 
         let response = stream.next().await.unwrap().unwrap();
         assert_eq!(response.account_proof.len(), 1);
         let proof = response.account_proof.first().unwrap();
+        let (block_info, proof) =
+            data::AccountProof::decode_and_verify_account_proof(proof).unwrap();
 
-        let block_info = db::BlockInfo::decode(proof.block_descriptor.as_ref().unwrap()).unwrap();
         assert_eq!(block_info.chain_id(), TEST_CHAIN_ID);
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x35fa6c9f9339b96651417e2ed86605d28318842d5feba66b4f95db78830e7066")
+            parse_scalar("0x19fc6e9517f053243ea7660897f9b2e6def915d74baf46f254e9b667e14b27d5")
         );
 
-        let proof =
-            tree::AccountProof::decode_and_verify(proof, block_info.accounts_root_hash()).unwrap();
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
         assert_eq!(account_info.last_nonce, 57);
         assert_eq!(account_info.balance, coins(22));
         assert_eq!(account_info.staking_balance, 0.into());
     }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_no_results() {
+        let fixture = TestFixture::default().await.unwrap();
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: None,
+                max_count: None,
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        assert!(proofs.individual_proof.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_pending_transactions_not_included_in_queries() {
+        let account1 = testing::account3();
+        let account2 = testing::account4();
+        let fixture = TestFixture::default().await.unwrap();
+        fixture
+            .send_coins(&account1, 57, account2.address(), 5.into())
+            .await
+            .unwrap();
+        fixture
+            .send_coins(&account2, 79, account1.address(), 3.into())
+            .await
+            .unwrap();
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: None,
+                max_count: None,
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        assert!(proofs.individual_proof.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions() {
+        let account1 = testing::account1();
+        let account3 = testing::account3();
+        let account4 = testing::account4();
+        let fixture = TestFixture::default().await.unwrap();
+        fixture
+            .send_coins(&account3, 57, account4.address(), 5.into())
+            .await
+            .unwrap();
+        fixture
+            .send_coins(&account4, 79, account3.address(), 3.into())
+            .await
+            .unwrap();
+        fixture.advance_to_next_block().await;
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: None,
+                max_count: None,
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        let transactions = proofs
+            .individual_proof
+            .iter()
+            .map(|proto| {
+                let (block_info, proof) =
+                    TransactionInclusionProof::decode_and_verify_transaction_proof(proto).unwrap();
+                assert_eq!(
+                    block_info.hash(),
+                    parse_scalar(
+                        "0x6537497d8626f7156ec36a66dc0334ba0f5bc86ad29d2689134fc2027da391c8",
+                    )
+                );
+                proof.take_value()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transactions,
+            vec![
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account4,
+                        TEST_CHAIN_ID,
+                        79,
+                        account3.address(),
+                        3.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account3,
+                        TEST_CHAIN_ID,
+                        57,
+                        account4.address(),
+                        5.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_block_reward_proto(
+                        &account1,
+                        TEST_CHAIN_ID,
+                        13,
+                        account1.address(),
+                        reward_for(coins(78)),
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_ascending() {
+        let account1 = testing::account1();
+        let account3 = testing::account3();
+        let account4 = testing::account4();
+        let fixture = TestFixture::default().await.unwrap();
+        fixture
+            .send_coins(&account3, 57, account4.address(), 5.into())
+            .await
+            .unwrap();
+        fixture
+            .send_coins(&account4, 79, account3.address(), 3.into())
+            .await
+            .unwrap();
+        fixture.advance_to_next_block().await;
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: Some(
+                    libernet::query_transactions_request::SortOrder::TransactionSortOrderAscending
+                        as i32,
+                ),
+                max_count: None,
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        let transactions = proofs
+            .individual_proof
+            .iter()
+            .map(|proto| {
+                let (block_info, proof) =
+                    TransactionInclusionProof::decode_and_verify_transaction_proof(proto).unwrap();
+                assert_eq!(
+                    block_info.hash(),
+                    parse_scalar(
+                        "0x6537497d8626f7156ec36a66dc0334ba0f5bc86ad29d2689134fc2027da391c8",
+                    )
+                );
+                proof.take_value()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transactions,
+            vec![
+                Transaction::from_proto(
+                    Transaction::make_block_reward_proto(
+                        &account1,
+                        TEST_CHAIN_ID,
+                        13,
+                        account1.address(),
+                        reward_for(coins(78)),
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account3,
+                        TEST_CHAIN_ID,
+                        57,
+                        account4.address(),
+                        5.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account4,
+                        TEST_CHAIN_ID,
+                        79,
+                        account3.address(),
+                        3.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_ascending_capped() {
+        let account1 = testing::account1();
+        let account3 = testing::account3();
+        let account4 = testing::account4();
+        let fixture = TestFixture::default().await.unwrap();
+        fixture
+            .send_coins(&account3, 57, account4.address(), 5.into())
+            .await
+            .unwrap();
+        fixture
+            .send_coins(&account4, 79, account3.address(), 3.into())
+            .await
+            .unwrap();
+        fixture.advance_to_next_block().await;
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: Some(
+                    libernet::query_transactions_request::SortOrder::TransactionSortOrderAscending
+                        as i32,
+                ),
+                max_count: Some(2),
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        let transactions = proofs
+            .individual_proof
+            .iter()
+            .map(|proto| {
+                let (block_info, proof) =
+                    TransactionInclusionProof::decode_and_verify_transaction_proof(proto).unwrap();
+                assert_eq!(
+                    block_info.hash(),
+                    parse_scalar(
+                        "0x6537497d8626f7156ec36a66dc0334ba0f5bc86ad29d2689134fc2027da391c8",
+                    )
+                );
+                proof.take_value()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transactions,
+            vec![
+                Transaction::from_proto(
+                    Transaction::make_block_reward_proto(
+                        &account1,
+                        TEST_CHAIN_ID,
+                        13,
+                        account1.address(),
+                        reward_for(coins(78)),
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account3,
+                        TEST_CHAIN_ID,
+                        57,
+                        account4.address(),
+                        5.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_descending() {
+        let account1 = testing::account1();
+        let account3 = testing::account3();
+        let account4 = testing::account4();
+        let fixture = TestFixture::default().await.unwrap();
+        fixture
+            .send_coins(&account3, 57, account4.address(), 5.into())
+            .await
+            .unwrap();
+        fixture
+            .send_coins(&account4, 79, account3.address(), 3.into())
+            .await
+            .unwrap();
+        fixture.advance_to_next_block().await;
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: Some(
+                    libernet::query_transactions_request::SortOrder::TransactionSortOrderDescending
+                        as i32,
+                ),
+                max_count: None,
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        let transactions = proofs
+            .individual_proof
+            .iter()
+            .map(|proto| {
+                let (block_info, proof) =
+                    TransactionInclusionProof::decode_and_verify_transaction_proof(proto).unwrap();
+                assert_eq!(
+                    block_info.hash(),
+                    parse_scalar(
+                        "0x6537497d8626f7156ec36a66dc0334ba0f5bc86ad29d2689134fc2027da391c8",
+                    )
+                );
+                proof.take_value()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transactions,
+            vec![
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account4,
+                        TEST_CHAIN_ID,
+                        79,
+                        account3.address(),
+                        3.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account3,
+                        TEST_CHAIN_ID,
+                        57,
+                        account4.address(),
+                        5.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_block_reward_proto(
+                        &account1,
+                        TEST_CHAIN_ID,
+                        13,
+                        account1.address(),
+                        reward_for(coins(78)),
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+            ]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_descending_capped() {
+        let account3 = testing::account3();
+        let account4 = testing::account4();
+        let fixture = TestFixture::default().await.unwrap();
+        fixture
+            .send_coins(&account3, 57, account4.address(), 5.into())
+            .await
+            .unwrap();
+        fixture
+            .send_coins(&account4, 79, account3.address(), 3.into())
+            .await
+            .unwrap();
+        fixture.advance_to_next_block().await;
+        let response = fixture
+            .client
+            .lock()
+            .await
+            .query_transactions(libernet::QueryTransactionsRequest {
+                from_filter: None,
+                to_filter: None,
+                sort_order: Some(
+                    libernet::query_transactions_request::SortOrder::TransactionSortOrderDescending
+                        as i32,
+                ),
+                max_count: Some(2),
+                start_block_filter: None,
+                end_block_filter: None,
+            })
+            .await
+            .unwrap()
+            .into_inner();
+        let libernet::query_transactions_response::TransactionProofs::IndividualProofs(proofs) =
+            response.transaction_proofs.unwrap()
+        else {
+            panic!();
+        };
+        let transactions = proofs
+            .individual_proof
+            .iter()
+            .map(|proto| {
+                let (block_info, proof) =
+                    TransactionInclusionProof::decode_and_verify_transaction_proof(proto).unwrap();
+                assert_eq!(
+                    block_info.hash(),
+                    parse_scalar(
+                        "0x6537497d8626f7156ec36a66dc0334ba0f5bc86ad29d2689134fc2027da391c8",
+                    )
+                );
+                proof.take_value()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            transactions,
+            vec![
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account4,
+                        TEST_CHAIN_ID,
+                        79,
+                        account3.address(),
+                        3.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+                Transaction::from_proto(
+                    Transaction::make_coin_transfer_proto(
+                        &account3,
+                        TEST_CHAIN_ID,
+                        57,
+                        account4.address(),
+                        5.into()
+                    )
+                    .unwrap()
+                )
+                .unwrap(),
+            ]
+        );
+    }
+
+    // TODO
 }

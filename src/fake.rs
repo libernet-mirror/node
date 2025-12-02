@@ -91,7 +91,22 @@ impl NodeServiceV1 for FakeNodeService {
         _request: Request<libernet::GetTransactionRequest>,
     ) -> Result<Response<libernet::GetTransactionResponse>, Status> {
         Ok(Response::new(libernet::GetTransactionResponse {
-            transaction: None,
+            transaction_proof: None,
+        }))
+    }
+
+    async fn query_transactions(
+        &self,
+        _request: Request<libernet::QueryTransactionsRequest>,
+    ) -> Result<Response<libernet::QueryTransactionsResponse>, Status> {
+        Ok(Response::new(libernet::QueryTransactionsResponse {
+            transaction_proofs: Some(
+                libernet::query_transactions_response::TransactionProofs::IndividualProofs(
+                    libernet::query_transactions_response::IndividualProofs {
+                        individual_proof: vec![],
+                    },
+                ),
+            ),
         }))
     }
 
