@@ -614,14 +614,6 @@ impl<
     const H: usize,
 > MerkleTreeVersion<K, V, W, H>
 {
-    pub fn from<const N: usize>(entries: [(K, V); N]) -> Self {
-        let mut tree = Self::default();
-        for (key, value) in entries {
-            tree = tree.put(key, value);
-        }
-        tree
-    }
-
     pub fn root_hash(&self) -> Scalar {
         self.root.as_scalar()
     }
@@ -658,6 +650,39 @@ impl<
         Self {
             root: PHANTOM_NODES.get::<K, V, W, H>(H),
         }
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    const W: usize,
+    const H: usize,
+    const N: usize,
+> From<[(K, V); N]> for MerkleTreeVersion<K, V, W, H>
+{
+    fn from(value: [(K, V); N]) -> Self {
+        let mut tree = Self::default();
+        for (key, value) in value {
+            tree = tree.put(key, value);
+        }
+        tree
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    const W: usize,
+    const H: usize,
+> From<&[(K, V)]> for MerkleTreeVersion<K, V, W, H>
+{
+    fn from(value: &[(K, V)]) -> Self {
+        let mut tree = Self::default();
+        for (key, value) in value {
+            tree = tree.put(*key, value.clone());
+        }
+        tree
     }
 }
 
@@ -704,12 +729,6 @@ impl<
     const H: usize,
 > MerkleTree<K, V, W, H>
 {
-    pub fn from<const N: usize>(entries: [(K, V); N]) -> Self {
-        Self {
-            versions: BTreeMap::from([(0, MerkleTreeVersion::from(entries))]),
-        }
-    }
-
     pub fn get_version(&self, version: u64) -> &MerkleTreeVersion<K, V, W, H> {
         let (_, version) = self.versions.range(0..=version).next_back().unwrap();
         version
@@ -749,6 +768,35 @@ impl<
     fn default() -> Self {
         Self {
             versions: BTreeMap::from([(0, MerkleTreeVersion::default())]),
+        }
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    const W: usize,
+    const H: usize,
+    const N: usize,
+> From<[(K, V); N]> for MerkleTree<K, V, W, H>
+{
+    fn from(value: [(K, V); N]) -> Self {
+        Self {
+            versions: BTreeMap::from([(0, MerkleTreeVersion::from(value))]),
+        }
+    }
+}
+
+impl<
+    K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
+    V: Debug + Default + Clone + Send + Sync + AsScalar + 'static,
+    const W: usize,
+    const H: usize,
+> From<&[(K, V)]> for MerkleTree<K, V, W, H>
+{
+    fn from(value: &[(K, V)]) -> Self {
+        Self {
+            versions: BTreeMap::from([(0, MerkleTreeVersion::from(value))]),
         }
     }
 }

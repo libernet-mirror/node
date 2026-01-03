@@ -144,13 +144,13 @@ impl NodeServiceImpl {
         }
     }
 
-    fn new<const N: usize>(
+    fn new(
         clock: Arc<dyn Clock>,
         account: Arc<Account>,
         location: libernet::GeographicalLocation,
         chain_id: u64,
         public_address: &str,
-        initial_accounts: [(Scalar, data::AccountInfo); N],
+        initial_accounts: &[(Scalar, data::AccountInfo)],
         grpc_port: u16,
         http_port: u16,
     ) -> anyhow::Result<Arc<Self>> {
@@ -472,13 +472,13 @@ pub struct NodeService {
 }
 
 impl NodeService {
-    pub fn new<const N: usize>(
+    pub fn new(
         clock: Arc<dyn Clock>,
         account: Arc<Account>,
         location: libernet::GeographicalLocation,
         chain_id: u64,
         public_address: &str,
-        initial_accounts: [(Scalar, data::AccountInfo); N],
+        initial_accounts: &[(Scalar, data::AccountInfo)],
         grpc_port: u16,
         http_port: u16,
     ) -> anyhow::Result<Self> {
@@ -681,9 +681,9 @@ mod tests {
     }
 
     impl TestFixture {
-        async fn new<const N: usize>(
+        async fn new(
             location: libernet::GeographicalLocation,
-            initial_accounts: [(Scalar, data::AccountInfo); N],
+            initial_accounts: &[(Scalar, data::AccountInfo)],
         ) -> Result<Self> {
             let now = SystemTime::now();
             let not_before = now - Duration::from_secs(123);
@@ -766,7 +766,7 @@ mod tests {
                     latitude: Some(71i32),
                     longitude: Some(104u32),
                 },
-                [
+                &[
                     (
                         address1,
                         data::AccountInfo {

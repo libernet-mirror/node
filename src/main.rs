@@ -2,11 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::account::Account;
+use crate::data::AccountInfo;
 use crate::libernet::node_service_v1_server::NodeServiceV1Server;
 use anyhow::{Result, anyhow};
+use blstrs::Scalar;
 use clap::Parser;
 use crypto::utils;
 use primitive_types::H512;
+use std::collections::BTreeMap;
+use std::fs;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 use tonic::transport::Server;
@@ -77,7 +81,7 @@ struct Args {
 
     /// A list of well-known nodes to connect to in order to join an existing network. If the list
     /// is left empty this node will start a new network.
-    #[arg(long, default_value = "")]
+    #[arg(long)]
     bootstrap_list: Vec<String>,
 
     /// The block time, in milliseconds. Ignored if --bootstrap_list is provided.
@@ -86,6 +90,13 @@ struct Args {
     /// need to make it configurable.
     #[arg(long, default_value = "10000")]
     block_time_ms: u32,
+
+    /// Provides a JSON file where the user can specify account balances at genesis.
+    ///
+    /// Ignored if --bootstrap_list is specified, as in that case we'll be joining an existing
+    /// network.
+    #[arg(long)]
+    balance_file: Option<String>,
 }
 
 fn make_location(latitude: f64, longitude: f64) -> Result<libernet::GeographicalLocation> {
@@ -99,6 +110,25 @@ fn make_location(latitude: f64, longitude: f64) -> Result<libernet::Geographical
         latitude: Some((latitude * 60.0) as i32),
         longitude: Some((longitude * 60.0) as u32),
     })
+}
+
+fn read_balances(balance_file_path: &str) -> Result<BTreeMap<Scalar, Scalar>> {
+    let json = fs::read_to_string(balance_file_path)?;
+    match serde_json::from_str(json.as_str())? {
+        serde_json::Value::Object(balances) => Ok(balances
+            .iter()
+            .map(|(address, balance)| {
+                Ok((
+                    utils::parse_scalar(address.as_str())?,
+                    match balance {
+                        serde_json::Value::String(balance) => utils::parse_scalar(balance.as_str()),
+                        _ => Err(anyhow!("invalid balance for {}", address)),
+                    }?,
+                ))
+            })
+            .collect::<Result<BTreeMap<Scalar, Scalar>>>()?),
+        _ => Err(anyhow!("invalid balance file format")),
+    }
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -126,6 +156,32 @@ async fn main() -> Result<()> {
     };
 
     let location = make_location(args.latitude, args.longitude)?;
+
+    let balances = if let Some(balance_file_path) = args.balance_file {
+        if args.bootstrap_list.is_empty() {
+            println!("reading {}", balance_file_path);
+            let balances = read_balances(&balance_file_path)?;
+            println!("initial balances: {{");
+            for (address, balance) in &balances {
+                println!(
+                    "  {}: {}",
+                    utils::format_scalar(*address),
+                    utils::format_scalar(*balance)
+                );
+            }
+            println!("}}");
+            balances
+        } else {
+            println!(
+                "ignoring balance file {} because a bootstrap list was specified",
+                balance_file_path
+            );
+            BTreeMap::default()
+        }
+    } else {
+        BTreeMap::default()
+    };
+
     let server =
         Server::builder().add_service(NodeServiceV1Server::new(service::NodeService::new(
             Arc::new(clock::RealClock::default()),
@@ -133,7 +189,20 @@ async fn main() -> Result<()> {
             location,
             args.chain_id,
             args.public_address.as_str(),
-            [],
+            balances
+                .iter()
+                .map(|(address, balance)| {
+                    (
+                        *address,
+                        AccountInfo {
+                            last_nonce: 0,
+                            balance: *balance,
+                            staking_balance: 0.into(),
+                        },
+                    )
+                })
+                .collect::<Vec<_>>()
+                .as_slice(),
             args.grpc_port,
             args.http_port,
         )?));

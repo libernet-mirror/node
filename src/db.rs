@@ -407,11 +407,11 @@ struct Repr {
 }
 
 impl Repr {
-    fn new<const N: usize>(
+    fn new(
         clock: &Arc<dyn Clock>,
         chain_id: u64,
         identity: libernet::NodeIdentity,
-        initial_accounts: [(Scalar, AccountInfo); N],
+        initial_accounts: &[(Scalar, AccountInfo)],
     ) -> Result<Self> {
         let network = topology::Network::new(identity)?;
         let accounts = AccountTree::from(initial_accounts);
@@ -1184,11 +1184,11 @@ pub struct Db {
 }
 
 impl Db {
-    pub fn new<const N: usize>(
+    pub fn new(
         clock: Arc<dyn Clock>,
         chain_id: u64,
         identity: libernet::NodeIdentity,
-        initial_accounts: [(Scalar, AccountInfo); N],
+        initial_accounts: &[(Scalar, AccountInfo)],
     ) -> Result<Self> {
         let repr = Repr::new(&clock, chain_id, identity, initial_accounts)?;
         Ok(Self {
@@ -1619,7 +1619,7 @@ mod tests {
     }
 
     impl TestFixture {
-        async fn new<const N: usize>(initial_accounts: [(Scalar, AccountInfo); N]) -> Result<Self> {
+        async fn new(initial_accounts: &[(Scalar, AccountInfo)]) -> Result<Self> {
             let clock = Arc::new(MockClock::new(
                 SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
             ));
@@ -1651,7 +1651,7 @@ mod tests {
         }
 
         async fn default() -> Result<Self> {
-            Self::new([
+            Self::new(&[
                 (testing::account1().address(), account_info1()),
                 (testing::account2().address(), account_info2()),
                 (testing::account3().address(), account_info3()),
@@ -1729,7 +1729,7 @@ mod tests {
         let address1 = testing::account1().address();
         let address2 = testing::account2().address();
         let address3 = testing::account3().address();
-        let fixture = TestFixture::new([]).await.unwrap();
+        let fixture = TestFixture::new(&[]).await.unwrap();
         let db = &fixture.db;
         assert_eq!(db.chain_id(), TEST_CHAIN_ID);
         assert_eq!(db.current_version().await, 1);
