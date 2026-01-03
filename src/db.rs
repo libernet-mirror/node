@@ -1785,7 +1785,6 @@ mod tests {
         let address1 = testing::account1().address();
         let address2 = testing::account2().address();
         let address3 = testing::account3().address();
-        let address4 = testing::account4().address();
         let fixture = TestFixture::default().await.unwrap();
         let db = &fixture.db;
         assert_eq!(db.chain_id(), TEST_CHAIN_ID);
@@ -2187,6 +2186,342 @@ mod tests {
         assert_eq!(
             fixture.get_transaction(transaction2.hash()).await.unwrap(),
             (block2, transaction2)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_bad_nonce1() {
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let fixture = TestFixture::default().await.unwrap();
+        let db = &fixture.db;
+        let transaction1 = Transaction::from_proto(
+            Transaction::make_block_reward_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                13,
+                account1.address(),
+                reward_for(coins(78)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction1.diff()).await.is_ok());
+        let transaction2 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                13,
+                account2.address(),
+                coins(12),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction2.diff()).await.is_err());
+        let block2 = fixture.advance_to_next_block().await;
+        assert_eq!(db.chain_id(), TEST_CHAIN_ID);
+        assert_eq!(db.current_version().await, 2);
+        let block1 = db.get_block_by_number(0).await.unwrap();
+        assert_eq!(block1.number(), 0);
+        assert_eq!(block2.number(), 1);
+        let block1_hash =
+            parse_scalar("0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d");
+        assert_eq!(block1.hash(), block1_hash);
+        assert_eq!(
+            block1.transactions_root_hash(),
+            parse_scalar("0x18946455643c580076fa4d0b296a9bca801685e125b5ac65fb987e01fb2466b3")
+        );
+        let block2_hash =
+            parse_scalar("0x19fc6e9517f053243ea7660897f9b2e6def915d74baf46f254e9b667e14b27d5");
+        assert_eq!(block2.hash(), block2_hash);
+        assert_eq!(
+            block2.transactions_root_hash(),
+            parse_scalar("0x458bedbde3994bc17658554661b69a865f02656ecb0345b2a02f76f29638f4c3")
+        );
+        assert_eq!(db.get_block_by_hash(block1_hash).await.unwrap(), block1);
+        assert_eq!(db.get_block_by_hash(block2_hash).await.unwrap(), block2);
+        assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
+        assert!(db.get_block_by_number(2).await.is_none());
+        assert_eq!(db.get_latest_block().await, block2);
+        let updated_account_info1 = AccountInfo {
+            last_nonce: 13,
+            balance: coins(90) + reward_for(coins(78)),
+            staking_balance: coins(78),
+        };
+        assert_eq!(
+            fixture
+                .get_account_info(account1.address(), block1_hash)
+                .await
+                .unwrap(),
+            account_info1()
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account1.address(), block2_hash)
+                .await
+                .unwrap(),
+            updated_account_info1
+        );
+        assert_eq!(
+            fixture
+                .get_latest_account_info(account1.address())
+                .await
+                .unwrap(),
+            updated_account_info1
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account2.address(), block1_hash)
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account2.address(), block2_hash)
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            fixture
+                .get_latest_account_info(account2.address())
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            db.get_all_block_transaction_hashes(1).await.unwrap(),
+            vec![transaction1.hash()]
+        );
+        assert_eq!(
+            fixture.get_transaction(transaction1.hash()).await.unwrap(),
+            (block2, transaction1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_bad_nonce2() {
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let fixture = TestFixture::default().await.unwrap();
+        let db = &fixture.db;
+        let transaction1 = Transaction::from_proto(
+            Transaction::make_block_reward_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                13,
+                account1.address(),
+                reward_for(coins(78)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction1.diff()).await.is_ok());
+        let transaction2 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                12,
+                account2.address(),
+                coins(12),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction2.diff()).await.is_err());
+        let block2 = fixture.advance_to_next_block().await;
+        assert_eq!(db.chain_id(), TEST_CHAIN_ID);
+        assert_eq!(db.current_version().await, 2);
+        let block1 = db.get_block_by_number(0).await.unwrap();
+        assert_eq!(block1.number(), 0);
+        assert_eq!(block2.number(), 1);
+        let block1_hash =
+            parse_scalar("0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d");
+        assert_eq!(block1.hash(), block1_hash);
+        assert_eq!(
+            block1.transactions_root_hash(),
+            parse_scalar("0x18946455643c580076fa4d0b296a9bca801685e125b5ac65fb987e01fb2466b3")
+        );
+        let block2_hash =
+            parse_scalar("0x19fc6e9517f053243ea7660897f9b2e6def915d74baf46f254e9b667e14b27d5");
+        assert_eq!(block2.hash(), block2_hash);
+        assert_eq!(
+            block2.transactions_root_hash(),
+            parse_scalar("0x458bedbde3994bc17658554661b69a865f02656ecb0345b2a02f76f29638f4c3")
+        );
+        assert_eq!(db.get_block_by_hash(block1_hash).await.unwrap(), block1);
+        assert_eq!(db.get_block_by_hash(block2_hash).await.unwrap(), block2);
+        assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
+        assert!(db.get_block_by_number(2).await.is_none());
+        assert_eq!(db.get_latest_block().await, block2);
+        let updated_account_info1 = AccountInfo {
+            last_nonce: 13,
+            balance: coins(90) + reward_for(coins(78)),
+            staking_balance: coins(78),
+        };
+        assert_eq!(
+            fixture
+                .get_account_info(account1.address(), block1_hash)
+                .await
+                .unwrap(),
+            account_info1()
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account1.address(), block2_hash)
+                .await
+                .unwrap(),
+            updated_account_info1
+        );
+        assert_eq!(
+            fixture
+                .get_latest_account_info(account1.address())
+                .await
+                .unwrap(),
+            updated_account_info1
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account2.address(), block1_hash)
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account2.address(), block2_hash)
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            fixture
+                .get_latest_account_info(account2.address())
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            db.get_all_block_transaction_hashes(1).await.unwrap(),
+            vec![transaction1.hash()]
+        );
+        assert_eq!(
+            fixture.get_transaction(transaction1.hash()).await.unwrap(),
+            (block2, transaction1)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_bad_chain_id() {
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let fixture = TestFixture::default().await.unwrap();
+        let db = &fixture.db;
+        let transaction1 = Transaction::from_proto(
+            Transaction::make_block_reward_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                13,
+                account1.address(),
+                reward_for(coins(78)),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction1.diff()).await.is_ok());
+        let transaction2 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &account1,
+                1337,
+                14,
+                account2.address(),
+                coins(12),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction2.diff()).await.is_err());
+        let block2 = fixture.advance_to_next_block().await;
+        assert_eq!(db.chain_id(), TEST_CHAIN_ID);
+        assert_eq!(db.current_version().await, 2);
+        let block1 = db.get_block_by_number(0).await.unwrap();
+        assert_eq!(block1.number(), 0);
+        assert_eq!(block2.number(), 1);
+        let block1_hash =
+            parse_scalar("0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d");
+        assert_eq!(block1.hash(), block1_hash);
+        assert_eq!(
+            block1.transactions_root_hash(),
+            parse_scalar("0x18946455643c580076fa4d0b296a9bca801685e125b5ac65fb987e01fb2466b3")
+        );
+        let block2_hash =
+            parse_scalar("0x19fc6e9517f053243ea7660897f9b2e6def915d74baf46f254e9b667e14b27d5");
+        assert_eq!(block2.hash(), block2_hash);
+        assert_eq!(
+            block2.transactions_root_hash(),
+            parse_scalar("0x458bedbde3994bc17658554661b69a865f02656ecb0345b2a02f76f29638f4c3")
+        );
+        assert_eq!(db.get_block_by_hash(block1_hash).await.unwrap(), block1);
+        assert_eq!(db.get_block_by_hash(block2_hash).await.unwrap(), block2);
+        assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
+        assert!(db.get_block_by_number(2).await.is_none());
+        assert_eq!(db.get_latest_block().await, block2);
+        let updated_account_info1 = AccountInfo {
+            last_nonce: 13,
+            balance: coins(90) + reward_for(coins(78)),
+            staking_balance: coins(78),
+        };
+        assert_eq!(
+            fixture
+                .get_account_info(account1.address(), block1_hash)
+                .await
+                .unwrap(),
+            account_info1()
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account1.address(), block2_hash)
+                .await
+                .unwrap(),
+            updated_account_info1
+        );
+        assert_eq!(
+            fixture
+                .get_latest_account_info(account1.address())
+                .await
+                .unwrap(),
+            updated_account_info1
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account2.address(), block1_hash)
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            fixture
+                .get_account_info(account2.address(), block2_hash)
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            fixture
+                .get_latest_account_info(account2.address())
+                .await
+                .unwrap(),
+            account_info2()
+        );
+        assert_eq!(
+            db.get_all_block_transaction_hashes(1).await.unwrap(),
+            vec![transaction1.hash()]
+        );
+        assert_eq!(
+            fixture.get_transaction(transaction1.hash()).await.unwrap(),
+            (block2, transaction1)
         );
     }
 
@@ -2594,6 +2929,4 @@ mod tests {
             (block3, transaction4)
         );
     }
-
-    // TODO
 }
