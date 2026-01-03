@@ -238,6 +238,10 @@ impl NodeServiceImpl {
 
     fn start_block_timer(self: Arc<Self>) {
         tokio::spawn(async move {
+            println!(
+                "genesis block hash: {}",
+                utils::format_scalar(self.db.get_latest_block().await.hash())
+            );
             loop {
                 self.add_block_rewards().await;
                 tokio::select! {
