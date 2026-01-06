@@ -91,12 +91,12 @@ struct Args {
     #[arg(long, default_value = "10000")]
     block_time_ms: u32,
 
-    /// Provides a JSON file where the user can specify account balances at genesis.
+    /// Provides a JSON file where the user can specify initial account states at genesis.
     ///
     /// Ignored if --bootstrap_list is specified, as in that case we'll be joining an existing
     /// network.
     #[arg(long)]
-    balance_file: Option<String>,
+    account_file: Option<String>,
 }
 
 fn make_location(latitude: f64, longitude: f64) -> Result<libernet::GeographicalLocation> {
@@ -112,22 +112,46 @@ fn make_location(latitude: f64, longitude: f64) -> Result<libernet::Geographical
     })
 }
 
-fn read_balances(balance_file_path: &str) -> Result<BTreeMap<Scalar, Scalar>> {
-    let json = fs::read_to_string(balance_file_path)?;
+fn read_accounts(file_path: &str) -> Result<BTreeMap<Scalar, AccountInfo>> {
+    let json = fs::read_to_string(file_path)?;
     match serde_json::from_str(json.as_str())? {
-        serde_json::Value::Object(balances) => Ok(balances
+        serde_json::Value::Object(accounts) => Ok(accounts
             .iter()
-            .map(|(address, balance)| {
+            .map(|(address, account_state)| {
                 Ok((
                     utils::parse_scalar(address.as_str())?,
-                    match balance {
-                        serde_json::Value::String(balance) => utils::parse_scalar(balance.as_str()),
+                    match account_state {
+                        serde_json::Value::String(balance) => Ok(AccountInfo {
+                            last_nonce: 0,
+                            balance: utils::parse_scalar(balance.as_str())?,
+                            staking_balance: 0.into(),
+                        }),
+                        serde_json::Value::Object(fields) => Ok(AccountInfo {
+                            last_nonce: 0,
+                            balance: match fields.get("balance") {
+                                Some(serde_json::Value::String(balance)) => {
+                                    Ok(utils::parse_scalar(balance.as_str())?)
+                                }
+                                _ => {
+                                    Err(anyhow!("invalid balance format for {}", address.as_str()))
+                                }
+                            }?,
+                            staking_balance: match fields.get("staking_balance") {
+                                Some(serde_json::Value::String(balance)) => {
+                                    Ok(utils::parse_scalar(balance.as_str())?)
+                                }
+                                _ => Err(anyhow!(
+                                    "invalid staking balance format for {}",
+                                    address.as_str()
+                                )),
+                            }?,
+                        }),
                         _ => Err(anyhow!("invalid balance for {}", address)),
                     }?,
                 ))
             })
-            .collect::<Result<BTreeMap<Scalar, Scalar>>>()?),
-        _ => Err(anyhow!("invalid balance file format")),
+            .collect::<Result<BTreeMap<Scalar, AccountInfo>>>()?),
+        _ => Err(anyhow!("invalid account file format")),
     }
 }
 
@@ -157,24 +181,26 @@ async fn main() -> Result<()> {
 
     let location = make_location(args.latitude, args.longitude)?;
 
-    let balances = if let Some(balance_file_path) = args.balance_file {
+    let accounts = if let Some(file_path) = args.account_file {
         if args.bootstrap_list.is_empty() {
-            println!("reading {}", balance_file_path);
-            let balances = read_balances(&balance_file_path)?;
-            println!("initial balances: {{");
-            for (address, balance) in &balances {
+            println!("reading {}", file_path);
+            let accounts = read_accounts(file_path.as_str())?;
+            println!("initial accounts: {{");
+            for (address, account) in &accounts {
+                println!("  {}: {{", utils::format_scalar(*address));
+                println!("    balance: {}", utils::format_scalar(account.balance));
                 println!(
-                    "  {}: {}",
-                    utils::format_scalar(*address),
-                    utils::format_scalar(*balance)
+                    "    staking_balance: {}",
+                    utils::format_scalar(account.staking_balance)
                 );
+                println!("  }}");
             }
             println!("}}");
-            balances
+            accounts
         } else {
             println!(
-                "ignoring balance file {} because a bootstrap list was specified",
-                balance_file_path
+                "ignoring account file {} because a bootstrap list was specified",
+                file_path
             );
             BTreeMap::default()
         }
@@ -189,18 +215,9 @@ async fn main() -> Result<()> {
             location,
             args.chain_id,
             args.public_address.as_str(),
-            balances
+            accounts
                 .iter()
-                .map(|(address, balance)| {
-                    (
-                        *address,
-                        AccountInfo {
-                            last_nonce: 0,
-                            balance: *balance,
-                            staking_balance: 0.into(),
-                        },
-                    )
-                })
+                .map(|(address, account)| (*address, *account))
                 .collect::<Vec<_>>()
                 .as_slice(),
             args.grpc_port,
