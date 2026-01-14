@@ -156,7 +156,7 @@ impl NodeServiceImpl {
     ) -> anyhow::Result<Arc<Self>> {
         println!("Public key: {}", utils::format_g1(account.public_key()));
         println!(
-            "Wallet address: {}",
+            "Account address: {}",
             utils::format_scalar(account.address())
         );
         let identity = Self::make_node_identity(
