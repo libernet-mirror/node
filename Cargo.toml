@@ -2,6 +2,7 @@
 name = "node"
 version = "0.1.0"
 edition = "2024"
+default-run = "node"
 
 [dependencies]
 anyhow = "1.0.100"
@@ -29,6 +30,18 @@ tonic-prost = "0.14.2"
 tower = "0.5.2"
 x509-parser = "0.18.0"
 zeroize = "1.8.2"
+
+
+wasmparser = "0.244"
+wasm-encoder = "0.244"
+
+[[bin]]
+name = "node"
+path = "src/main.rs"
+
+[[bin]]
+name = "wasm2proto"
+path = "src/wasm2proto/wasm2proto.rs"
 
 [build-dependencies]
 tonic-prost-build = "*"
