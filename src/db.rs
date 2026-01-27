@@ -3118,8 +3118,8 @@ mod tests {
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn test_query_transactions_from_first_block() {
+    async fn make_test_fixture_with_one_block() -> Result<(TestFixture, BlockInfo, Vec<Transaction>)>
+    {
         let account1 = testing::account1();
         let account2 = testing::account2();
         let fixture = TestFixture::default().await.unwrap();
@@ -3161,12 +3161,192 @@ mod tests {
         .unwrap();
         assert!(db.add_transaction(transaction3.diff()).await.is_ok());
         let block = fixture.advance_to_next_block().await;
+        Ok((
+            fixture,
+            block,
+            vec![transaction1, transaction2, transaction3],
+        ))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Ascending, None)
                 .await
                 .unwrap(),
-            vec![(block, vec![transaction1, transaction2, transaction3])]
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_descending() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(None, None, SortOrder::Descending, None)
+                .await
+                .unwrap(),
+            vec![(block, transactions.into_iter().rev().collect())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_capped1() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(None, None, SortOrder::Ascending, Some(1))
+                .await
+                .unwrap(),
+            vec![(block, transactions.into_iter().take(1).collect())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_capped1_descending() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(None, None, SortOrder::Descending, Some(1))
+                .await
+                .unwrap(),
+            vec![(block, transactions.into_iter().rev().take(1).collect())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_capped2() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(None, None, SortOrder::Ascending, Some(2))
+                .await
+                .unwrap(),
+            vec![(block, transactions.into_iter().take(2).collect())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_capped2_descending() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(None, None, SortOrder::Descending, Some(2))
+                .await
+                .unwrap(),
+            vec![(block, transactions.into_iter().rev().take(2).collect())]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_lower_bound_number() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(1)),
+                    None,
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_lower_bound_hash() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
+                    ))),
+                    None,
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_upper_bound_number() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    None,
+                    Some(BlockFilter::BlockNumber(1)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_upper_bound_hash() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    None,
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_bounded_with_numbers() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(1)),
+                    Some(BlockFilter::BlockNumber(1)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block_bounded_with_hashed() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
         );
     }
 
