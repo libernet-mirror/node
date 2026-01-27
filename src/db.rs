@@ -3241,6 +3241,42 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_two_blocks_lower_bound_number() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    None,
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_two_blocks_lower_bound_hash() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
+                    ))),
+                    None,
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_lower_bound_number() {
         let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
@@ -3273,6 +3309,42 @@ mod tests {
                 .await
                 .unwrap(),
             vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_before_first_block_upper_bound_number() {
+        let (fixture, _, _) = make_test_fixture_with_one_block().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    None,
+                    Some(BlockFilter::BlockNumber(0)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_before_first_block_upper_bound_hash() {
+        let (fixture, _, _) = make_test_fixture_with_one_block().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    None,
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -3330,13 +3402,51 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_query_transactions_from_first_block_bounded_with_hashed() {
+    async fn test_query_transactions_from_first_block_bounded_with_hashes() {
         let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
                         "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_two_blocks_bounded_with_numbers() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    Some(BlockFilter::BlockNumber(1)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            vec![(block, transactions)]
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_two_blocks_bounded_with_hashes() {
+        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
                         "0x588fbc7bd8ddafc5b78421ca6b7ad357d9d95182c4fad8b34eefd7238cb92ce5"
