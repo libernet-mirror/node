@@ -1707,11 +1707,10 @@ mod tests {
             Ok(account_state.take())
         }
 
-        async fn get_transaction(&self, hash: Scalar) -> Result<(BlockInfo, Transaction)> {
-            let (block_info, proof) = self.db.get_transaction(hash).await.context(format!(
-                "transaction {} not found",
-                utils::format_scalar(hash)
-            ))?;
+        fn verify_transaction_proof(
+            block_info: &BlockInfo,
+            proof: TransactionInclusionProof,
+        ) -> Result<Transaction> {
             if proof.root_hash() != block_info.transactions_root_hash() {
                 return Err(anyhow!(
                     "incorrect transaction root hash (got {}, want {})",
@@ -1720,7 +1719,50 @@ mod tests {
                 ));
             }
             proof.verify()?;
-            Ok((block_info, proof.take_value()))
+            Ok(proof.take_value())
+        }
+
+        async fn get_transaction(&self, hash: Scalar) -> Result<(BlockInfo, Transaction)> {
+            let (block_info, proof) = self.db.get_transaction(hash).await.context(format!(
+                "transaction {} not found",
+                utils::format_scalar(hash)
+            ))?;
+            Ok((
+                block_info,
+                Self::verify_transaction_proof(&block_info, proof)?,
+            ))
+        }
+
+        async fn query_transactions(
+            &self,
+            start_block: Option<BlockFilter>,
+            end_block: Option<BlockFilter>,
+            sort_order: SortOrder,
+            max_count: Option<usize>,
+        ) -> Result<Vec<(BlockInfo, Vec<Transaction>)>> {
+            self.db
+                .query_transactions(
+                    start_block,
+                    end_block,
+                    sort_order,
+                    match max_count {
+                        Some(max_count) => max_count,
+                        None => usize::MAX,
+                    },
+                )
+                .await?
+                .0
+                .into_iter()
+                .map(|(block_info, block_proofs)| {
+                    Ok((
+                        block_info,
+                        block_proofs
+                            .into_iter()
+                            .map(|proof| Self::verify_transaction_proof(&block_info, proof))
+                            .collect::<Result<Vec<Transaction>>>()?,
+                    ))
+                })
+                .collect()
         }
     }
 
@@ -2931,140 +2973,201 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block() {
+    async fn test_query_transactions_from_genesis_block() {
         let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(None, None, SortOrder::Ascending, 0)
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
+        assert!(
+            fixture
+                .query_transactions(None, None, SortOrder::Ascending, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_descending() {
+    async fn test_query_transactions_from_genesis_block_descending() {
         let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(None, None, SortOrder::Descending, 0)
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
+        assert!(
+            fixture
+                .query_transactions(None, None, SortOrder::Descending, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_capped() {
+    async fn test_query_transactions_from_genesis_block_capped() {
         let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(None, None, SortOrder::Ascending, 10)
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
+        assert!(
+            fixture
+                .query_transactions(None, None, SortOrder::Ascending, Some(10))
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_lower_bound_number() {
+    async fn test_query_transactions_from_genesis_block_lower_bound_number() {
         let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(
-                Some(BlockFilter::BlockNumber(0)),
-                None,
-                SortOrder::Ascending,
-                0,
+        assert!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    None,
+                    SortOrder::Ascending,
+                    None,
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_genesis_block_lower_bound_hash() {
+        let fixture = TestFixture::default().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
+                    ))),
+                    None,
+                    SortOrder::Ascending,
+                    None,
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_genesis_block_upper_bound_number() {
+        let fixture = TestFixture::default().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    None,
+                    Some(BlockFilter::BlockNumber(0)),
+                    SortOrder::Ascending,
+                    None,
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_genesis_block_upper_bound_hash() {
+        let fixture = TestFixture::default().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    None,
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
+                    ))),
+                    SortOrder::Ascending,
+                    None,
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_genesis_block_bounded_with_numbers() {
+        let fixture = TestFixture::default().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    Some(BlockFilter::BlockNumber(0)),
+                    SortOrder::Ascending,
+                    None,
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_genesis_block_bounded_with_hashes() {
+        let fixture = TestFixture::default().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
+                    ))),
+                    SortOrder::Ascending,
+                    None,
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_block() {
+        let account1 = testing::account1();
+        let account2 = testing::account2();
+        let fixture = TestFixture::default().await.unwrap();
+        let db = &fixture.db;
+        let transaction1 = Transaction::from_proto(
+            Transaction::make_block_reward_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                13,
+                account1.address(),
+                123.into(),
             )
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_lower_bound_hash() {
-        let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(
-                Some(BlockFilter::BlockHash(parse_scalar(
-                    "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
-                ))),
-                None,
-                SortOrder::Ascending,
-                0,
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction1.diff()).await.is_ok());
+        let transaction2 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &account1,
+                TEST_CHAIN_ID,
+                14,
+                account2.address(),
+                100.into(),
             )
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_upper_bound_number() {
-        let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(
-                None,
-                Some(BlockFilter::BlockNumber(0)),
-                SortOrder::Ascending,
-                0,
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction2.diff()).await.is_ok());
+        let transaction3 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &account2,
+                TEST_CHAIN_ID,
+                35,
+                account1.address(),
+                50.into(),
             )
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_upper_bound_hash() {
-        let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(
-                None,
-                Some(BlockFilter::BlockHash(parse_scalar(
-                    "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
-                ))),
-                SortOrder::Ascending,
-                0,
-            )
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_bounded_with_numbers() {
-        let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(
-                Some(BlockFilter::BlockNumber(0)),
-                Some(BlockFilter::BlockNumber(0)),
-                SortOrder::Ascending,
-                0,
-            )
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn test_query_all_transactions_from_genesis_block_bounded_with_hashes() {
-        let fixture = TestFixture::default().await.unwrap();
-        let results = fixture
-            .db
-            .query_transactions(
-                Some(BlockFilter::BlockHash(parse_scalar(
-                    "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
-                ))),
-                Some(BlockFilter::BlockHash(parse_scalar(
-                    "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d",
-                ))),
-                SortOrder::Ascending,
-                0,
-            )
-            .await
-            .unwrap();
-        assert!(results.0.is_empty());
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(db.add_transaction(transaction3.diff()).await.is_ok());
+        let block = fixture.advance_to_next_block().await;
+        assert_eq!(
+            fixture
+                .query_transactions(None, None, SortOrder::Ascending, None)
+                .await
+                .unwrap(),
+            vec![(block, vec![transaction1, transaction2, transaction3])]
+        );
     }
 
     // TODO
