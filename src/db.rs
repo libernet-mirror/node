@@ -1739,8 +1739,9 @@ mod tests {
             end_block: Option<BlockFilter>,
             sort_order: SortOrder,
             max_count: Option<usize>,
-        ) -> Result<Vec<(BlockInfo, Vec<Transaction>)>> {
-            self.db
+        ) -> Result<Vec<(BlockInfo, Transaction)>> {
+            Ok(self
+                .db
                 .query_transactions(
                     start_block,
                     end_block,
@@ -1754,15 +1755,20 @@ mod tests {
                 .0
                 .into_iter()
                 .map(|(block_info, block_proofs)| {
-                    Ok((
-                        block_info,
-                        block_proofs
-                            .into_iter()
-                            .map(|proof| Self::verify_transaction_proof(&block_info, proof))
-                            .collect::<Result<Vec<Transaction>>>()?,
-                    ))
+                    Ok(block_proofs
+                        .into_iter()
+                        .map(|proof| {
+                            Ok((
+                                block_info,
+                                Self::verify_transaction_proof(&block_info, proof)?,
+                            ))
+                        })
+                        .collect::<Result<Vec<(BlockInfo, Transaction)>>>()?)
                 })
-                .collect()
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect())
         }
     }
 
@@ -3118,8 +3124,8 @@ mod tests {
         );
     }
 
-    async fn make_test_fixture_with_one_block() -> Result<(TestFixture, BlockInfo, Vec<Transaction>)>
-    {
+    async fn make_test_fixture_with_one_block()
+    -> Result<(TestFixture, Vec<(BlockInfo, Transaction)>)> {
         let account1 = testing::account1();
         let account2 = testing::account2();
         let fixture = TestFixture::default().await.unwrap();
@@ -3163,86 +3169,89 @@ mod tests {
         let block = fixture.advance_to_next_block().await;
         Ok((
             fixture,
-            block,
-            vec![transaction1, transaction2, transaction3],
+            vec![
+                (block, transaction1),
+                (block, transaction2),
+                (block, transaction3),
+            ],
         ))
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Ascending, None)
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_descending() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Descending, None)
                 .await
                 .unwrap(),
-            vec![(block, transactions.into_iter().rev().collect())]
+            transactions.into_iter().rev().collect::<Vec<_>>()
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_capped1() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Ascending, Some(1))
                 .await
                 .unwrap(),
-            vec![(block, transactions.into_iter().take(1).collect())]
+            transactions.into_iter().take(1).collect::<Vec<_>>()
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_capped1_descending() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Descending, Some(1))
                 .await
                 .unwrap(),
-            vec![(block, transactions.into_iter().rev().take(1).collect())]
+            transactions.into_iter().rev().take(1).collect::<Vec<_>>()
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_capped2() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Ascending, Some(2))
                 .await
                 .unwrap(),
-            vec![(block, transactions.into_iter().take(2).collect())]
+            transactions.into_iter().take(2).collect::<Vec<_>>()
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_capped2_descending() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(None, None, SortOrder::Descending, Some(2))
                 .await
                 .unwrap(),
-            vec![(block, transactions.into_iter().rev().take(2).collect())]
+            transactions.into_iter().rev().take(2).collect::<Vec<_>>()
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_two_blocks_lower_bound_number() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3253,13 +3262,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_two_blocks_lower_bound_hash() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3272,13 +3281,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_lower_bound_number() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3289,13 +3298,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_lower_bound_hash() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3308,13 +3317,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_before_first_block_upper_bound_number() {
-        let (fixture, _, _) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, _) = make_test_fixture_with_one_block().await.unwrap();
         assert!(
             fixture
                 .query_transactions(
@@ -3331,7 +3340,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_before_first_block_upper_bound_hash() {
-        let (fixture, _, _) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, _) = make_test_fixture_with_one_block().await.unwrap();
         assert!(
             fixture
                 .query_transactions(
@@ -3350,7 +3359,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_upper_bound_number() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3361,13 +3370,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_upper_bound_hash() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3380,13 +3389,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_bounded_with_numbers() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3397,13 +3406,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_block_bounded_with_hashes() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3418,13 +3427,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_two_blocks_bounded_with_numbers() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3435,13 +3444,13 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
     #[tokio::test(start_paused = true)]
     async fn test_query_transactions_from_first_two_blocks_bounded_with_hashes() {
-        let (fixture, block, transactions) = make_test_fixture_with_one_block().await.unwrap();
+        let (fixture, transactions) = make_test_fixture_with_one_block().await.unwrap();
         assert_eq!(
             fixture
                 .query_transactions(
@@ -3456,7 +3465,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
-            vec![(block, transactions)]
+            transactions
         );
     }
 
