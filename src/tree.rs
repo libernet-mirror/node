@@ -392,9 +392,9 @@ impl<
             value: Some(self.inner.value().encode_to_any()?),
             path: self
                 .compressed_path()
-                .iter()
+                .into_iter()
                 .map(|hash| libernet::merkle_proof::Node {
-                    child_hashes: vec![proto::encode_scalar(*hash)],
+                    child_hashes: vec![proto::encode_scalar(hash)],
                 })
                 .collect(),
         })
@@ -510,7 +510,7 @@ impl<
             value: Some(self.inner.value().encode_to_any()?),
             path: self
                 .compressed_path()
-                .iter()
+                .into_iter()
                 .map(|children| libernet::merkle_proof::Node {
                     child_hashes: vec![
                         proto::encode_scalar(children[0]),

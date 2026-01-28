@@ -215,11 +215,7 @@ async fn main() -> Result<()> {
             location,
             args.chain_id,
             args.public_address.as_str(),
-            accounts
-                .iter()
-                .map(|(address, account)| (*address, *account))
-                .collect::<Vec<_>>()
-                .as_slice(),
+            accounts.into_iter().collect::<Vec<_>>().as_slice(),
             args.grpc_port,
             args.http_port,
         )?));

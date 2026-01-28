@@ -188,7 +188,7 @@ impl BlockTransactions {
             .map(|(hash, (transaction_number, _))| (*transaction_number, *hash))
             .collect::<Vec<_>>();
         results.sort_unstable();
-        results.iter().map(|(_, hash)| *hash).collect()
+        results.into_iter().map(|(_, hash)| hash).collect()
     }
 
     /// Returns proof of inclusion of a transaction in the block, or None if `transaction_index` is
