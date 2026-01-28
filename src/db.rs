@@ -3901,5 +3901,233 @@ mod tests {
         );
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_numbers_0() {
+        let (fixture, _) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    Some(BlockFilter::BlockNumber(0)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_hashes_0() {
+        let (fixture, _) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_numbers_1() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    Some(BlockFilter::BlockNumber(1)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions.into_iter().take(4).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_hashes_1() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x194b21df40441fbfe2f4bac0cf42bd2638169b108f2e7f6c9f0ac6090e865175"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions.into_iter().take(4).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_numbers_2() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(0)),
+                    Some(BlockFilter::BlockNumber(2)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_hashes_2() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x2976c1f3ec8eb4c6e1e289138dda4e8029823e08c3866d08f7f200bfcfe28a6d"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x3d0bc80b1631423f706e2cd59ae49f47ed79d590a54fcae8f4edbf561f46b3f1"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_numbers_3() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(1)),
+                    Some(BlockFilter::BlockNumber(1)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions.into_iter().take(4).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_hashes_3() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x194b21df40441fbfe2f4bac0cf42bd2638169b108f2e7f6c9f0ac6090e865175"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x194b21df40441fbfe2f4bac0cf42bd2638169b108f2e7f6c9f0ac6090e865175"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions.into_iter().take(4).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_numbers_4() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(1)),
+                    Some(BlockFilter::BlockNumber(2)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_hashes_4() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x194b21df40441fbfe2f4bac0cf42bd2638169b108f2e7f6c9f0ac6090e865175"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x3d0bc80b1631423f706e2cd59ae49f47ed79d590a54fcae8f4edbf561f46b3f1"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_numbers_5() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockNumber(2)),
+                    Some(BlockFilter::BlockNumber(2)),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions.into_iter().skip(4).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_query_transactions_from_first_three_blocks_bounded_with_hashes_5() {
+        let (fixture, transactions) = make_test_fixture_with_two_blocks().await.unwrap();
+        assert_eq!(
+            fixture
+                .query_transactions(
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x3d0bc80b1631423f706e2cd59ae49f47ed79d590a54fcae8f4edbf561f46b3f1"
+                    ))),
+                    Some(BlockFilter::BlockHash(parse_scalar(
+                        "0x3d0bc80b1631423f706e2cd59ae49f47ed79d590a54fcae8f4edbf561f46b3f1"
+                    ))),
+                    SortOrder::Ascending,
+                    None
+                )
+                .await
+                .unwrap(),
+            transactions.into_iter().skip(4).collect::<Vec<_>>()
+        );
+    }
+
     // TODO
 }
