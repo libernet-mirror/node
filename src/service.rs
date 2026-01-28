@@ -371,7 +371,7 @@ impl NodeServiceImpl {
             .await
             .map_err(|_| Status::internal("unable to fetch transaction hashes"))?
             .into_iter()
-            .map(|hash| proto::encode_scalar(hash))
+            .map(proto::encode_scalar)
             .collect())
     }
 
