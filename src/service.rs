@@ -370,8 +370,8 @@ impl NodeServiceImpl {
             .get_all_block_transaction_hashes(block_number as usize)
             .await
             .map_err(|_| Status::internal("unable to fetch transaction hashes"))?
-            .iter()
-            .map(|hash| proto::encode_scalar(*hash))
+            .into_iter()
+            .map(proto::encode_scalar)
             .collect())
     }
 
