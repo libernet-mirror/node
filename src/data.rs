@@ -503,7 +503,7 @@ mod tests {
         );
         assert_eq!(
             block_info.hash(),
-            parse_scalar("0x233ad3460c6a12bae72dbf6056ffdd08ef5a52016b345857153d0cb4ee8c6c9b")
+            parse_scalar("0x33e7a51cc5649d0047c437194edcfbfab2ddd657ade3f86847bb858b344dde55")
         );
         assert_eq!(block_info.chain_id(), 123);
         assert_eq!(block_info.number(), 12);
@@ -547,7 +547,7 @@ mod tests {
         );
         assert_eq!(
             block_info.hash(),
-            parse_scalar("0x5cc2eaa017792482d14d6fbf56a432a28c4a390e0169e58892fae279c23ad022")
+            parse_scalar("0x416dfbe63f2c6fc2e80dfb052dfcd8b76a30effd7c6be9a435178a225b2c238a")
         );
         assert_eq!(block_info.chain_id(), 456);
         assert_eq!(block_info.number(), 34);
@@ -593,7 +593,7 @@ mod tests {
         assert_eq!(block_info, BlockInfo::decode(&block_descriptor).unwrap());
         assert_eq!(
             proto::decode_scalar(&block_descriptor.block_hash.unwrap()).unwrap(),
-            parse_scalar("0x233ad3460c6a12bae72dbf6056ffdd08ef5a52016b345857153d0cb4ee8c6c9b")
+            parse_scalar("0x33e7a51cc5649d0047c437194edcfbfab2ddd657ade3f86847bb858b344dde55")
         );
         assert_eq!(block_descriptor.chain_id, Some(123));
         assert_eq!(block_descriptor.block_number, Some(12));
@@ -639,7 +639,7 @@ mod tests {
         assert_eq!(block_info, BlockInfo::decode(&block_descriptor).unwrap());
         assert_eq!(
             proto::decode_scalar(&block_descriptor.block_hash.unwrap()).unwrap(),
-            parse_scalar("0x5cc2eaa017792482d14d6fbf56a432a28c4a390e0169e58892fae279c23ad022")
+            parse_scalar("0x416dfbe63f2c6fc2e80dfb052dfcd8b76a30effd7c6be9a435178a225b2c238a")
         );
         assert_eq!(block_descriptor.chain_id, Some(456));
         assert_eq!(block_descriptor.block_number, Some(34));
@@ -691,7 +691,7 @@ mod tests {
         let account = AccountInfo::default();
         assert_eq!(
             account.as_scalar(),
-            parse_scalar("0x06558aaf451d7e5cde83a5ac5dff5edd22ac98af8a253399e72970b065976094")
+            parse_scalar("0x0609a34c838e1843f4f36babb91fb42f98460d7e62b430b9cd94b6e641809b0b")
         );
     }
 
@@ -704,7 +704,7 @@ mod tests {
         };
         assert_eq!(
             account.as_scalar(),
-            parse_scalar("0x62e9dc4927f74ea47b769b864a356ebfde4c75b3f29c61347c2de8f4946ab818")
+            parse_scalar("0x635a7cc85594e197a376ddf85ab6b7e4d9254e531b57173fcec72c24580721d2")
         );
     }
 
