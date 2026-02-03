@@ -607,7 +607,6 @@ dependencies = [
  "curve25519-dalek",
  "der",
  "dusk-bls12_381",
- "dusk-poseidon",
  "ecdsa",
  "ed25519-dalek",
  "ff",
@@ -789,7 +788,6 @@ dependencies = [
  "rand_core",
  "rayon",
  "subtle",
- "zeroize",
 ]
 
 [[package]]
@@ -799,42 +797,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5d209b92f0741edf1d99369bd4c1a1ef2fd0a85e885220f9e3fb0df3c61337f"
 dependencies = [
  "derive-hex",
-]
-
-[[package]]
-name = "dusk-jubjub"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "128c27bc829702d8e418eda75908234783db295ba19de45cf9b5133aa2e0f0b6"
-dependencies = [
- "bitvec",
- "blake2b_simd",
- "dusk-bls12_381",
- "dusk-bytes",
- "ff",
- "group",
- "rand_core",
- "subtle",
-]
-
-[[package]]
-name = "dusk-poseidon"
-version = "0.41.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f66925505adc9db3671ebed59f5f2f196306efbe6ede8de9761e7830af5ddb84"
-dependencies = [
- "dusk-bls12_381",
- "dusk-jubjub",
- "dusk-safe",
-]
-
-[[package]]
-name = "dusk-safe"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2c3954d110d0d0f20555048d7171c2e6dfb54fd9a4220d30cc73dc66a88af42d"
-dependencies = [
- "zeroize",
 ]
 
 [[package]]
