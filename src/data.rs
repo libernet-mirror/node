@@ -4,7 +4,7 @@ use crate::proto;
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
-use crypto::{merkle::AsScalar, utils};
+use crypto::{merkle::AsScalar, poseidon, utils};
 use ff::Field;
 use std::time::SystemTime;
 
@@ -32,7 +32,7 @@ impl BlockInfo {
         accounts_root_hash: Scalar,
         program_storage_root_hash: Scalar,
     ) -> Scalar {
-        utils::poseidon_hash(&[
+        poseidon::hash_t4(&[
             Scalar::from(chain_id),
             Scalar::from(block_number),
             previous_block_hash,
@@ -203,7 +203,7 @@ pub struct AccountInfo {
 
 impl AsScalar for AccountInfo {
     fn as_scalar(&self) -> Scalar {
-        utils::poseidon_hash(&[self.last_nonce.into(), self.balance, self.staking_balance])
+        poseidon::hash_t4(&[self.last_nonce.into(), self.balance, self.staking_balance])
     }
 }
 
@@ -267,7 +267,7 @@ impl Transaction {
         sender_address: Scalar,
         transaction: &libernet::transaction::BlockReward,
     ) -> Result<Scalar> {
-        Ok(utils::poseidon_hash(&[
+        Ok(poseidon::hash_t3(&[
             sender_address,
             chain_id.into(),
             nonce.into(),
@@ -292,7 +292,7 @@ impl Transaction {
         sender_address: Scalar,
         transaction: &libernet::transaction::SendCoins,
     ) -> Result<Scalar> {
-        Ok(utils::poseidon_hash(&[
+        Ok(poseidon::hash_t3(&[
             sender_address,
             chain_id.into(),
             nonce.into(),

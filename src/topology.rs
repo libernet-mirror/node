@@ -2,7 +2,7 @@ use crate::libernet;
 use crate::proto;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
-use crypto::utils;
+use crypto::poseidon;
 use std::collections::BTreeSet;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -126,7 +126,7 @@ struct Clique {
 
 impl Clique {
     fn hash_nodes(nodes: &[Node]) -> Scalar {
-        utils::poseidon_hash(
+        poseidon::hash_t4(
             std::iter::once(Scalar::from(nodes.len() as u64))
                 .chain(nodes.iter().map(|node| node.account_address()))
                 .collect::<Vec<Scalar>>()
@@ -166,7 +166,7 @@ pub struct Network {
 
 impl Network {
     fn hash_network(cliques: &[Clique]) -> Scalar {
-        utils::poseidon_hash(
+        poseidon::hash_t4(
             std::iter::once(Scalar::from(cliques.len() as u64))
                 .chain(cliques.iter().map(|clique| clique.hash()))
                 .collect::<Vec<Scalar>>()

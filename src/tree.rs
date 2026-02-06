@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{
     merkle::{AsScalar, FromScalar, Proof as LowLevelMerkleProof},
-    utils, xits,
+    poseidon, utils, xits,
 };
 use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
@@ -205,8 +205,15 @@ impl<
         Self::map_nodes(&self.children, f)
     }
 
+    fn poseidon_hash(inputs: &[Scalar]) -> Scalar {
+        match W {
+            2 => poseidon::hash_t3(inputs),
+            _ => poseidon::hash_t4(inputs),
+        }
+    }
+
     fn new(level: usize, children: [Arc<dyn Node<K, V, W>>; W]) -> Self {
-        let hash = utils::poseidon_hash(&Self::map_nodes(&children, |child| child.as_scalar()));
+        let hash = Self::poseidon_hash(&Self::map_nodes(&children, |child| child.as_scalar()));
         Self {
             level,
             children,
