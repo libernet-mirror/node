@@ -956,7 +956,7 @@ mod tests {
     }
 
     fn default_genesis_block_hash() -> Scalar {
-        parse_scalar("0x258b412ec0f3ad8111aa24b537bad82fa9be7621d1b8df81c9c8b08ba8a864f6")
+        parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238")
     }
 
     #[tokio::test(start_paused = true)]
@@ -1027,7 +1027,7 @@ mod tests {
         );
         assert_eq!(
             block_info.program_storage_root_hash(),
-            parse_scalar("0x42a2afd4538999f131bc84308a9edf2f47c1460cad3bd155dd33b94383ebefca")
+            parse_scalar("0x5e64b1d4b9179d55ee3c1e0c1cfdf0e01d9a63a83abf85dfae20818d916abbe4")
         );
     }
 
@@ -1048,7 +1048,7 @@ mod tests {
         );
         assert_eq!(
             block_info.program_storage_root_hash(),
-            parse_scalar("0x42a2afd4538999f131bc84308a9edf2f47c1460cad3bd155dd33b94383ebefca")
+            parse_scalar("0x5e64b1d4b9179d55ee3c1e0c1cfdf0e01d9a63a83abf85dfae20818d916abbe4")
         );
     }
 
@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.hash(),
-            parse_scalar("0x42e07b73b1a8e89e840e227630de3a7cb9e34cdcf277dbaed8aae746283b749b")
+            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c")
         );
     }
 
@@ -1823,7 +1823,7 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x42e07b73b1a8e89e840e227630de3a7cb9e34cdcf277dbaed8aae746283b749b")
+            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c")
         );
 
         assert_eq!(proof.key(), account1.address());
@@ -1890,7 +1890,7 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x42e07b73b1a8e89e840e227630de3a7cb9e34cdcf277dbaed8aae746283b749b")
+            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c")
         );
 
         assert_eq!(proof.key(), account1.address());
@@ -2006,7 +2006,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x623bd1890f6dfc5a618b82fb1cda520ef0144e6aabaca3fdef7063bb018b9aa0",
+                        "0x198b09c90cda823d2ba0344d5de6d2656e1b304b7dabf6e2765221c6e3f6427f",
                     )
                 );
                 proof.take_value()
@@ -2099,7 +2099,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x623bd1890f6dfc5a618b82fb1cda520ef0144e6aabaca3fdef7063bb018b9aa0",
+                        "0x198b09c90cda823d2ba0344d5de6d2656e1b304b7dabf6e2765221c6e3f6427f",
                     )
                 );
                 proof.take_value()
@@ -2192,7 +2192,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x623bd1890f6dfc5a618b82fb1cda520ef0144e6aabaca3fdef7063bb018b9aa0",
+                        "0x198b09c90cda823d2ba0344d5de6d2656e1b304b7dabf6e2765221c6e3f6427f",
                     )
                 );
                 proof.take_value()
@@ -2274,7 +2274,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x623bd1890f6dfc5a618b82fb1cda520ef0144e6aabaca3fdef7063bb018b9aa0",
+                        "0x198b09c90cda823d2ba0344d5de6d2656e1b304b7dabf6e2765221c6e3f6427f",
                     )
                 );
                 proof.take_value()
@@ -2366,7 +2366,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x623bd1890f6dfc5a618b82fb1cda520ef0144e6aabaca3fdef7063bb018b9aa0",
+                        "0x198b09c90cda823d2ba0344d5de6d2656e1b304b7dabf6e2765221c6e3f6427f",
                     )
                 );
                 proof.take_value()
