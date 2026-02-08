@@ -476,9 +476,29 @@ impl TransactionInclusionProof {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct ProgramStorage {
+    tree: tree::MerkleTreeVersion<u32, u128, 2, 28>,
+}
+
+impl ProgramStorage {
+    pub fn get_u8(&self, address: u32) -> u8 {
+        let bytes = self.tree.get(address >> 4).to_le_bytes();
+        bytes[(address & 0xF) as usize]
+    }
+
+    pub fn set_u8(&self, address: u32, value: u8) -> Self {
+        let mut bytes = self.tree.get(address >> 4).to_le_bytes();
+        bytes[(address & 0xF) as usize] = value;
+        Self {
+            tree: self.tree.put(address >> 4, u128::from_le_bytes(bytes)),
+        }
+    }
+}
+
 pub type ProgramStorageTree =
-    tree::MerkleTree<Scalar, tree::MerkleTreeVersion<u32, u32, 2, 32>, 3, 161>;
-pub type ProgramStorageProof = tree::MerkleProof<u32, u32, 2, 32>;
+    tree::MerkleTree<Scalar, tree::MerkleTreeVersion<u32, u128, 2, 28>, 3, 161>;
+pub type ProgramStorageProof = tree::MerkleProof<u32, u128, 2, 28>;
 
 #[cfg(test)]
 mod tests {
@@ -815,5 +835,47 @@ mod tests {
         assert_eq!(decoded_proof.take_value(), transaction);
     }
 
-    // TODO
+    #[test]
+    fn test_program_storage_initial_state() {
+        let storage = ProgramStorage::default();
+        assert_eq!(storage.get_u8(0x12345670u32), 0);
+        assert_eq!(storage.get_u8(0x12345671u32), 0);
+        assert_eq!(storage.get_u8(0x12345672u32), 0);
+        assert_eq!(storage.get_u8(0x12345673u32), 0);
+        assert_eq!(storage.get_u8(0x12345674u32), 0);
+        assert_eq!(storage.get_u8(0x12345675u32), 0);
+        assert_eq!(storage.get_u8(0x12345676u32), 0);
+        assert_eq!(storage.get_u8(0x12345677u32), 0);
+        assert_eq!(storage.get_u8(0x12345678u32), 0);
+        assert_eq!(storage.get_u8(0x12345679u32), 0);
+        assert_eq!(storage.get_u8(0x1234567au32), 0);
+        assert_eq!(storage.get_u8(0x1234567bu32), 0);
+        assert_eq!(storage.get_u8(0x1234567cu32), 0);
+        assert_eq!(storage.get_u8(0x1234567du32), 0);
+        assert_eq!(storage.get_u8(0x1234567eu32), 0);
+        assert_eq!(storage.get_u8(0x1234567fu32), 0);
+    }
+
+    #[test]
+    fn test_program_storage_update() {
+        let mut storage = ProgramStorage::default();
+        storage = storage.set_u8(0x12345674u32, 12u8);
+        storage = storage.set_u8(0x12345672u32, 34u8);
+        assert_eq!(storage.get_u8(0x12345670u32), 0);
+        assert_eq!(storage.get_u8(0x12345671u32), 0);
+        assert_eq!(storage.get_u8(0x12345672u32), 34);
+        assert_eq!(storage.get_u8(0x12345673u32), 0);
+        assert_eq!(storage.get_u8(0x12345674u32), 12);
+        assert_eq!(storage.get_u8(0x12345675u32), 0);
+        assert_eq!(storage.get_u8(0x12345676u32), 0);
+        assert_eq!(storage.get_u8(0x12345677u32), 0);
+        assert_eq!(storage.get_u8(0x12345678u32), 0);
+        assert_eq!(storage.get_u8(0x12345679u32), 0);
+        assert_eq!(storage.get_u8(0x1234567au32), 0);
+        assert_eq!(storage.get_u8(0x1234567bu32), 0);
+        assert_eq!(storage.get_u8(0x1234567cu32), 0);
+        assert_eq!(storage.get_u8(0x1234567du32), 0);
+        assert_eq!(storage.get_u8(0x1234567eu32), 0);
+        assert_eq!(storage.get_u8(0x1234567fu32), 0);
+    }
 }

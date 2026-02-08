@@ -1784,7 +1784,7 @@ mod tests {
         let block = db.get_block_by_number(0).await.unwrap();
         assert_eq!(block.number(), 0);
         let block_hash =
-            parse_scalar("0x6af01c95299672114fc001fb7aff0f72cee89676395a5d69563b37dfecb6a7fe");
+            parse_scalar("0x30e602921df6884168e4b9585d03526d1897d907d711a7ad7976635e005e52fa");
         assert_eq!(block.hash(), block_hash);
         let transactions_root_hash =
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb");
@@ -1840,7 +1840,7 @@ mod tests {
         let block = db.get_block_by_number(0).await.unwrap();
         assert_eq!(block.number(), 0);
         let block_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block.hash(), block_hash);
         let transactions_root_hash =
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb");
@@ -1897,13 +1897,13 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         let transactions_root_hash =
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb");
         assert_eq!(block1.transactions_root_hash(), transactions_root_hash);
         let block2_hash =
-            parse_scalar("0x365fa34e5cb551fb49780ae1345eeb7882bb0cbcbf8eb2940a1d6058607feb59");
+            parse_scalar("0x707c152ecd4defdc84ab82e13a97baa1b39039dd0717e0bc96c5a55ea53a8843");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(block2.transactions_root_hash(), transactions_root_hash);
         assert_eq!(db.get_block_by_hash(block1_hash).await.unwrap(), block1);
@@ -1993,14 +1993,14 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c");
+            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
@@ -2127,14 +2127,14 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x20c4c05ecc7e2e7c034bfd1e46ebeed7624bc96d12c8d2716a42c867b4a1f182");
+            parse_scalar("0x4a535db31c7147e6e84cc9b76ad4b7e76bf1f7aa67cffc5572400cb8def5eba1");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
@@ -2274,14 +2274,14 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c");
+            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
@@ -2386,14 +2386,14 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c");
+            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
@@ -2498,14 +2498,14 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x3ad511b219323dfb3cd9ed43116d4ae5ecdfd86a073bfb9d220d5e75a8eeb29c");
+            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
@@ -2623,14 +2623,14 @@ mod tests {
         assert_eq!(block1.number(), 0);
         assert_eq!(block2.number(), 1);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x441f79c925c4b262d8f738bddde57d3ba2810018c2a2bcd13f4b00c9822d61e2");
+            parse_scalar("0x1e392e0153108c783ed55e340f8de09a6fa913adc87327e5fb8de839cd39d54b");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
@@ -2805,21 +2805,21 @@ mod tests {
         assert_eq!(block2.number(), 1);
         assert_eq!(block3.number(), 2);
         let block1_hash =
-            parse_scalar("0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238");
+            parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b");
         assert_eq!(block1.hash(), block1_hash);
         assert_eq!(
             block1.transactions_root_hash(),
             parse_scalar("0x0d80db03e3a45a85ccd8340bd920ad7ef93fdf378b6ba3fc6c2cb088e2ca66cb")
         );
         let block2_hash =
-            parse_scalar("0x4cd85179376db847d619a6353c14450892716bcc2acc7b19f7d174d62e1e60f8");
+            parse_scalar("0x61adda4a5a1f5984ca150b1092cc4f21a61488a2b48dcd2cbcfcd0886549a1b4");
         assert_eq!(block2.hash(), block2_hash);
         assert_eq!(
             block2.transactions_root_hash(),
             parse_scalar("0x5adde71257b864ab5a38546a8cc1208e40feec696f45dfcbf24e15d7cda5e5e5")
         );
         let block3_hash =
-            parse_scalar("0x423b74e2672eb328acbe87505bb7a79b8fcfc4cfd3397300f94f13d972d132e9");
+            parse_scalar("0x1626f44c8b4c933b12756eeaade300841b09d3e4c249c010539d4ec44a5b8217");
         assert_eq!(block3.hash(), block3_hash);
         assert_eq!(
             block3.transactions_root_hash(),
@@ -3038,7 +3038,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238",
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b",
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3075,7 +3075,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238",
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b",
                     ))),
                     SortOrder::Ascending,
                     None,
@@ -3110,10 +3110,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238",
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b",
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238",
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b",
                     ))),
                     SortOrder::Ascending,
                     None,
@@ -3273,7 +3273,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3309,7 +3309,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6f242602d298980b721a4e6b979bf10a84745719478f0f1af2cc0af98e31f0dd"
+                        "0x47eb5a0f9e6664b6decba303880037941a12c974be4b9300f01d988ffdec80ba"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3346,7 +3346,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3382,7 +3382,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6f242602d298980b721a4e6b979bf10a84745719478f0f1af2cc0af98e31f0dd"
+                        "0x47eb5a0f9e6664b6decba303880037941a12c974be4b9300f01d988ffdec80ba"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3417,10 +3417,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6f242602d298980b721a4e6b979bf10a84745719478f0f1af2cc0af98e31f0dd"
+                        "0x47eb5a0f9e6664b6decba303880037941a12c974be4b9300f01d988ffdec80ba"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6f242602d298980b721a4e6b979bf10a84745719478f0f1af2cc0af98e31f0dd"
+                        "0x47eb5a0f9e6664b6decba303880037941a12c974be4b9300f01d988ffdec80ba"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3455,10 +3455,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6f242602d298980b721a4e6b979bf10a84745719478f0f1af2cc0af98e31f0dd"
+                        "0x47eb5a0f9e6664b6decba303880037941a12c974be4b9300f01d988ffdec80ba"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3709,7 +3709,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3745,7 +3745,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x1cfc26c2d6bae9e2fa4a8439ed229728d37136ccc49e4ad12af2c9e45026887c"
+                        "0x7115871df709420dd10970d242842210e39f8bcf87db2b72e79e22fa3977a082"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3781,7 +3781,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x592223fbe524fc43bea5f7d04e505e60da279f0ba4aa8acbf486c1b51ee20510"
+                        "0x0c8cea4e373defd26a2d9f362080969b2051ef4b689b60c5dda9174216ad0d13"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3818,7 +3818,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3854,7 +3854,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x1cfc26c2d6bae9e2fa4a8439ed229728d37136ccc49e4ad12af2c9e45026887c"
+                        "0x7115871df709420dd10970d242842210e39f8bcf87db2b72e79e22fa3977a082"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3890,7 +3890,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x592223fbe524fc43bea5f7d04e505e60da279f0ba4aa8acbf486c1b51ee20510"
+                        "0x0c8cea4e373defd26a2d9f362080969b2051ef4b689b60c5dda9174216ad0d13"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3925,10 +3925,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3963,10 +3963,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x1cfc26c2d6bae9e2fa4a8439ed229728d37136ccc49e4ad12af2c9e45026887c"
+                        "0x7115871df709420dd10970d242842210e39f8bcf87db2b72e79e22fa3977a082"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4001,10 +4001,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x4456e19d8cd9b049ab5cf50577557b50aa4fdf44b0bac606cb89606a54180238"
+                        "0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x592223fbe524fc43bea5f7d04e505e60da279f0ba4aa8acbf486c1b51ee20510"
+                        "0x0c8cea4e373defd26a2d9f362080969b2051ef4b689b60c5dda9174216ad0d13"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4039,10 +4039,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x1cfc26c2d6bae9e2fa4a8439ed229728d37136ccc49e4ad12af2c9e45026887c"
+                        "0x7115871df709420dd10970d242842210e39f8bcf87db2b72e79e22fa3977a082"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x1cfc26c2d6bae9e2fa4a8439ed229728d37136ccc49e4ad12af2c9e45026887c"
+                        "0x7115871df709420dd10970d242842210e39f8bcf87db2b72e79e22fa3977a082"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4077,10 +4077,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x1cfc26c2d6bae9e2fa4a8439ed229728d37136ccc49e4ad12af2c9e45026887c"
+                        "0x7115871df709420dd10970d242842210e39f8bcf87db2b72e79e22fa3977a082"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x592223fbe524fc43bea5f7d04e505e60da279f0ba4aa8acbf486c1b51ee20510"
+                        "0x0c8cea4e373defd26a2d9f362080969b2051ef4b689b60c5dda9174216ad0d13"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4115,10 +4115,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x592223fbe524fc43bea5f7d04e505e60da279f0ba4aa8acbf486c1b51ee20510"
+                        "0x0c8cea4e373defd26a2d9f362080969b2051ef4b689b60c5dda9174216ad0d13"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x592223fbe524fc43bea5f7d04e505e60da279f0ba4aa8acbf486c1b51ee20510"
+                        "0x0c8cea4e373defd26a2d9f362080969b2051ef4b689b60c5dda9174216ad0d13"
                     ))),
                     SortOrder::Ascending,
                     None
