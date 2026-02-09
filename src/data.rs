@@ -253,6 +253,24 @@ impl AccountProof {
     }
 }
 
+#[derive(Debug, Default, PartialEq)]
+pub struct Program {
+    module: libernet::wasm::ProgramModule,
+}
+
+impl proto::EncodeToAny for Program {
+    fn encode_to_any(&self) -> Result<prost_types::Any> {
+        Ok(prost_types::Any::from_msg(&self.module)?)
+    }
+}
+
+impl proto::DecodeFromAny for Program {
+    fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
+        let proto = proto.to_msg::<libernet::wasm::ProgramModule>()?;
+        Ok(Self { module: proto })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Transaction {
     payload: prost_types::Any,
@@ -872,5 +890,30 @@ mod tests {
         assert_eq!(storage.get_u8(0x1234567du32), 0);
         assert_eq!(storage.get_u8(0x1234567eu32), 0);
         assert_eq!(storage.get_u8(0x1234567fu32), 0);
+    }
+
+    #[test]
+    fn test_encode_decode_empty_program() {
+        let program = Program {
+            module: libernet::wasm::ProgramModule {
+                protocol_version: Some(1),
+                version: Some(libernet::wasm::Version {
+                    num: Some(1),
+                    encoding: Some(libernet::wasm::Encoding::Module as i32),
+                }),
+                sections: vec![],
+            },
+        };
+        let proto = program.encode_to_any().unwrap();
+        let decoded = Program::decode_from_any(&proto).unwrap();
+        assert_eq!(program, decoded);
+        let proto_module = proto.to_msg::<libernet::wasm::ProgramModule>().unwrap();
+        assert_eq!(proto_module.protocol_version, Some(1));
+        assert_eq!(proto_module.version.as_ref().unwrap().num, Some(1));
+        assert_eq!(
+            proto_module.version.as_ref().unwrap().encoding,
+            Some(libernet::wasm::Encoding::Module as i32)
+        );
+        assert_eq!(proto_module.sections.len(), 0);
     }
 }

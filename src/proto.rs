@@ -38,6 +38,7 @@ liber_proto_name!(libernet::Scalar, "Scalar");
 liber_proto_name!(libernet::Transaction, "Transaction");
 liber_proto_name!(libernet::node_identity::Payload, "NodeIdentity.Payload");
 liber_proto_name!(libernet::transaction::Payload, "Transaction.Payload");
+liber_proto_name!(libernet::wasm::ProgramModule, "wasm.ProgramModule");
 
 /// Makes a type encodable to `google.protobuf.Any`.
 pub trait EncodeToAny: Sized {
