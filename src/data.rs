@@ -4,7 +4,7 @@ use crate::proto;
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
-use crypto::{merkle::AsScalar, poseidon, utils};
+use crypto::{merkle::AsScalar, poseidon};
 use ff::Field;
 use std::time::SystemTime;
 
@@ -422,12 +422,6 @@ impl Transaction {
     }
 }
 
-impl utils::PoseidonHash for Transaction {
-    fn poseidon_hash(&self) -> Scalar {
-        self.hash
-    }
-}
-
 impl AsScalar for Transaction {
     fn as_scalar(&self) -> Scalar {
         self.hash
@@ -505,6 +499,7 @@ mod tests {
     use super::*;
     use crate::proto::{DecodeFromAny, EncodeToAny};
     use crate::testing::parse_scalar;
+    use crypto::utils;
     use std::time::Duration;
 
     const TEST_CHAIN_ID: u64 = 42;
