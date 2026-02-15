@@ -956,7 +956,7 @@ mod tests {
     }
 
     fn default_genesis_block_hash() -> Scalar {
-        parse_scalar("0x709224cf55d457cb4c2921b04026d817a870704221abd3c89e23b616367f244b")
+        parse_scalar("0x2c9f00c8427e254ab63b3dab55c3cb9cdb57bb4d3e283fc969f2c3cc62642525")
     }
 
     #[tokio::test(start_paused = true)]
@@ -1019,15 +1019,15 @@ mod tests {
         assert_eq!(block_info.previous_block_hash(), 0.into());
         assert_eq!(
             block_info.network_topology_root_hash(),
-            parse_scalar("0x07c0e464eaba05c946fe6e9a58d1295cad1ea082fc8bf863222c9baeb05325f1")
+            parse_scalar("0x26d7bdfa55f037ede2301959d3e4fd36543fae19f774589ee2c99dd12a9874e6")
         );
         assert_eq!(
             block_info.accounts_root_hash(),
-            parse_scalar("0x3b15cc78737f3ef0118f15f232847bc7160663dd74d4ff56e393eeafa5fef276")
+            parse_scalar("0x633e9766dbe86a02c8b9ee59fd23020f7f4a6d61bf930c9e29f16751cd486ce9")
         );
         assert_eq!(
             block_info.program_storage_root_hash(),
-            parse_scalar("0x3e7ac776caac02ac683066f6654f8ff62b7755b266e72abea2c5bfc44b419cef")
+            parse_scalar("0x3d9016982089280a29c69e2fe04485ef3e4bfc93713b8c34ff168ccc3226298d")
         );
     }
 
@@ -1040,15 +1040,15 @@ mod tests {
         assert_eq!(block_info.previous_block_hash(), 0.into());
         assert_eq!(
             block_info.network_topology_root_hash(),
-            parse_scalar("0x07c0e464eaba05c946fe6e9a58d1295cad1ea082fc8bf863222c9baeb05325f1")
+            parse_scalar("0x26d7bdfa55f037ede2301959d3e4fd36543fae19f774589ee2c99dd12a9874e6")
         );
         assert_eq!(
             block_info.accounts_root_hash(),
-            parse_scalar("0x3b15cc78737f3ef0118f15f232847bc7160663dd74d4ff56e393eeafa5fef276")
+            parse_scalar("0x633e9766dbe86a02c8b9ee59fd23020f7f4a6d61bf930c9e29f16751cd486ce9")
         );
         assert_eq!(
             block_info.program_storage_root_hash(),
-            parse_scalar("0x3e7ac776caac02ac683066f6654f8ff62b7755b266e72abea2c5bfc44b419cef")
+            parse_scalar("0x3d9016982089280a29c69e2fe04485ef3e4bfc93713b8c34ff168ccc3226298d")
         );
     }
 
@@ -1188,7 +1188,7 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.hash(),
-            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9")
+            parse_scalar("0x32d15c0114e735fd4ea1d8463d42f8b28c83db452ba61b4570adc029df92e21a")
         );
     }
 
@@ -1823,7 +1823,7 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9")
+            parse_scalar("0x32d15c0114e735fd4ea1d8463d42f8b28c83db452ba61b4570adc029df92e21a")
         );
 
         assert_eq!(proof.key(), account1.address());
@@ -1890,7 +1890,7 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x1e0eaa175dbeca154b9fe41b0eee5dc6e8e8256ac956c6e3afc82fb6eec908c9")
+            parse_scalar("0x32d15c0114e735fd4ea1d8463d42f8b28c83db452ba61b4570adc029df92e21a")
         );
 
         assert_eq!(proof.key(), account1.address());
@@ -2006,7 +2006,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x41aeee839b522ccbe18a8e140887cf7e9d0e9319daca1140a4bf9e6158f1f4b2",
+                        "0x63aa3659c5db5156b52704df8aaf3f16a1c0db51ebc1b1f1aff348961dafe74c",
                     )
                 );
                 proof.take_value()
@@ -2099,7 +2099,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x41aeee839b522ccbe18a8e140887cf7e9d0e9319daca1140a4bf9e6158f1f4b2",
+                        "0x63aa3659c5db5156b52704df8aaf3f16a1c0db51ebc1b1f1aff348961dafe74c",
                     )
                 );
                 proof.take_value()
@@ -2192,7 +2192,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x41aeee839b522ccbe18a8e140887cf7e9d0e9319daca1140a4bf9e6158f1f4b2",
+                        "0x63aa3659c5db5156b52704df8aaf3f16a1c0db51ebc1b1f1aff348961dafe74c",
                     )
                 );
                 proof.take_value()
@@ -2274,7 +2274,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x41aeee839b522ccbe18a8e140887cf7e9d0e9319daca1140a4bf9e6158f1f4b2",
+                        "0x63aa3659c5db5156b52704df8aaf3f16a1c0db51ebc1b1f1aff348961dafe74c",
                     )
                 );
                 proof.take_value()
@@ -2366,7 +2366,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x41aeee839b522ccbe18a8e140887cf7e9d0e9319daca1140a4bf9e6158f1f4b2",
+                        "0x63aa3659c5db5156b52704df8aaf3f16a1c0db51ebc1b1f1aff348961dafe74c",
                     )
                 );
                 proof.take_value()

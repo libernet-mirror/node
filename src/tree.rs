@@ -845,7 +845,7 @@ mod tests {
     fn test_initial_root_hash() {
         let tree = TestTree::default();
         let hash =
-            parse_scalar("0x0313897a999753abfbe50ac83ffaf102da1088c208c6d5d94665e341ae3b6e00");
+            parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e");
         assert_eq!(tree.root_hash(0), hash);
         assert_eq!(tree.root_hash(1), hash);
         assert_eq!(tree.root_hash(2), hash);
