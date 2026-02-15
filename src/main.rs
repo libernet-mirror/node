@@ -35,6 +35,10 @@ mod testing;
 
 pub mod libernet {
     tonic::include_proto!("libernet");
+
+    pub mod wasm {
+        tonic::include_proto!("libernet.wasm");
+    }
 }
 
 #[derive(Parser, Debug)]
