@@ -556,7 +556,7 @@ impl NodeServiceV1 for NodeService {
         _request: Request<libernet::GetTopologyRequest>,
     ) -> Result<Response<libernet::NetworkTopology>, Status> {
         // TODO
-        todo!()
+        Err(Status::unimplemented("not yet implemented"))
     }
 
     async fn get_account(
@@ -643,7 +643,7 @@ impl NodeServiceV1 for NodeService {
         _request: Request<libernet::BroadcastBlockRequest>,
     ) -> Result<Response<libernet::BroadcastBlockResponse>, Status> {
         // TODO
-        todo!()
+        Err(Status::unimplemented("not yet implemented"))
     }
 }
 
