@@ -654,7 +654,8 @@ impl Repr {
                 self.apply_send_coins_transaction(signer, payload)
             }
             Some(libernet::transaction::payload::Transaction::CreateProgram(_)) => {
-                todo!()
+                // TODO
+                return Err(anyhow!("not yet implemented"));
             }
             None => Err(anyhow!("invalid transaction payload")),
         }?;

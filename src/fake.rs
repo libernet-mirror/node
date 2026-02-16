@@ -114,13 +114,13 @@ impl NodeServiceV1 for FakeNodeService {
         &self,
         _request: Request<libernet::BroadcastTransactionRequest>,
     ) -> Result<Response<libernet::BroadcastTransactionResponse>, Status> {
-        todo!()
+        Ok(Response::new(libernet::BroadcastTransactionResponse {}))
     }
 
     async fn broadcast_new_block(
         &self,
         _request: Request<libernet::BroadcastBlockRequest>,
     ) -> Result<Response<libernet::BroadcastBlockResponse>, Status> {
-        todo!()
+        Ok(Response::new(libernet::BroadcastBlockResponse {}))
     }
 }
