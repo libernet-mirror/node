@@ -33,4 +33,5 @@ ENTRYPOINT ["/bin/sh", "-c", "/usr/local/bin/node \
     --http-port=$LIBERNET_HTTP_PORT \
     --chain-id=$LIBERNET_NETWORK_ID \
     --latitude=$LIBERNET_LATITUDE \
-    --longitude=$LIBERNET_LONGITUDE"]
+    --longitude=$LIBERNET_LONGITUDE \
+    --account-file=$LIBERNET_ACCOUNT_FILE"]
