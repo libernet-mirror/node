@@ -1,6 +1,6 @@
 [submodule "crypto"]
 	path = crypto
-	url = git@github.com:libernet-mirror/crypto.git
+	url = https://github.com/libernet-mirror/crypto.git
 [submodule "proto"]
 	path = proto
-	url = git@github.com:libernet-mirror/proto.git
+	url = https://github.com/libernet-mirror/proto.git
