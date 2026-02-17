@@ -24,7 +24,7 @@ COPY --from=builder /libernet/target/release/node /usr/local/bin/node
 RUN useradd -r -u 1001 libernet
 USER libernet
 
-EXPOSE 4443
+EXPOSE 50051
 
 ENTRYPOINT ["/bin/sh", "-c", "/usr/local/bin/node \
     --secret-key=$LIBERNET_SECRET_KEY \
