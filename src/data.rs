@@ -253,7 +253,8 @@ impl AccountProof {
     }
 }
 
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default)]
+#[cfg_attr(test, derive(PartialEq))]
 pub struct Program {
     module: libernet::wasm::ProgramModule,
 }
@@ -898,10 +899,10 @@ mod tests {
             module: libernet::wasm::ProgramModule {
                 protocol_version: Some(1),
                 version: Some(libernet::wasm::Version {
-                    num: Some(1),
+                    number: Some(1),
                     encoding: Some(libernet::wasm::Encoding::Module as i32),
                 }),
-                sections: vec![],
+                ..Default::default()
             },
         };
         let proto = program.encode_to_any().unwrap();
@@ -909,11 +910,10 @@ mod tests {
         assert_eq!(program, decoded);
         let proto_module = proto.to_msg::<libernet::wasm::ProgramModule>().unwrap();
         assert_eq!(proto_module.protocol_version, Some(1));
-        assert_eq!(proto_module.version.as_ref().unwrap().num, Some(1));
+        assert_eq!(proto_module.version.as_ref().unwrap().number, Some(1));
         assert_eq!(
             proto_module.version.as_ref().unwrap().encoding,
             Some(libernet::wasm::Encoding::Module as i32)
         );
-        assert_eq!(proto_module.sections.len(), 0);
     }
 }
