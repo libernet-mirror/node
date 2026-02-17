@@ -256,19 +256,19 @@ impl AccountProof {
 #[derive(Debug, Default)]
 #[cfg_attr(test, derive(PartialEq))]
 pub struct Program {
-    module: libernet::wasm::ProgramModule,
+    module: Option<libernet::wasm::ProgramModule>,
 }
 
 impl proto::EncodeToAny for Program {
     fn encode_to_any(&self) -> Result<prost_types::Any> {
-        Ok(prost_types::Any::from_msg(&self.module)?)
+        Ok(prost_types::Any::from_msg(self.module.as_ref().context("missing program module")?)?)
     }
 }
 
 impl proto::DecodeFromAny for Program {
     fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
         let proto = proto.to_msg::<libernet::wasm::ProgramModule>()?;
-        Ok(Self { module: proto })
+        Ok(Self { module: Some(proto) })
     }
 }
 
@@ -896,14 +896,14 @@ mod tests {
     #[test]
     fn test_encode_decode_empty_program() {
         let program = Program {
-            module: libernet::wasm::ProgramModule {
+            module: Some(libernet::wasm::ProgramModule {
                 protocol_version: Some(1),
                 version: Some(libernet::wasm::Version {
                     number: Some(1),
                     encoding: Some(libernet::wasm::Encoding::Module as i32),
                 }),
                 ..Default::default()
-            },
+            }),
         };
         let proto = program.encode_to_any().unwrap();
         let decoded = Program::decode_from_any(&proto).unwrap();
