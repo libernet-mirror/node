@@ -5,7 +5,7 @@ use blstrs::Scalar;
 use crypto::{merkle::AsScalar, poseidon::hash_t4};
 
 #[macro_export]
-macro_rules! opmatch {
+macro_rules! some {
     ($expr:expr, $pat:pat => $body:block, $msg:expr $(,)?) => {{
         match $expr {
             Some($pat) => $body,
@@ -52,7 +52,7 @@ impl ToScalar for wasm::ValueType {
                 if self.reference_type.is_some() {
                     bail!("Reference type is set for primitive value type");
                 }
-                0.into()
+                0.as_scalar()
             }
             PlainType::ValueTypeRef => {
                 let ref_code = self
@@ -73,7 +73,7 @@ impl ToScalar for wasm::block_type::BlockType {
         Ok(match self {
             wasm::block_type::BlockType::Empty(_) => -1.as_scalar(),
             wasm::block_type::BlockType::ValueType(vt) => vt.to_scalar()?,
-            wasm::block_type::BlockType::FunctionType(_) => todo!(),
+            wasm::block_type::BlockType::FunctionType(v) => v.as_scalar(),
         })
     }
 }
@@ -270,7 +270,7 @@ impl ToScalar for Operator {
                 0.into()
             }
             OpCode::Block | OpCode::Loop | OpCode::If | OpCode::LegacyExceptionsExtTry => {
-                opmatch!(operator, BlockType(block_type) => {
+                some!(operator, BlockType(block_type) => {
                     match block_type.block_type {
                         Some(block_type) => block_type.to_scalar()?,
                         _ => bail!("Block type is required"),
@@ -281,35 +281,35 @@ impl ToScalar for Operator {
             | OpCode::BrIf
             | OpCode::LegacyExceptionsExtRethrow
             | OpCode::LegacyExceptionsExtDelegate => {
-                opmatch!(operator, RelativeDepth(relative_depth) => {
+                some!(operator, RelativeDepth(relative_depth) => {
                     relative_depth.as_scalar()
                 }, "Relative depth is required")
             }
             OpCode::BrTable => {
-                opmatch!(operator, Targets(targets) => {
+                some!(operator, Targets(targets) => {
                     let default = targets.default.ok_or_else(|| anyhow!("Default target is required"))?;
                     hash_t4(&[default.as_scalar(), targets.targets.to_scalar()?])
                 }, "Type index is required")
             }
             OpCode::Call => {
-                opmatch!(operator, FunctionIndex(function_index) => {
+                some!(operator, FunctionIndex(function_index) => {
                     function_index.as_scalar()
                 }, "Function index is required")
             }
             OpCode::CallIndirect => {
-                opmatch!(operator, CallIndirect(call_indirect) => {
+                some!(operator, CallIndirect(call_indirect) => {
                     let type_index = call_indirect.type_index.ok_or_else(|| anyhow!("Type index is required"))?;
                     let table_index = call_indirect.table_index.ok_or_else(|| anyhow!("Table index is required"))?;
                     hash_t4(&[type_index.as_scalar(), table_index.as_scalar()])
                 }, "Type index and table index are required")
             }
             OpCode::LocalGet | OpCode::LocalSet | OpCode::LocalTee => {
-                opmatch!(operator, LocalIndex(local_index) => {
+                some!(operator, LocalIndex(local_index) => {
                     local_index.as_scalar()
                 }, "Local index is required")
             }
             OpCode::GlobalGet | OpCode::GlobalSet => {
-                opmatch!(operator, GlobalIndex(global_index) => {
+                some!(operator, GlobalIndex(global_index) => {
                     global_index.as_scalar()
                 }, "Global index is required")
             }
@@ -336,7 +336,7 @@ impl ToScalar for Operator {
             | OpCode::I64Store8
             | OpCode::I64Store16
             | OpCode::I64Store32 => {
-                opmatch!(operator, Memarg(memarg) => {
+                some!(operator, Memarg(memarg) => {
                     let align = memarg.align.ok_or_else(|| anyhow!("Align is required"))?;
                     let max_align = memarg.max_align.ok_or_else(|| anyhow!("Max align is required"))?;
                     let offset = memarg.offset.ok_or_else(|| anyhow!("Offset is required"))?;
@@ -345,82 +345,82 @@ impl ToScalar for Operator {
                 }, "Mem arg is required")
             }
             OpCode::MemorySize | OpCode::MemoryGrow => {
-                opmatch!(operator, Mem(mem) => {
+                some!(operator, Mem(mem) => {
                     mem.as_scalar()
                 }, "Mem is required")
             }
             OpCode::I32Constant => {
-                opmatch!(operator, I32Value(i32_value) => {
+                some!(operator, I32Value(i32_value) => {
                     i32_value.as_scalar()
                 }, "I32 value is required")
             }
             OpCode::I64Constant => {
-                opmatch!(operator, I64Value(i64_value) => {
+                some!(operator, I64Value(i64_value) => {
                     i64_value.as_scalar()
                 }, "I64 value is required")
             }
             OpCode::F32Constant => {
-                opmatch!(operator, F32Value(f32_value) => {
+                some!(operator, F32Value(f32_value) => {
                     f32_value.as_scalar()
                 }, "F32 value is required")
             }
             OpCode::F64Constant => {
-                opmatch!(operator, F64Value(f64_value) => {
+                some!(operator, F64Value(f64_value) => {
                     f64_value.as_scalar()
                 }, "F64 value is required")
             }
             OpCode::BulkMemoryExtMemoryInit => {
-                opmatch!(operator, MemoryInit(memory_init) => {
+                some!(operator, MemoryInit(memory_init) => {
                     let data_index = memory_init.data_index.ok_or_else(|| anyhow!("Data index is required"))?;
                     let address = memory_init.address.ok_or_else(|| anyhow!("Address is required"))?;
                     hash_t4(&[data_index.as_scalar(), address.as_scalar()])
                 }, "Data index and address are required")
             }
             OpCode::BulkMemoryExtDataDrop => {
-                opmatch!(operator, DataIndex(data_index) => {
+                some!(operator, DataIndex(data_index) => {
                     data_index.as_scalar()
                 }, "Data index is required")
             }
             OpCode::BulkMemoryExtMemoryCopy => {
-                opmatch!(operator, MemoryCopy(memory_copy) => {
+                some!(operator, MemoryCopy(memory_copy) => {
                     let destination_address = memory_copy.destination_address.ok_or_else(|| anyhow!("Destination address is required"))?;
                     let source_address = memory_copy.source_address.ok_or_else(|| anyhow!("Source address is required"))?;
                     hash_t4(&[destination_address.as_scalar(), source_address.as_scalar()])
                 }, "Destination address and source address are required")
             }
             OpCode::BulkMemoryExtMemoryFill => {
-                opmatch!(operator, Mem(mem) => {
+                some!(operator, Mem(mem) => {
                     mem.as_scalar()
                 }, "Mem is required")
             }
             OpCode::BulkMemoryExtTableInit => {
-                opmatch!(operator, TableInit(table_init) => {
+                some!(operator, TableInit(table_init) => {
                     let element_index = table_init.element_index.ok_or_else(|| anyhow!("Element index is required"))?;
                     let table = table_init.table.ok_or_else(|| anyhow!("Table is required"))?;
                     hash_t4(&[element_index.as_scalar(), table.as_scalar()])
                 }, "Table index is required")
             }
             OpCode::BulkMemoryExtElemDrop => {
-                opmatch!(operator, ElementIndex(element_index) => {
+                some!(operator, ElementIndex(element_index) => {
                     element_index.as_scalar()
                 }, "Element index is required")
             }
             OpCode::BulkMemoryExtTableCopy => {
-                opmatch!(operator, TableCopy(table_copy) => {
+                some!(operator, TableCopy(table_copy) => {
                     let dst_table = table_copy.dst_table.ok_or_else(|| anyhow!("Dst table is required"))?;
                     let src_table = table_copy.src_table.ok_or_else(|| anyhow!("Src table is required"))?;
                     hash_t4(&[dst_table.as_scalar(), src_table.as_scalar()])
                 }, "Dst table and src table are required")
             }
             OpCode::ExceptionsExtTryTable => {
-                opmatch!(operator, TryTable(try_table) => {
+                some!(operator, TryTable(try_table) => {
                     let block_type = try_table.r#type.ok_or_else(|| anyhow!("Block type is required"))?.block_type.ok_or_else(|| anyhow!("Block type is required"))?.to_scalar()?;
                     let catches = try_table.catches.to_scalar()?;
                     hash_t4(&[block_type, catches])
                 }, "Type index and catches are required")
             }
             OpCode::ExceptionsExtThrow | OpCode::LegacyExceptionsExtCatch => {
-                opmatch!(operator, TagIndex(tag_index) => {
+                some!(operator, TagIndex(tag_index) => {
                     tag_index.as_scalar()
                 }, "Tag index is required")
             }
@@ -436,5 +436,353 @@ impl AsScalar for Operator {
             Ok(scalar) => [1.as_scalar(), scalar],
             Err(_) => [0.as_scalar(), 0.as_scalar()],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::libernet::wasm::operator::Operator as OperatorVariant;
+    use crate::libernet::wasm::{
+        BreakTargets, CallIndirectOp, CatchAllElements, CatchElement, CatchOne, MemArg, ValueType,
+        block_type, catch_element,
+    };
+    use crate::libernet::wasm::{OpCode, Operator};
+    use crypto::merkle::AsScalar;
+
+    #[test]
+    fn test_some_macro_success() {
+        let result: Result<u32, _> = (|| {
+            let opt: Option<u32> = Some(42);
+            let x = some!(opt, x => { Ok(x) }, "expected some");
+            x
+        })();
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_some_macro_failure() {
+        let result: Result<u32, _> = (|| {
+            let opt: Option<u32> = None;
+            some!(opt, x => { Ok(x) }, "expected some")
+        })();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "expected some");
+    }
+
+    #[test]
+    fn test_u32_to_scalar() {
+        let scalar = 42u32.to_scalar().unwrap();
+        assert_eq!(scalar, 42u32.as_scalar());
+    }
+
+    #[test]
+    fn test_vec_to_scalar() {
+        let empty: Vec<u32> = vec![];
+        let empty_scalar = empty.to_scalar().unwrap();
+        assert_eq!(empty_scalar, 0u64.as_scalar());
+
+        let vec = vec![1u32, 2u32];
+        let scalar = vec.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[
+                hash_t4(&[2u64.as_scalar(), 1u32.as_scalar()]),
+                2u32.as_scalar()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_value_type_i32_to_scalar() {
+        let vt = ValueType {
+            value_type: Some(PlainType::ValueTypeI32 as i32),
+            reference_type: None,
+        };
+        let scalar = vt.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[(PlainType::ValueTypeI32 as i32).as_scalar(), 0.as_scalar()])
+        );
+    }
+
+    #[test]
+    fn test_value_type_missing_value_type_fails() {
+        let vt = ValueType {
+            value_type: None,
+            reference_type: None,
+        };
+        assert!(vt.to_scalar().is_err());
+    }
+
+    #[test]
+    fn test_value_type_ref_type_with_primitive_fails() {
+        let vt = ValueType {
+            value_type: Some(PlainType::ValueTypeI32 as i32),
+            reference_type: Some(RefType::RefFunc as i32),
+        };
+        assert!(vt.to_scalar().is_err());
+    }
+
+    #[test]
+    fn test_catch_element_one_to_scalar() {
+        let ce = CatchElement {
+            catch_element: Some(catch_element::CatchElement::One(CatchOne {
+                tag: Some(1),
+                label: Some(2),
+            })),
+        };
+        let scalar = ce.to_scalar().unwrap();
+        assert_ne!(scalar, 0u64.as_scalar());
+    }
+
+    #[test]
+    fn test_catch_element_all_to_scalar() {
+        let ce = CatchElement {
+            catch_element: Some(catch_element::CatchElement::All(CatchAllElements {
+                label: Some(5),
+            })),
+        };
+        let scalar = ce.to_scalar().unwrap();
+        assert_ne!(scalar, 0u64.as_scalar());
+    }
+
+    #[test]
+    fn test_catch_element_missing_fails() {
+        let ce = CatchElement {
+            catch_element: None,
+        };
+        assert!(ce.to_scalar().is_err());
+    }
+
+    #[test]
+    fn test_operator_nop_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::Nop as i32),
+            operator: None,
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_ne!(scalar, 0u64.as_scalar());
+    }
+
+    #[test]
+    fn test_operator_nop_with_operator_fails() {
+        let op = Operator {
+            opcode: Some(OpCode::Nop as i32),
+            operator: Some(OperatorVariant::LocalIndex(0)),
+        };
+        assert!(op.to_scalar().is_err());
+    }
+
+    #[test]
+    fn test_operator_call_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::Call as i32),
+            operator: Some(OperatorVariant::FunctionIndex(42)),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_ne!(scalar, 0u64.as_scalar());
+    }
+
+    #[test]
+    fn test_operator_call_missing_function_index_fails() {
+        let op = Operator {
+            opcode: Some(OpCode::Call as i32),
+            operator: None,
+        };
+        assert!(op.to_scalar().is_err());
+    }
+
+    #[test]
+    fn test_operator_i32_constant_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::I32Constant as i32),
+            operator: Some(OperatorVariant::I32Value(100)),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[(OpCode::I32Constant as i32).as_scalar(), 100u64.as_scalar()])
+        );
+    }
+
+    #[test]
+    fn test_operator_block_empty_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::Block as i32),
+            operator: Some(OperatorVariant::BlockType(wasm::BlockType {
+                block_type: Some(block_type::BlockType::Empty(110)),
+            })),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[(OpCode::Block as i32).as_scalar(), -1.as_scalar()])
+        );
+    }
+
+    #[test]
+    fn test_operator_block_value_type_to_scalar() {
+        let value_type = ValueType {
+            value_type: Some(PlainType::ValueTypeI32 as i32),
+            reference_type: None,
+        };
+        let op = Operator {
+            opcode: Some(OpCode::Block as i32),
+            operator: Some(OperatorVariant::BlockType(wasm::BlockType {
+                block_type: Some(block_type::BlockType::ValueType(value_type)),
+            })),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[
+                (OpCode::Block as i32).as_scalar(),
+                value_type.to_scalar().unwrap()
+            ])
+        );
+    }
+
+    #[test]
+    fn test_operator_block_function_type_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::Block as i32),
+            operator: Some(OperatorVariant::BlockType(wasm::BlockType {
+                block_type: Some(block_type::BlockType::FunctionType(110)),
+            })),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[(OpCode::Block as i32).as_scalar(), 110u64.as_scalar()])
+        );
+    }
+
+    #[test]
+    fn test_operator_local_get_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::LocalGet as i32),
+            operator: Some(OperatorVariant::LocalIndex(3)),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[(OpCode::LocalGet as i32).as_scalar(), 3u64.as_scalar()])
+        );
+    }
+
+    #[test]
+    fn test_operator_memarg_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::I32Load as i32),
+            operator: Some(OperatorVariant::Memarg(MemArg {
+                align: Some(1),
+                max_align: Some(2),
+                offset: Some(3),
+                memory: Some(4),
+            })),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[
+                (OpCode::I32Load as i32).as_scalar(),
+                hash_t4(&[
+                    1u64.as_scalar(),
+                    2u64.as_scalar(),
+                    3u64.as_scalar(),
+                    4u64.as_scalar()
+                ])
+            ])
+        );
+    }
+
+    #[test]
+    fn test_operator_br_table_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::BrTable as i32),
+            operator: Some(OperatorVariant::Targets(BreakTargets {
+                default: Some(5),
+                targets: vec![1, 2, 3],
+            })),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[
+                (OpCode::BrTable as i32).as_scalar(),
+                hash_t4(&[5.as_scalar(), vec![1, 2, 3].to_scalar().unwrap()])
+            ])
+        );
+    }
+
+    #[test]
+    fn test_operator_call_indirect_to_scalar() {
+        let op = Operator {
+            opcode: Some(OpCode::CallIndirect as i32),
+            operator: Some(OperatorVariant::CallIndirect(CallIndirectOp {
+                type_index: Some(1),
+                table_index: Some(2),
+            })),
+        };
+        let scalar = op.to_scalar().unwrap();
+        assert_eq!(
+            scalar,
+            hash_t4(&[
+                (OpCode::CallIndirect as i32).as_scalar(),
+                hash_t4(&[1.as_scalar(), 2.as_scalar()])
+            ])
+        );
+    }
+
+    #[test]
+    fn test_operator_as_scalar_deterministic() {
+        let op = Operator {
+            opcode: Some(OpCode::Nop as i32),
+            operator: None,
+        };
+        let s1 = op.as_scalar();
+        let s2 = op.as_scalar();
+        assert_eq!(s1, s2);
+    }
+
+    #[test]
+    fn test_operator_as_scalar_different_operators_different_scalars() {
+        let nop = Operator {
+            opcode: Some(OpCode::Nop as i32),
+            operator: None,
+        };
+        let ret = Operator {
+            opcode: Some(OpCode::Return as i32),
+            operator: None,
+        };
+        assert_ne!(nop.as_scalar(), ret.as_scalar());
+    }
+
+    #[test]
+    fn test_operator_as_scalar_invalid_returns_error_scalar() {
+        let invalid = Operator {
+            opcode: None,
+            operator: None,
+        };
+        let scalar = invalid.as_scalar();
+        let valid = Operator {
+            opcode: Some(OpCode::Nop as i32),
+            operator: None,
+        };
+        assert_ne!(scalar, valid.as_scalar());
+    }
+
+    #[test]
+    fn test_operator_same_op_same_scalar() {
+        let op1 = Operator {
+            opcode: Some(OpCode::I32Constant as i32),
+            operator: Some(OperatorVariant::I32Value(42)),
+        };
+        let op2 = Operator {
+            opcode: Some(OpCode::I32Constant as i32),
+            operator: Some(OperatorVariant::I32Value(42)),
+        };
+        assert_eq!(op1.as_scalar(), op2.as_scalar());
     }
 }
