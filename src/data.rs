@@ -261,14 +261,18 @@ pub struct Program {
 
 impl proto::EncodeToAny for Program {
     fn encode_to_any(&self) -> Result<prost_types::Any> {
-        Ok(prost_types::Any::from_msg(self.module.as_ref().context("missing program module")?)?)
+        Ok(prost_types::Any::from_msg(
+            self.module.as_ref().context("missing program module")?,
+        )?)
     }
 }
 
 impl proto::DecodeFromAny for Program {
     fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
         let proto = proto.to_msg::<libernet::wasm::ProgramModule>()?;
-        Ok(Self { module: Some(proto) })
+        Ok(Self {
+            module: Some(proto),
+        })
     }
 }
 
