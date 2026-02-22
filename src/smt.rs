@@ -103,6 +103,11 @@ impl<const W: usize> Node<W> {
         }
     }
 
+    fn erase(&mut self) {
+        self.hash = Scalar::ZERO.into();
+        self.children = std::array::from_fn(|_| Scalar::ZERO.into());
+    }
+
     fn is_empty(&self) -> bool {
         self.hash.to_scalar() == Scalar::ZERO
     }
@@ -197,7 +202,7 @@ impl<'tree, 'node, const W: usize, const H: usize> Deref for NodeRef<'tree, 'nod
 impl<'tree, 'node, const W: usize, const H: usize> Drop for NodeRef<'tree, 'node, W, H> {
     fn drop(&mut self) {
         if self.node.unref2() {
-            self.tree.deallocate_node(self.node);
+            self.tree.maybe_deallocate_node(self.node);
         }
     }
 }
@@ -277,15 +282,19 @@ impl<'data, const W: usize, const H: usize> Tree<'data, W, H> {
         }
     }
 
-    fn node<'tree: 'data>(&'tree self, i: usize) -> NodeRef<'tree, 'data, W, H> {
+    fn raw_node<'tree: 'data>(&'tree self, i: usize) -> &'data Node<W> {
         let data: &'data [u8] = self.data;
         let offset = Self::padded_header_size() + i * Self::padded_node_size();
-        let node = unsafe {
+        unsafe {
             // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
             // for the node. The caller is assumed to provide a valid index `i`, in which case
             // `offset` will point to a valid node within the data slice.
             &*(data.as_ptr().add(offset) as *const Node<W>)
-        };
+        }
+    }
+
+    fn node<'tree: 'data>(&'tree self, i: usize) -> NodeRef<'tree, 'data, W, H> {
+        let node = self.raw_node(i);
         NodeRef::new(self, node)
     }
 
@@ -322,17 +331,15 @@ impl<'data, const W: usize, const H: usize> Tree<'data, W, H> {
         let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
         let mut j = 0;
         let _guard = self.mutex.lock().unwrap();
-        let data: &mut [u8] = self.data;
         loop {
-            let index = ((i + j) & mask) as usize;
-            let offset = Self::padded_header_size() + index * Self::padded_node_size();
-            let node = unsafe {
-                // SAFETY: no changes in mutability or lifetime, we're only reinterpreting the bytes
-                // for the node.
-                &mut *(data.as_ptr().add(offset) as *mut Node<W>)
-            };
+            let node = self.raw_node(((i + j) & mask) as usize);
             if node.is_empty() || !node.is_reffed() {
-                node.init_with_hash(hash, children);
+                unsafe {
+                    // SAFETY: mutating the node is OK here because we're working on an unused slot
+                    // and we've got the mutex lock, so no other thread can be working on it.
+                    node.to_mut()
+                }
+                .init_with_hash(hash, children);
                 return NodeRef::new(self, node);
             }
             j += 1;
@@ -340,10 +347,16 @@ impl<'data, const W: usize, const H: usize> Tree<'data, W, H> {
         }
     }
 
-    fn deallocate_node(&self, node: &'data Node<W>) {
+    fn maybe_deallocate_node(&self, node: &'data Node<W>) {
         let _guard = self.mutex.lock().unwrap();
         if !node.is_reffed() {
-            // TODO: erase node.
+            let node_mut = unsafe {
+                // SAFETY: the node has both reference counts sets to 0 (as per `is_reffed`) so it's
+                // undiscoverable. No other thread can be reading it. We've got the mutex lock so no
+                // other thread can be probing it either.
+                node.to_mut()
+            };
+            node_mut.erase();
         }
     }
 
