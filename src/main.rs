@@ -23,6 +23,7 @@ mod db;
 mod net;
 mod proto;
 mod service;
+mod smt;
 mod ssl;
 mod topology;
 mod tree;
