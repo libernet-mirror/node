@@ -5,7 +5,8 @@ use ff::{Field, PrimeField};
 use primitive_types::U256;
 use std::cmp::Ordering;
 use std::fmt::Debug;
-use std::sync::Mutex;
+use std::ops::Deref;
+use std::sync::{Mutex, atomic::AtomicU64};
 
 pub trait Stored: Sized + Copy + Clone + 'static {}
 
@@ -45,18 +46,36 @@ impl PartialOrd for StoredScalar {
     }
 }
 
+/// Manages access to a node in the mapped memory region.
+///
+/// REQUIRES: the address of a `Node` must be 8-byte aligned.
 #[derive(Debug)]
 #[repr(C)]
 struct Node<const W: usize> {
-    ref_count: u64,
-    label: StoredScalar,
+    /// Tracks how many other nodes refer to this node.
+    ref_count1: u64,
+
+    /// Tracks how many `NodeRef`s refer to this node.
+    ///
+    /// NOTE: the `ref_count2`s of all nodes must be set to zero before constructing a `Tree` on a
+    /// data slice, regardless of the state of the rest of the slice.
+    ref_count2: u64,
+
+    /// The hash of the node.
+    ///
+    /// Set to zero for empty node slots.
+    hash: StoredScalar,
+
+    /// If the children are leaves then these are the values of the leaves, otherwise they're the
+    /// hashes of the child nodes.
     children: [StoredScalar; W],
 }
 
 impl<const W: usize> Node<W> {
     fn init(&mut self, children: [Scalar; W]) {
-        self.ref_count = 0;
-        self.label = match W {
+        self.ref_count1 = 0;
+        self.ref_count2 = 0;
+        self.hash = match W {
             2 => poseidon::hash_t3(&children),
             3 => poseidon::hash_t4(&children),
             _ => unimplemented!(),
@@ -66,24 +85,40 @@ impl<const W: usize> Node<W> {
     }
 
     fn is_empty(&self) -> bool {
-        self.label.to_scalar() == Scalar::ZERO
+        self.hash.to_scalar() == Scalar::ZERO
     }
 
-    fn is_reffed(&self) -> bool {
-        self.ref_count > 0
+    fn ref1(&mut self) {
+        self.ref_count1 += 1;
     }
 
-    fn r#ref(&mut self) {
-        self.ref_count += 1;
+    fn unref1(&mut self) -> bool {
+        self.ref_count1 -= 1;
+        self.ref_count1 == 0
     }
 
-    fn unref(&mut self) -> bool {
-        self.ref_count -= 1;
-        self.ref_count == 0
+    fn ref_count2(&self) -> &AtomicU64 {
+        unsafe { &*AtomicU64::from_ptr(std::ptr::from_ref(&self.ref_count2) as *mut u64) }
     }
 
-    fn label(&self) -> Scalar {
-        self.label.to_scalar()
+    fn clear_ref_count2(&self) {
+        self.ref_count2()
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn ref2(&self) {
+        self.ref_count2()
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn unref2(&self) -> bool {
+        self.ref_count2()
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel)
+            == 1
+    }
+
+    fn hash(&self) -> Scalar {
+        self.hash.to_scalar()
     }
 
     fn children(&self) -> [Scalar; W] {
@@ -97,11 +132,46 @@ impl<const W: usize> Node<W> {
 
 impl<const W: usize> PartialEq for Node<W> {
     fn eq(&self, other: &Self) -> bool {
-        self.label == other.label
+        self.hash == other.hash
     }
 }
 
 impl<const W: usize> Eq for Node<W> {}
+
+#[derive(Debug)]
+struct NodeRef<'a: 'b, 'b, const W: usize, const H: usize> {
+    tree: &'a Tree<'b, W, H>,
+    node: &'b Node<W>,
+}
+
+impl<'a, 'b, const W: usize, const H: usize> NodeRef<'a, 'b, W, H> {
+    fn new(tree: &'a Tree<'b, W, H>, node: &'b Node<W>) -> Self {
+        node.ref2();
+        Self { tree, node }
+    }
+}
+
+impl<'a, 'b, const W: usize, const H: usize> Clone for NodeRef<'a, 'b, W, H> {
+    fn clone(&self) -> Self {
+        Self::new(self.tree, self.node)
+    }
+}
+
+impl<'a, 'b, const W: usize, const H: usize> Deref for NodeRef<'a, 'b, W, H> {
+    type Target = Node<W>;
+
+    fn deref(&self) -> &Self::Target {
+        self.node
+    }
+}
+
+impl<'a, 'b, const W: usize, const H: usize> Drop for NodeRef<'a, 'b, W, H> {
+    fn drop(&mut self) {
+        if self.node.unref2() {
+            // TODO: deallocate
+        }
+    }
+}
 
 #[derive(Debug)]
 #[repr(C)]
@@ -122,7 +192,7 @@ impl TreeHeader {
 
 #[derive(Debug)]
 pub struct Tree<'a, const W: usize, const H: usize> {
-    data: &'a mut [u8],
+    data: &'a [u8],
     mutex: Mutex<()>,
 }
 
@@ -142,17 +212,18 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         unsafe { &mut *(self.data.as_ptr() as *mut TreeHeader) }
     }
 
-    fn node(&self, i: usize) -> &'a Node<W> {
+    fn node<'b: 'a>(&'b self, i: usize) -> NodeRef<'b, 'a, W, H> {
         let offset = Self::padded_header_size() + i * Self::padded_node_size();
-        unsafe { &*(self.data.as_ptr().add(offset) as *const Node<W>) }
+        let node = unsafe { &*(self.data.as_ptr().add(offset) as *const Node<W>) };
+        NodeRef::new(self, node)
     }
 
-    fn node_mut(&self, i: usize) -> &'a mut Node<W> {
+    fn node_mut(&mut self, i: usize) -> &'a mut Node<W> {
         let offset = Self::padded_header_size() + i * Self::padded_node_size();
         unsafe { &mut *(self.data.as_ptr().add(offset) as *mut Node<W>) }
     }
 
-    fn get_node_by_hash(&self, hash: Scalar) -> Option<&'a Node<W>> {
+    fn get_node_by_hash<'b: 'a>(&'b self, hash: Scalar) -> Option<NodeRef<'a, 'b, W, H>> {
         let mask = self.capacity() as u64 - 1;
         let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
         let mut j = 0;
@@ -162,11 +233,17 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             if node.is_empty() {
                 return None;
             }
-            if node.label() == hash {
+            if node.hash() == hash {
                 return Some(node);
             }
             j += 1;
             i += j;
+        }
+    }
+
+    fn clear_ref_count2(&mut self) {
+        for i in 0..self.capacity() {
+            self.node_mut(i).clear_ref_count2();
         }
     }
 
@@ -183,7 +260,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
                 min_size
             ));
         }
-        let tree = Self {
+        let mut tree = Self {
             data,
             mutex: Mutex::default(),
         };
@@ -194,6 +271,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
                 capacity
             ));
         }
+        tree.clear_ref_count2();
         Ok(tree)
     }
 
@@ -241,6 +319,13 @@ impl<'a, const H: usize> Tree<'a, 3, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_from_data() {
+        let mut data = [0u8; 57384];
+        let tree = Tree::<2, 256>::from_data(&mut data).unwrap();
+        // TODO
+    }
 
     // TODO
 }
