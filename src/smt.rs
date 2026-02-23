@@ -348,9 +348,9 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// function does nothing and returns false.
     ///
     /// If a node identified by the provided hash exists and its reference count is zero, the node
-    /// is erased and the function returns true. If the node is an internal node (ie. `leaf` is set
-    /// to false) all children are automatically unreffed and freed recursively if their reference
-    /// count reaches zero.
+    /// is erased and the function returns true. If the node is an internal node (ie. `level > 0`)
+    /// all children are automatically unreffed and freed recursively if their reference count
+    /// reaches zero.
     ///
     /// At the end of all (possibly recursive) removals, the new minimum capacity is reassessed and
     /// if it's less than the current capacity the hash map is shrunk and rehashed.
