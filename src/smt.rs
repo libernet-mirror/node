@@ -141,8 +141,16 @@ impl TreeHeader {
         self.size as usize
     }
 
+    fn set_size(&mut self, size: usize) {
+        self.size = size as u64;
+    }
+
     fn root_hash(&self) -> Scalar {
         self.root_hash.to_scalar()
+    }
+
+    fn set_root_hash(&mut self, hash: Scalar) {
+        self.root_hash = hash.into();
     }
 }
 
@@ -170,12 +178,21 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         std::mem::size_of::<Node<W>>().next_multiple_of(8)
     }
 
-    /// Returns a reference to the header.
+    /// Returns an immutable reference to the header.
     fn header(&self) -> &TreeHeader {
         unsafe {
             // SAFETY: the data slice gets checked extensively upon construction of the `Tree`, it's
             // guaranteed to have enough space for the header.
             &*(self.data.as_ptr() as *const TreeHeader)
+        }
+    }
+
+    /// Returns a mutable reference to the header.
+    fn header_mut(&mut self) -> &mut TreeHeader {
+        unsafe {
+            // SAFETY: the data slice gets checked extensively upon construction of the `Tree`, it's
+            // guaranteed to have enough space for the header.
+            &mut *(self.data.as_ptr() as *mut TreeHeader)
         }
     }
 
@@ -201,21 +218,75 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         }
     }
 
-    fn find_node(&self, hash: Scalar) -> Option<&Node<W>> {
+    fn probe(&self, hash: Scalar) -> usize {
         let mask = self.capacity() as u64 - 1;
         let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
         let mut j = 0;
         loop {
-            let node = self.node(((i + j) & mask) as usize);
-            if node.is_empty() {
-                return None;
-            }
-            if node.hash() == hash {
-                return Some(node);
+            let index = ((i + j) & mask) as usize;
+            let node = self.node(index);
+            if node.is_empty() || !node.is_reffed() || node.hash() == hash {
+                return index;
             }
             j += 1;
             i += j;
         }
+    }
+
+    fn find_node(&self, hash: Scalar) -> Option<&Node<W>> {
+        let index = self.probe(hash);
+        let node = self.node(index);
+        if node.hash() != hash {
+            None
+        } else {
+            Some(node)
+        }
+    }
+
+    fn find_node_mut(&mut self, hash: Scalar) -> Option<&mut Node<W>> {
+        let index = self.probe(hash);
+        let node = self.node_mut(index);
+        if node.hash() != hash {
+            None
+        } else {
+            Some(node)
+        }
+    }
+
+    fn make_node(&mut self, children: &[Scalar; W]) -> &mut Node<W> {
+        let hash = Node::<W>::hash_node(children);
+        let index = self.probe(hash);
+        let node = self.node(index);
+        if node.is_empty() {
+            let current_size = self.header().size();
+            let min_capacity = ((current_size + 1) * Self::MAX_LOAD_FACTOR_DENOMINATOR
+                / Self::MAX_LOAD_FACTOR_NUMERATOR)
+                .next_power_of_two();
+            if min_capacity > self.capacity() {
+                // TODO: rehash.
+                unimplemented!()
+            }
+            self.header_mut().set_size(current_size + 1);
+        }
+        let node = self.node_mut(index);
+        if node.is_empty() || !node.is_reffed() {
+            node.init_with_hash(hash, children);
+        }
+        node
+    }
+
+    fn free_node(&mut self, hash: Scalar) -> bool {
+        let index = self.probe(hash);
+        let node = self.node_mut(index);
+        if node.is_empty() || node.is_reffed() {
+            return false;
+        }
+        // TODO: erasing is wrong because it interrupts the bucket. We must swap this node with the
+        // last of the bucket instead, and then erase the last slot of the bucket.
+        node.erase();
+        let header = self.header_mut();
+        header.set_size(header.size() - 1);
+        true
     }
 
     /// REQUIRES: `data` MUST be 8-byte aligned.
@@ -242,10 +313,23 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         Ok(tree)
     }
 
+    fn init_empty(&mut self) {
+        let mut hash = Scalar::ZERO;
+        for _ in 0..H {
+            let node = self.make_node(&std::array::from_fn(|_| hash));
+            node.r#ref();
+            node.r#ref();
+            hash = node.hash();
+        }
+        let root = self.find_node_mut(hash).unwrap();
+        root.unref();
+        self.header_mut().set_root_hash(hash);
+    }
+
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn new(data: &'a mut [u8]) -> Result<Self> {
-        let tree = Self::from_data(data)?;
-        // TODO: initialize.
+        let mut tree = Self::from_data(data)?;
+        tree.init_empty();
         Ok(tree)
     }
 
@@ -267,7 +351,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
 }
 
 impl<'a, const H: usize> Tree<'a, 2, H> {
-    pub fn lookup(&self, key: Scalar) -> Scalar {
+    pub fn get(&self, key: Scalar) -> Scalar {
         let mut node = self.find_node(self.header().root_hash()).unwrap();
         for i in (1..H).rev() {
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
@@ -280,7 +364,7 @@ impl<'a, const H: usize> Tree<'a, 2, H> {
 }
 
 impl<'a, const H: usize> Tree<'a, 3, H> {
-    pub fn lookup(&self, key: Scalar) -> Scalar {
+    pub fn get(&self, key: Scalar) -> Scalar {
         let mut node = self.find_node(self.header().root_hash()).unwrap();
         for i in (1..H).rev() {
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
@@ -298,12 +382,62 @@ mod tests {
     use crate::testing::parse_scalar;
 
     #[test]
-    fn test_from_data() {
+    fn test_assumptions1() {
+        let mut value = utils::scalar_to_u256(-Scalar::from(1));
+        let zero = U256::from(0);
+        let three = U256::from(3);
+        let mut counter = 0;
+        while value != zero {
+            value /= three;
+            counter += 1;
+        }
+        // Check that a BLS12-381 scalar decomposes into 161 trits.
+        assert_eq!(counter, 161);
+    }
+
+    #[test]
+    fn test_assumptions2() {
+        let max = -Scalar::from(1);
+        let msb = xits::and1(xits::shr(max, 255));
+        let mst = xits::mod3(xits::div_pow3(max, 161));
+        assert_eq!(msb, 0.into());
+        assert_eq!(mst, 0.into());
+    }
+
+    #[test]
+    fn test_new_binary_tree() {
         const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 512 * NODE_SIZE];
         let tree = Tree::<2, 256>::new(&mut data).unwrap();
-        assert_eq!(tree.root_hash(), parse_scalar(""));
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
+        );
+        assert_eq!(
+            tree.get(parse_scalar(
+                "0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611"
+            )),
+            Scalar::ZERO
+        );
+    }
+
+    #[test]
+    fn test_new_ternary_tree() {
+        const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 256 * NODE_SIZE];
+        let tree = Tree::<3, 161>::new(&mut data).unwrap();
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
+        );
+        assert_eq!(
+            tree.get(parse_scalar(
+                "0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611"
+            )),
+            Scalar::ZERO
+        );
     }
 
     // TODO
