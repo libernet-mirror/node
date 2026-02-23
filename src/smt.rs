@@ -448,8 +448,15 @@ impl<'a, const H: usize> Tree<'a, 2, H> {
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
-        // TODO
-        todo!()
+        let node = self.find_node(hash).unwrap();
+        let mut children = node.children();
+        let bit = xits::and1(xits::shr(key, level)).to_repr()[0];
+        children[bit as usize] = if level > 0 {
+            self.update(children[bit as usize], level - 1, key, value)
+        } else {
+            value
+        };
+        self.make_node(&children, level == 0).hash()
     }
 
     pub fn put(&mut self, key: Scalar, value: Scalar) {
@@ -471,8 +478,15 @@ impl<'a, const H: usize> Tree<'a, 3, H> {
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
-        // TODO
-        todo!()
+        let node = self.find_node(hash).unwrap();
+        let mut children = node.children();
+        let trit = xits::mod3(xits::div_pow3(key, level)).to_repr()[0];
+        children[trit as usize] = if level > 0 {
+            self.update(children[trit as usize], level - 1, key, value)
+        } else {
+            value
+        };
+        self.make_node(&children, level == 0).hash()
     }
 
     pub fn put(&mut self, key: Scalar, value: Scalar) {
@@ -510,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_binary_tree() {
+    fn test_new_tall_binary_tree() {
         const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 512 * NODE_SIZE];
@@ -530,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn test_new_ternary_tree() {
+    fn test_new_tall_ternary_tree() {
         const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
         const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 256 * NODE_SIZE];
@@ -547,6 +561,42 @@ mod tests {
             )),
             Scalar::ZERO
         );
+    }
+
+    #[test]
+    fn test_update_tall_binary_tree() {
+        const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
+        let mut tree = Tree::<2, 256>::new(&mut data).unwrap();
+        let key =
+            parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611");
+        tree.put(key, 42.into());
+        assert_eq!(tree.size(), 512);
+        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x41888c7fcb9ae568fd2d8f06451c53cd4e9a4467b43cddf99dd85c0ebe2a9eba")
+        );
+        assert_eq!(tree.get(key), 42.into());
+    }
+
+    #[test]
+    fn test_update_tall_ternary_tree() {
+        const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 512 * NODE_SIZE];
+        let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
+        let key =
+            parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611");
+        tree.put(key, 42.into());
+        assert_eq!(tree.size(), 322);
+        assert_eq!(tree.capacity(), 512);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2fc22d9cc6ce2f9377943565491dc6bdc235d92feed593822450de771dc81da7")
+        );
+        assert_eq!(tree.get(key), 42.into());
     }
 
     // TODO
