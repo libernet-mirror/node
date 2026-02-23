@@ -256,6 +256,10 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         }
     }
 
+    fn ref_node(&mut self, hash: Scalar) {
+        self.find_node_mut(hash).unwrap().r#ref();
+    }
+
     /// Ensures that a node with the given children exists.
     ///
     /// The node is created and inserted if it doesn't exist. This may result in a rehash because
@@ -282,7 +286,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             node.init_with_hash(hash, children);
             if !leaf {
                 for child_hash in children {
-                    self.find_node_mut(*child_hash).unwrap().r#ref();
+                    self.ref_node(*child_hash);
                 }
             }
         }
@@ -318,7 +322,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         }
     }
 
-    fn unref_node(&mut self, hash: Scalar, level: usize) -> bool {
+    fn unref_node_impl(&mut self, hash: Scalar, level: usize) -> bool {
         let (node_index, last_bucket_index) = self.probe_for_unref(hash);
         let node = self.node_mut(node_index);
         if node.is_empty() {
@@ -329,7 +333,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         }
         if level > 0 {
             for child_hash in self.node(node_index).children() {
-                self.unref_node(child_hash, level - 1);
+                self.unref_node_impl(child_hash, level - 1);
             }
         }
         if last_bucket_index != node_index {
@@ -339,7 +343,8 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         true
     }
 
-    /// Erases a node from the tree, unless it's still referenced.
+    /// Unreferences a node and erases it from the tree along with its entire subtree if it's no
+    /// longer referenced.
     ///
     /// If no node identified by the provided hash exists this function does nothing and returns
     /// false.
@@ -350,12 +355,12 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// If a node identified by the provided hash exists and its reference count is zero, the node
     /// is erased and the function returns true. If the node is an internal node (ie. `level > 0`)
     /// all children are automatically unreffed and freed recursively if their reference count
-    /// reaches zero.
+    /// reaches zero. Subtrees whose reference count doesn't reach zero are retained.
     ///
     /// At the end of all (possibly recursive) removals, the new minimum capacity is reassessed and
     /// if it's less than the current capacity the hash map is shrunk and rehashed.
-    fn free_node(&mut self, hash: Scalar, level: usize) -> bool {
-        if !self.unref_node(hash, level) {
+    fn unref_node(&mut self, hash: Scalar, level: usize) -> bool {
+        if !self.unref_node_impl(hash, level) {
             return false;
         }
         let min_capacity = Self::get_min_capacity_for(std::cmp::max(self.size(), H));
@@ -395,8 +400,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
                 .make_node(&std::array::from_fn(|_| hash), H == 0)
                 .hash();
         }
-        let root = self.find_node_mut(hash).unwrap();
-        root.r#ref();
+        self.ref_node(hash);
         self.header_mut().set_root_hash(hash);
     }
 
@@ -422,6 +426,13 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     pub fn root_hash(&self) -> Scalar {
         self.header().root_hash()
     }
+
+    /// REQUIRES: `hash` must refer to an existing node at level H-1.
+    fn set_root(&mut self, hash: Scalar) {
+        self.ref_node(hash);
+        self.unref_node(self.root_hash(), H - 1);
+        self.header_mut().set_root_hash(hash);
+    }
 }
 
 impl<'a, const H: usize> Tree<'a, 2, H> {
@@ -435,6 +446,16 @@ impl<'a, const H: usize> Tree<'a, 2, H> {
         let bit = xits::and1(key).to_repr()[0];
         node.child(bit as usize)
     }
+
+    fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
+        // TODO
+        todo!()
+    }
+
+    pub fn put(&mut self, key: Scalar, value: Scalar) {
+        let new_root = self.update(self.root_hash(), H - 1, key, value);
+        self.set_root(new_root);
+    }
 }
 
 impl<'a, const H: usize> Tree<'a, 3, H> {
@@ -447,6 +468,16 @@ impl<'a, const H: usize> Tree<'a, 3, H> {
         }
         let trit = xits::mod3(key).to_repr()[0];
         node.child(trit as usize)
+    }
+
+    fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
+        // TODO
+        todo!()
+    }
+
+    pub fn put(&mut self, key: Scalar, value: Scalar) {
+        let new_root = self.update(self.root_hash(), H - 1, key, value);
+        self.set_root(new_root);
     }
 }
 
