@@ -48,9 +48,7 @@ impl PartialOrd for StoredScalar {
 }
 
 /// Manages access to a node in the mapped memory region.
-///
-/// REQUIRES: the address of a `Node` must be 8-byte aligned.
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct Node<const W: usize> {
     /// Tracks how many other nodes refer to this node.
@@ -61,8 +59,8 @@ struct Node<const W: usize> {
     /// Set to zero for empty node slots.
     hash: StoredScalar,
 
-    /// If the children are leaves then these are the values of the leaves, otherwise they're the
-    /// hashes of the child nodes.
+    /// For leaf nodes these are arbitrary values, while for internal nodes they're the hashes of
+    /// the child nodes.
     children: [StoredScalar; W],
 }
 
@@ -228,7 +226,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
         let mut j = 0;
         loop {
-            let index = ((i + j) & mask) as usize;
+            let index = (i & mask) as usize;
             let node = self.node(index);
             if node.is_empty() || node.hash() == hash {
                 return index;
@@ -261,17 +259,16 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// Ensures that a node with the given children exists.
     ///
     /// The node is created and inserted if it doesn't exist. This may result in a rehash because
-    /// the hashtable grows when the capacity is scarce.
+    /// the hash table grows when the capacity is scarce.
     ///
     /// The `leaf` flag specifies whether the node being allocated is a leaf or an internal node. If
-    /// it's leaf the children are arbitrary values, while if it's an internal node the children
+    /// it's a leaf the children are arbitrary values, while if it's an internal node the children
     /// MUST be the hashes of other existing nodes. For internal nodes this algorithm will
     /// automatically increase the reference count of all children.
     fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> &mut Node<W> {
         let hash = Node::<W>::hash_node(children);
         let index = self.probe(hash);
-        let node = self.node(index);
-        if node.is_empty() {
+        if self.node(index).is_empty() {
             let current_size = self.header().size();
             let min_capacity = Self::get_min_capacity_for(current_size + 1);
             if min_capacity > self.capacity() {
@@ -284,61 +281,89 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         if node.is_empty() || !node.is_reffed() {
             node.init_with_hash(hash, children);
             if !leaf {
-                // TODO: reference all children.
+                for child_hash in children {
+                    self.find_node_mut(*child_hash).unwrap().r#ref();
+                }
             }
         }
-        node
+        self.node_mut(index)
+    }
+
+    fn probe_for_unref(&self, hash: Scalar) -> (usize, usize) {
+        let mask = self.capacity() as u64 - 1;
+        let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
+        let mut j = 0;
+        let mut node_index;
+        loop {
+            node_index = (i & mask) as usize;
+            let node = self.node(node_index);
+            if node.is_empty() {
+                return (node_index, node_index);
+            }
+            if node.hash() == hash {
+                break;
+            }
+            j += 1;
+            i += j;
+        }
+        let mut last_bucket_index = node_index;
+        loop {
+            let index = (i & mask) as usize;
+            if self.node(index).is_empty() {
+                return (node_index, last_bucket_index);
+            }
+            last_bucket_index = index;
+            j += 1;
+            i += j;
+        }
+    }
+
+    fn unref_node(&mut self, hash: Scalar, level: usize) -> bool {
+        let (node_index, last_bucket_index) = self.probe_for_unref(hash);
+        let node = self.node_mut(node_index);
+        if node.is_empty() {
+            return true;
+        }
+        if !node.unref() {
+            return false;
+        }
+        if level > 0 {
+            for child_hash in self.node(node_index).children() {
+                self.unref_node(child_hash, level - 1);
+            }
+        }
+        if last_bucket_index != node_index {
+            *self.node_mut(node_index) = *self.node(last_bucket_index);
+        }
+        self.node_mut(last_bucket_index).erase();
+        true
     }
 
     /// Erases a node from the tree, unless it's still referenced.
     ///
-    /// If no node identified by the provided hash exists this function is a no-op and returns
+    /// If no node identified by the provided hash exists this function does nothing and returns
     /// false.
     ///
     /// If a node identified by the provided hash exists but its reference count is not zero this
-    /// function is a no-op and returns false.
+    /// function does nothing and returns false.
     ///
-    /// If a node identified by the provided hash exists but its reference count is zero, the node
+    /// If a node identified by the provided hash exists and its reference count is zero, the node
     /// is erased and the function returns true. If the node is an internal node (ie. `leaf` is set
     /// to false) all children are automatically unreffed and freed recursively if their reference
     /// count reaches zero.
     ///
     /// At the end of all (possibly recursive) removals, the new minimum capacity is reassessed and
     /// if it's less than the current capacity the hash map is shrunk and rehashed.
-    fn free_node(&mut self, hash: Scalar, leaf: bool) -> bool {
-        let index = self.probe(hash);
-        let node = self.node_mut(index);
-        if node.is_empty() || node.is_reffed() {
+    fn free_node(&mut self, hash: Scalar, level: usize) -> bool {
+        if !self.unref_node(hash, level) {
             return false;
         }
-        if !leaf {
-            // TODO: unreference all children.
-        }
-        // TODO: erasing is wrong because it interrupts the bucket. We must swap this node with the
-        // last of the bucket instead, and then erase the last slot of the bucket.
-        node.erase();
-        let header = self.header_mut();
-        let new_size = header.size() - 1;
-        header.set_size(new_size);
-        let min_capacity = Self::get_min_capacity_for(std::cmp::max(new_size, H));
+        let min_capacity = Self::get_min_capacity_for(std::cmp::max(self.size(), H));
         if min_capacity < self.capacity() {
             // TODO: shrink & rehash.
             unimplemented!()
         }
         true
-    }
-
-    /// REQUIRES: `hash` must refer to an existing node.
-    fn ref_node(&mut self, hash: Scalar) {
-        self.find_node_mut(hash).unwrap().r#ref();
-    }
-
-    /// REQUIRES: `hash` must refer to an existing node.
-    fn unref_node(&mut self, hash: Scalar) {
-        if self.find_node_mut(hash).unwrap().unref() {
-            // TODO: free the node.
-            unimplemented!()
-        }
     }
 
     /// REQUIRES: `data` MUST be 8-byte aligned.
