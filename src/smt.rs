@@ -178,6 +178,11 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         std::mem::size_of::<Node<W>>().next_multiple_of(8)
     }
 
+    const fn get_min_capacity_for(size: usize) -> usize {
+        (size * Self::MAX_LOAD_FACTOR_DENOMINATOR / Self::MAX_LOAD_FACTOR_NUMERATOR)
+            .next_power_of_two()
+    }
+
     /// Returns an immutable reference to the header.
     fn header(&self) -> &TreeHeader {
         unsafe {
@@ -259,11 +264,9 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         let node = self.node(index);
         if node.is_empty() {
             let current_size = self.header().size();
-            let min_capacity = ((current_size + 1) * Self::MAX_LOAD_FACTOR_DENOMINATOR
-                / Self::MAX_LOAD_FACTOR_NUMERATOR)
-                .next_power_of_two();
+            let min_capacity = Self::get_min_capacity_for(current_size + 1);
             if min_capacity > self.capacity() {
-                // TODO: rehash.
+                // TODO: grow & rehash.
                 unimplemented!()
             }
             self.header_mut().set_size(current_size + 1);
@@ -285,16 +288,20 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         // last of the bucket instead, and then erase the last slot of the bucket.
         node.erase();
         let header = self.header_mut();
-        header.set_size(header.size() - 1);
+        let new_size = header.size() - 1;
+        header.set_size(new_size);
+        let min_capacity = Self::get_min_capacity_for(std::cmp::max(new_size, H));
+        if min_capacity < self.capacity() {
+            // TODO: shrink & rehash.
+            unimplemented!()
+        }
         true
     }
 
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn from_data(data: &'a mut [u8]) -> Result<Self> {
-        let min_size = Self::padded_header_size()
-            + (H * Self::MAX_LOAD_FACTOR_DENOMINATOR / Self::MAX_LOAD_FACTOR_NUMERATOR)
-                .next_power_of_two()
-                * Self::padded_node_size();
+        let min_size =
+            Self::padded_header_size() + Self::get_min_capacity_for(H) * Self::padded_node_size();
         if data.len() < min_size {
             return Err(anyhow!(
                 "data slice too short (was {} bytes, need at least {})",
