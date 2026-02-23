@@ -484,6 +484,8 @@ mod tests {
         const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 512 * NODE_SIZE];
         let tree = Tree::<2, 256>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 256);
+        assert_eq!(tree.capacity(), 512);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
@@ -502,6 +504,8 @@ mod tests {
         const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 256 * NODE_SIZE];
         let tree = Tree::<3, 161>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 161);
+        assert_eq!(tree.capacity(), 256);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
