@@ -177,8 +177,11 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     }
 
     const fn get_min_capacity_for(size: usize) -> usize {
-        (size * Self::MAX_LOAD_FACTOR_DENOMINATOR / Self::MAX_LOAD_FACTOR_NUMERATOR)
-            .next_power_of_two()
+        let dividend = size * Self::MAX_LOAD_FACTOR_DENOMINATOR;
+        let remainder = dividend % Self::MAX_LOAD_FACTOR_NUMERATOR;
+        let quotient =
+            dividend / Self::MAX_LOAD_FACTOR_NUMERATOR + if remainder != 0 { 1 } else { 0 };
+        quotient.next_power_of_two()
     }
 
     /// Returns an immutable reference to the header.
@@ -404,8 +407,11 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         self.header_mut().set_root_hash(hash);
     }
 
+    /// Initializes a new empty tree over the provided byte slice.
+    ///
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn new(data: &'a mut [u8]) -> Result<Self> {
+        data.fill(0);
         let mut tree = Self::from_data(data)?;
         tree.init_empty();
         Ok(tree)
@@ -423,6 +429,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         (self.data.len() - Self::padded_header_size()) / Self::padded_node_size()
     }
 
+    /// Returns the current root hash.
     pub fn root_hash(&self) -> Scalar {
         self.header().root_hash()
     }
@@ -436,6 +443,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
 }
 
 impl<'a, const H: usize> Tree<'a, 2, H> {
+    /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
         let mut node = self.find_node(self.header().root_hash()).unwrap();
         for i in (1..H).rev() {
@@ -459,6 +467,7 @@ impl<'a, const H: usize> Tree<'a, 2, H> {
         self.make_node(&children, level == 0).hash()
     }
 
+    /// Updates the value associated with the specified key.
     pub fn put(&mut self, key: Scalar, value: Scalar) {
         let new_root = self.update(self.root_hash(), H - 1, key, value);
         self.set_root(new_root);
@@ -466,6 +475,7 @@ impl<'a, const H: usize> Tree<'a, 2, H> {
 }
 
 impl<'a, const H: usize> Tree<'a, 3, H> {
+    /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
         let mut node = self.find_node(self.header().root_hash()).unwrap();
         for i in (1..H).rev() {
@@ -489,6 +499,7 @@ impl<'a, const H: usize> Tree<'a, 3, H> {
         self.make_node(&children, level == 0).hash()
     }
 
+    /// Updates the value associated with the specified key.
     pub fn put(&mut self, key: Scalar, value: Scalar) {
         let new_root = self.update(self.root_hash(), H - 1, key, value);
         self.set_root(new_root);
