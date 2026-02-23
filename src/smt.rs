@@ -524,6 +524,143 @@ mod tests {
     }
 
     #[test]
+    fn test_new_binary_tree_h1() {
+        const HEADER_SIZE: usize = Tree::<2, 1>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<2, 1>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 2 * NODE_SIZE];
+        let tree = Tree::<2, 1>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 2);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x44fbea4934de59fe3dea4bb6ce5f053fe967f8c43a872b343a6d12fe40d75ca3")
+        );
+        assert_eq!(tree.get(0.into()), Scalar::ZERO);
+        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_new_binary_tree_h2() {
+        const HEADER_SIZE: usize = Tree::<2, 2>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<2, 2>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        let tree = Tree::<2, 2>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 2);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x1642477fce8a9cfc7fef8c1adac8bb6212a12603545af958b6fa28f0099cdf1e")
+        );
+        assert_eq!(tree.get(0.into()), Scalar::ZERO);
+        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+        assert_eq!(tree.get(2.into()), Scalar::ZERO);
+        assert_eq!(tree.get(3.into()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_new_binary_tree_h3() {
+        const HEADER_SIZE: usize = Tree::<2, 3>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<2, 3>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        let tree = Tree::<2, 3>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x30ac7c720131f3ab706f3c8542a0ecdd6ca65b0f690cbea695b699fb2a6a0a6b")
+        );
+        assert_eq!(tree.get(0.into()), Scalar::ZERO);
+        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+        assert_eq!(tree.get(2.into()), Scalar::ZERO);
+        assert_eq!(tree.get(3.into()), Scalar::ZERO);
+        assert_eq!(tree.get(4.into()), Scalar::ZERO);
+        assert_eq!(tree.get(5.into()), Scalar::ZERO);
+        assert_eq!(tree.get(6.into()), Scalar::ZERO);
+        assert_eq!(tree.get(7.into()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_new_ternary_tree_h1() {
+        const HEADER_SIZE: usize = Tree::<3, 1>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<3, 1>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 2 * NODE_SIZE];
+        let tree = Tree::<3, 1>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 2);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
+        );
+        assert_eq!(tree.get(0.into()), Scalar::ZERO);
+        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+        assert_eq!(tree.get(2.into()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_new_ternary_tree_h2() {
+        const HEADER_SIZE: usize = Tree::<3, 2>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<3, 2>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        let tree = Tree::<3, 2>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 2);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x0813d9fa859ac9c7c3c147af1bf38a8d34a95d71dddb59cb362741af4a5ce374")
+        );
+        assert_eq!(tree.get(0.into()), Scalar::ZERO);
+        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+        assert_eq!(tree.get(2.into()), Scalar::ZERO);
+        assert_eq!(tree.get(3.into()), Scalar::ZERO);
+        assert_eq!(tree.get(4.into()), Scalar::ZERO);
+        assert_eq!(tree.get(5.into()), Scalar::ZERO);
+        assert_eq!(tree.get(6.into()), Scalar::ZERO);
+        assert_eq!(tree.get(7.into()), Scalar::ZERO);
+        assert_eq!(tree.get(8.into()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_new_ternary_tree_h3() {
+        const HEADER_SIZE: usize = Tree::<3, 3>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<3, 3>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        let tree = Tree::<3, 3>::new(&mut data).unwrap();
+        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x0d59114550233029c2dd76cb35aed5d87d0c11af9dcc16d59aea354cdf7b1904")
+        );
+        assert_eq!(tree.get(0.into()), Scalar::ZERO);
+        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+        assert_eq!(tree.get(2.into()), Scalar::ZERO);
+        assert_eq!(tree.get(3.into()), Scalar::ZERO);
+        assert_eq!(tree.get(4.into()), Scalar::ZERO);
+        assert_eq!(tree.get(5.into()), Scalar::ZERO);
+        assert_eq!(tree.get(6.into()), Scalar::ZERO);
+        assert_eq!(tree.get(7.into()), Scalar::ZERO);
+        assert_eq!(tree.get(8.into()), Scalar::ZERO);
+        assert_eq!(tree.get(9.into()), Scalar::ZERO);
+        assert_eq!(tree.get(10.into()), Scalar::ZERO);
+        assert_eq!(tree.get(11.into()), Scalar::ZERO);
+        assert_eq!(tree.get(12.into()), Scalar::ZERO);
+        assert_eq!(tree.get(13.into()), Scalar::ZERO);
+        assert_eq!(tree.get(14.into()), Scalar::ZERO);
+        assert_eq!(tree.get(15.into()), Scalar::ZERO);
+        assert_eq!(tree.get(16.into()), Scalar::ZERO);
+        assert_eq!(tree.get(17.into()), Scalar::ZERO);
+        assert_eq!(tree.get(18.into()), Scalar::ZERO);
+        assert_eq!(tree.get(19.into()), Scalar::ZERO);
+        assert_eq!(tree.get(20.into()), Scalar::ZERO);
+        assert_eq!(tree.get(21.into()), Scalar::ZERO);
+        assert_eq!(tree.get(22.into()), Scalar::ZERO);
+        assert_eq!(tree.get(23.into()), Scalar::ZERO);
+        assert_eq!(tree.get(24.into()), Scalar::ZERO);
+        assert_eq!(tree.get(25.into()), Scalar::ZERO);
+        assert_eq!(tree.get(26.into()), Scalar::ZERO);
+    }
+
+    #[test]
     fn test_new_tall_binary_tree() {
         const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
