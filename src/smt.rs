@@ -230,7 +230,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         loop {
             let index = ((i + j) & mask) as usize;
             let node = self.node(index);
-            if node.is_empty() || !node.is_reffed() || node.hash() == hash {
+            if node.is_empty() || node.hash() == hash {
                 return index;
             }
             j += 1;
@@ -258,7 +258,16 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         }
     }
 
-    fn make_node(&mut self, children: &[Scalar; W]) -> &mut Node<W> {
+    /// Ensures that a node with the given children exists.
+    ///
+    /// The node is created and inserted if it doesn't exist. This may result in a rehash because
+    /// the hashtable grows when the capacity is scarce.
+    ///
+    /// The `leaf` flag specifies whether the node being allocated is a leaf or an internal node. If
+    /// it's leaf the children are arbitrary values, while if it's an internal node the children
+    /// MUST be the hashes of other existing nodes. For internal nodes this algorithm will
+    /// automatically increase the reference count of all children.
+    fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> &mut Node<W> {
         let hash = Node::<W>::hash_node(children);
         let index = self.probe(hash);
         let node = self.node(index);
@@ -274,15 +283,36 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         let node = self.node_mut(index);
         if node.is_empty() || !node.is_reffed() {
             node.init_with_hash(hash, children);
+            if !leaf {
+                // TODO: reference all children.
+            }
         }
         node
     }
 
-    fn free_node(&mut self, hash: Scalar) -> bool {
+    /// Erases a node from the tree, unless it's still referenced.
+    ///
+    /// If no node identified by the provided hash exists this function is a no-op and returns
+    /// false.
+    ///
+    /// If a node identified by the provided hash exists but its reference count is not zero this
+    /// function is a no-op and returns false.
+    ///
+    /// If a node identified by the provided hash exists but its reference count is zero, the node
+    /// is erased and the function returns true. If the node is an internal node (ie. `leaf` is set
+    /// to false) all children are automatically unreffed and freed recursively if their reference
+    /// count reaches zero.
+    ///
+    /// At the end of all (possibly recursive) removals, the new minimum capacity is reassessed and
+    /// if it's less than the current capacity the hash map is shrunk and rehashed.
+    fn free_node(&mut self, hash: Scalar, leaf: bool) -> bool {
         let index = self.probe(hash);
         let node = self.node_mut(index);
         if node.is_empty() || node.is_reffed() {
             return false;
+        }
+        if !leaf {
+            // TODO: unreference all children.
         }
         // TODO: erasing is wrong because it interrupts the bucket. We must swap this node with the
         // last of the bucket instead, and then erase the last slot of the bucket.
@@ -296,6 +326,19 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             unimplemented!()
         }
         true
+    }
+
+    /// REQUIRES: `hash` must refer to an existing node.
+    fn ref_node(&mut self, hash: Scalar) {
+        self.find_node_mut(hash).unwrap().r#ref();
+    }
+
+    /// REQUIRES: `hash` must refer to an existing node.
+    fn unref_node(&mut self, hash: Scalar) {
+        if self.find_node_mut(hash).unwrap().unref() {
+            // TODO: free the node.
+            unimplemented!()
+        }
     }
 
     /// REQUIRES: `data` MUST be 8-byte aligned.
@@ -323,13 +366,12 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     fn init_empty(&mut self) {
         let mut hash = Scalar::ZERO;
         for _ in 0..H {
-            let node = self.make_node(&std::array::from_fn(|_| hash));
-            node.r#ref();
-            node.r#ref();
-            hash = node.hash();
+            hash = self
+                .make_node(&std::array::from_fn(|_| hash), H == 0)
+                .hash();
         }
         let root = self.find_node_mut(hash).unwrap();
-        root.unref();
+        root.r#ref();
         self.header_mut().set_root_hash(hash);
     }
 
