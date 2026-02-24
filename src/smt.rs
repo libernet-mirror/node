@@ -1,23 +1,19 @@
 use crate::constants;
-use crate::store::StoredScalar;
+use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{poseidon, utils, xits};
 use ff::{Field, PrimeField};
+use memmap2::MmapMut;
 use primitive_types::U256;
 use std::fmt::Debug;
 
-/// Manages access to a node in the mapped memory region.
+/// A node of the tree.
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct Node<const W: usize> {
     /// Tracks how many other nodes refer to this node.
     ref_count: u64,
-
-    /// The hash of the node.
-    ///
-    /// Set to zero for empty node slots.
-    hash: StoredScalar,
 
     /// For leaf nodes these are arbitrary values, while for internal nodes they're the hashes of
     /// the child nodes.
@@ -33,24 +29,11 @@ impl<const W: usize> Node<W> {
         }
     }
 
-    fn init_with_hash(&mut self, hash: Scalar, children: &[Scalar; W]) {
-        self.ref_count = 0;
-        self.hash = hash.into();
-        self.children = children.map(StoredScalar::from);
-    }
-
-    fn init(&mut self, children: &[Scalar; W]) {
-        let hash = Self::hash_node(&children);
-        self.init_with_hash(hash, children);
-    }
-
-    fn erase(&mut self) {
-        self.hash = Scalar::ZERO.into();
-        self.children = std::array::from_fn(|_| Scalar::ZERO.into());
-    }
-
-    fn is_empty(&self) -> bool {
-        self.hash.is_zero()
+    fn new(children: &[Scalar; W]) -> Self {
+        Self {
+            ref_count: 0,
+            children: children.map(StoredScalar::from),
+        }
     }
 
     fn r#ref(&mut self) {
@@ -63,10 +46,6 @@ impl<const W: usize> Node<W> {
         self.ref_count == 0
     }
 
-    fn hash(&self) -> Scalar {
-        self.hash.to_scalar()
-    }
-
     fn children(&self) -> [Scalar; W] {
         self.children.map(|child| child.to_scalar())
     }
@@ -76,40 +55,26 @@ impl<const W: usize> Node<W> {
     }
 }
 
-impl<const W: usize> PartialEq for Node<W> {
-    fn eq(&self, other: &Self) -> bool {
-        self.hash == other.hash
+impl<const W: usize> Stored for Node<W> {}
+
+impl<const W: usize> NodeData for Node<W> {
+    fn hash(&self) -> Scalar {
+        Self::hash_node(&self.children.map(|child_hash| child_hash.to_scalar()))
+    }
+
+    fn erase(&mut self) {
+        self.ref_count = 0;
+        self.children = std::array::from_fn(|_| Scalar::ZERO.into());
     }
 }
 
-impl<const W: usize> Eq for Node<W> {}
-
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct TreeHeader {
-    signature: [u8; 8],
-    size: u64,
     root_hash: StoredScalar,
 }
 
 impl TreeHeader {
-    fn size(&self) -> usize {
-        self.size as usize
-    }
-
-    fn set_size(&mut self, size: usize) {
-        self.size = size as u64;
-    }
-
-    fn increment_size(&mut self) {
-        self.size += 1;
-    }
-
-    fn decrement_size(&mut self) {
-        assert!(self.size > 0);
-        self.size -= 1;
-    }
-
     fn root_hash(&self) -> Scalar {
         self.root_hash.to_scalar()
     }
@@ -119,37 +84,32 @@ impl TreeHeader {
     }
 }
 
+impl Stored for TreeHeader {}
+impl HeaderData for TreeHeader {}
+
 /// Manages a Sparse Merkle Tree of nodes backed by a hash map.
 ///
 /// The underlying hash map has open addressing with quadratic probing and is implemented as a
 /// simple node array over the memory-mapped region.
 #[derive(Debug)]
-pub struct Tree<'a, const W: usize, const H: usize> {
-    /// Refers to the memory-mapped region.
-    data: &'a mut [u8],
+pub struct Tree<const W: usize, const H: usize> {
+    hash_set: MappedHashSet<TreeHeader, Node<W>>,
 }
 
-impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
-    const MAX_LOAD_FACTOR_NUMERATOR: usize = 1;
-    const MAX_LOAD_FACTOR_DENOMINATOR: usize = 2;
-
+impl<const W: usize, const H: usize> Tree<W, H> {
     /// Calculates the space allocated for the header.
     pub const fn padded_header_size() -> usize {
-        std::mem::size_of::<TreeHeader>().next_multiple_of(8)
+        MappedHashSet::<TreeHeader, Node<W>>::padded_header_size()
     }
 
     /// Calculates the space allocated for every node.
     pub const fn padded_node_size() -> usize {
-        std::mem::size_of::<Node<W>>().next_multiple_of(8)
+        MappedHashSet::<TreeHeader, Node<W>>::padded_node_size()
     }
 
     /// Returns the minimum capacity (in terms of number of nodes) required to host `size` nodes.
     pub const fn get_min_capacity_for(size: usize) -> usize {
-        let dividend = size * Self::MAX_LOAD_FACTOR_DENOMINATOR;
-        let remainder = dividend % Self::MAX_LOAD_FACTOR_NUMERATOR;
-        let quotient =
-            dividend / Self::MAX_LOAD_FACTOR_NUMERATOR + if remainder != 0 { 1 } else { 0 };
-        quotient.next_power_of_two()
+        MappedHashSet::<TreeHeader, Node<W>>::get_min_capacity_for(size)
     }
 
     /// Returns the minimum capacity (in terms of number of nodes) required for this type of tree.
@@ -160,89 +120,13 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         Self::get_min_capacity_for(H)
     }
 
-    /// Returns an immutable reference to the header.
-    fn header(&self) -> &TreeHeader {
-        unsafe {
-            // SAFETY: the data slice gets checked extensively upon construction of the `Tree`, it's
-            // guaranteed to have enough space for the header.
-            &*(self.data.as_ptr() as *const TreeHeader)
-        }
-    }
-
-    /// Returns a mutable reference to the header.
-    fn header_mut(&mut self) -> &mut TreeHeader {
-        unsafe {
-            // SAFETY: the data slice gets checked extensively upon construction of the `Tree`, it's
-            // guaranteed to have enough space for the header.
-            &mut *(self.data.as_ptr() as *mut TreeHeader)
-        }
-    }
-
-    /// Returns an immutable reference to the node at the i-th slot.
-    fn node(&self, i: usize) -> &Node<W> {
-        let offset = Self::padded_header_size() + i * Self::padded_node_size();
-        unsafe {
-            // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
-            // for the node. The caller is assumed to provide a valid index `i`, in which case
-            // `offset` will point to a valid node within the data slice.
-            &*(self.data.as_ptr().add(offset) as *const Node<W>)
-        }
-    }
-
-    /// Returns a mutable reference to the node at the i-th slot.
-    fn node_mut(&mut self, i: usize) -> &mut Node<W> {
-        let offset = Self::padded_header_size() + i * Self::padded_node_size();
-        unsafe {
-            // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
-            // for the node. The caller is assumed to provide a valid index `i`, in which case
-            // `offset` will point to a valid node within the data slice.
-            &mut *(self.data.as_ptr().add(offset) as *mut Node<W>)
-        }
-    }
-
-    fn probe(&self, hash: Scalar) -> usize {
-        let mask = self.capacity() as u64 - 1;
-        let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
-        let mut j = 0;
-        loop {
-            let index = (i & mask) as usize;
-            let node = self.node(index);
-            if node.is_empty() || node.hash() == hash {
-                return index;
-            }
-            j += 1;
-            i += j;
-        }
-    }
-
-    fn find_node(&self, hash: Scalar) -> Option<&Node<W>> {
-        let index = self.probe(hash);
-        let node = self.node(index);
-        if node.hash() != hash {
-            None
-        } else {
-            Some(node)
-        }
-    }
-
-    fn find_node_mut(&mut self, hash: Scalar) -> Option<&mut Node<W>> {
-        let index = self.probe(hash);
-        let node = self.node_mut(index);
-        if node.hash() != hash {
-            None
-        } else {
-            Some(node)
-        }
-    }
-
     fn ref_node(&mut self, hash: Scalar) {
-        self.find_node_mut(hash).unwrap().r#ref();
+        self.hash_set.get_mut(hash).unwrap().r#ref();
     }
 
     /// Ensures that a node with the given children exists.
     ///
-    /// The node is created and inserted if it doesn't exist. This may result in a rehash because
-    /// the hash table grows when the capacity is scarce.
+    /// The node is created and inserted if it doesn't exist.
     ///
     /// The `leaf` flag specifies whether the node being allocated is a leaf or an internal node. If
     /// it's a leaf the children are arbitrary values, while if it's an internal node the children
@@ -250,76 +134,29 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// automatically increase the reference count of all children.
     fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> &mut Node<W> {
         let hash = Node::<W>::hash_node(children);
-        let index = self.probe(hash);
-        if self.node(index).is_empty() {
-            let new_size = self.header().size() + 1;
-            let min_capacity = Self::get_min_capacity_for(new_size);
-            if min_capacity > self.capacity() {
-                // TODO: grow & rehash.
-                unimplemented!()
-            }
-            self.header_mut().set_size(new_size);
-        }
-        let node = self.node_mut(index);
-        if node.is_empty() {
-            node.init_with_hash(hash, children);
-            if !leaf {
-                for child_hash in children {
-                    self.ref_node(*child_hash);
-                }
+        self.hash_set.insert_hashed(Node::new(children), hash);
+        if !leaf {
+            for child_hash in children {
+                self.ref_node(*child_hash);
             }
         }
-        self.node_mut(index)
-    }
-
-    fn probe_for_unref(&self, hash: Scalar) -> (usize, usize) {
-        let mask = self.capacity() as u64 - 1;
-        let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
-        let mut j = 0;
-        let mut node_index;
-        loop {
-            node_index = (i & mask) as usize;
-            let node = self.node(node_index);
-            if node.is_empty() {
-                return (node_index, node_index);
-            }
-            if node.hash() == hash {
-                break;
-            }
-            j += 1;
-            i += j;
-        }
-        let mut last_bucket_index = node_index;
-        loop {
-            let index = (i & mask) as usize;
-            if self.node(index).is_empty() {
-                return (node_index, last_bucket_index);
-            }
-            last_bucket_index = index;
-            j += 1;
-            i += j;
-        }
+        self.hash_set.get_mut(hash).unwrap()
     }
 
     fn unref_node_impl(&mut self, hash: Scalar, level: usize) -> bool {
-        let (node_index, last_bucket_index) = self.probe_for_unref(hash);
-        let node = self.node_mut(node_index);
-        if node.is_empty() {
+        if let Some(node) = self.hash_set.get_mut(hash) {
+            if !node.unref() {
+                return false;
+            }
+        } else {
             return true;
-        }
-        if !node.unref() {
-            return false;
-        }
+        };
+        let node = self.hash_set.extract(hash, false).unwrap();
         if level > 0 {
-            for child_hash in self.node(node_index).children() {
+            for child_hash in node.children() {
                 self.unref_node_impl(child_hash, level - 1);
             }
         }
-        if last_bucket_index != node_index {
-            *self.node_mut(node_index) = *self.node(last_bucket_index);
-        }
-        self.node_mut(last_bucket_index).erase();
-        self.header_mut().decrement_size();
         true
     }
 
@@ -343,42 +180,23 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         if !self.unref_node_impl(hash, level) {
             return false;
         }
-        let min_capacity = Self::get_min_capacity_for(std::cmp::max(self.size(), H));
-        if min_capacity < self.capacity() {
-            // TODO: shrink & rehash.
-            unimplemented!()
-        }
+        self.hash_set.shrink();
         true
     }
 
     /// Constructs a `Tree` from the provided data slice.
-    pub fn from_data(data: &'a mut [u8]) -> Result<Self> {
-        {
-            let address = data.as_ptr() as usize;
-            if address % 8 != 0 {
-                return Err(anyhow!("the data slice is not 8-byte aligned"));
-            }
-        }
+    pub fn load(mmap: MmapMut) -> Result<Self> {
         let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
-        if data.len() < min_size {
+        if mmap.len() < min_size {
             return Err(anyhow!(
-                "data slice too short (was {} bytes, need at least {})",
-                data.len(),
+                "the mmap is too small (was {} bytes, need at least {})",
+                mmap.len(),
                 min_size
             ));
         }
-        let tree = Self { data };
-        if tree.header().signature != *constants::DATA_FILE_SIGNATURE {
-            return Err(anyhow!("invalid file signature"));
-        }
-        let capacity = tree.capacity();
-        if capacity != capacity.next_power_of_two() {
-            return Err(anyhow!(
-                "the data capacity must be a power of 2 (was {})",
-                capacity
-            ));
-        }
-        Ok(tree)
+        Ok(Self {
+            hash_set: MappedHashSet::load(mmap)?,
+        })
     }
 
     fn init_empty(&mut self) {
@@ -389,42 +207,47 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
                 .hash();
         }
         self.ref_node(hash);
-        self.header_mut().set_root_hash(hash);
+        self.hash_set.header_data_mut().set_root_hash(hash);
     }
 
     /// Initializes a new empty tree over the provided byte slice.
     ///
     /// REQUIRES: `data` MUST be 8-byte aligned.
-    pub fn new(data: &'a mut [u8]) -> Result<Self> {
-        data.fill(0);
-        data[0..8].copy_from_slice(constants::DATA_FILE_SIGNATURE);
-        let mut tree = Self::from_data(data)?;
+    pub fn new(mmap: MmapMut) -> Result<Self> {
+        let mut tree = Self {
+            hash_set: MappedHashSet::new(mmap)?,
+        };
         tree.init_empty();
         Ok(tree)
     }
 
-    /// Returns the number of nodes in the underlying hashmap.
+    /// Returns the number of nodes in the underlying hash table.
     pub fn size(&self) -> usize {
-        self.header().size()
+        self.hash_set.size()
     }
 
-    /// Returns the capacity (in terms of number of nodes) of the underlying hashmap.
+    /// Returns the capacity (in terms of number of nodes) of the underlying hash table.
     ///
     /// NOTE: this will always return a power of 2.
     pub fn capacity(&self) -> usize {
-        (self.data.len() - Self::padded_header_size()) / Self::padded_node_size()
+        self.hash_set.capacity()
+    }
+
+    /// Destroys the `Tree` and returns the wrapped memory map.
+    pub fn take(self) -> MmapMut {
+        self.hash_set.take()
     }
 
     /// Returns the current root hash.
     pub fn root_hash(&self) -> Scalar {
-        self.header().root_hash()
+        self.hash_set.header_data().root_hash()
     }
 
     /// REQUIRES: `hash` must refer to an existing node at level H-1.
     fn set_root(&mut self, hash: Scalar) {
         self.ref_node(hash);
         self.unref_node(self.root_hash(), H - 1);
-        self.header_mut().set_root_hash(hash);
+        self.hash_set.header_data_mut().set_root_hash(hash);
     }
 
     /// Adds an extra ref to the current root so that it can no longer be discarded.
@@ -438,27 +261,27 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// NOTE: if a tree doesn't change for K consecutive blocks, the same root node will end up
     /// getting reffed K times. That is not a problem.
     pub fn commit(&mut self) -> Scalar {
-        let root_hash = self.header().root_hash();
+        let root_hash = self.root_hash();
         self.ref_node(root_hash);
         root_hash
     }
 }
 
-impl<'a, const H: usize> Tree<'a, 2, H> {
+impl<const H: usize> Tree<2, H> {
     /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
-        let mut node = self.find_node(self.header().root_hash()).unwrap();
+        let mut node = self.hash_set.get(self.root_hash()).unwrap();
         for i in (1..H).rev() {
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
             let child_hash = node.child(bit as usize);
-            node = self.find_node(child_hash).unwrap();
+            node = self.hash_set.get(child_hash).unwrap();
         }
         let bit = xits::and1(key).to_repr()[0];
         node.child(bit as usize)
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
-        let node = self.find_node(hash).unwrap();
+        let node = self.hash_set.get(hash).unwrap();
         let mut children = node.children();
         let bit = xits::and1(xits::shr(key, level)).to_repr()[0];
         children[bit as usize] = if level > 0 {
@@ -476,21 +299,21 @@ impl<'a, const H: usize> Tree<'a, 2, H> {
     }
 }
 
-impl<'a, const H: usize> Tree<'a, 3, H> {
+impl<const H: usize> Tree<3, H> {
     /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
-        let mut node = self.find_node(self.header().root_hash()).unwrap();
+        let mut node = self.hash_set.get(self.root_hash()).unwrap();
         for i in (1..H).rev() {
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
             let child_hash = node.child(trit as usize);
-            node = self.find_node(child_hash).unwrap();
+            node = self.hash_set.get(child_hash).unwrap();
         }
         let trit = xits::mod3(key).to_repr()[0];
         node.child(trit as usize)
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
-        let node = self.find_node(hash).unwrap();
+        let node = self.hash_set.get(hash).unwrap();
         let mut children = node.children();
         let trit = xits::mod3(xits::div_pow3(key, level)).to_repr()[0];
         children[trit as usize] = if level > 0 {
@@ -542,25 +365,32 @@ mod tests {
 
     #[test]
     fn test_binary_tree_format() {
-        type TestTree<'a> = Tree<'a, 2, 256>;
+        type TestTree = Tree<2, 256>;
         assert_eq!(TestTree::padded_header_size(), 48);
         assert_eq!(TestTree::padded_node_size(), 104);
     }
 
     #[test]
     fn test_ternary_tree_format() {
-        type TestTree<'a> = Tree<'a, 3, 161>;
+        type TestTree = Tree<3, 161>;
         assert_eq!(TestTree::padded_header_size(), 48);
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
+    fn make_test_tree<const W: usize, const H: usize>(capacity: usize) -> Result<Tree<W, H>> {
+        Tree::new(MmapMut::map_anon(
+            Tree::<W, H>::padded_header_size() + capacity * Tree::<W, H>::padded_node_size(),
+        )?)
+    }
+
+    fn make_default_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
+        make_test_tree(Tree::<W, H>::min_capacity())
+    }
+
     #[test]
     fn test_new_binary_tree_h1() {
-        const HEADER_SIZE: usize = Tree::<2, 1>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<2, 1>::padded_node_size();
         const CAPACITY: usize = Tree::<2, 1>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<2, 1>::new(&mut data).unwrap();
+        let tree = make_test_tree::<2, 1>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -573,11 +403,8 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h2() {
-        const HEADER_SIZE: usize = Tree::<2, 2>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<2, 2>::padded_node_size();
         const CAPACITY: usize = Tree::<2, 2>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<2, 2>::new(&mut data).unwrap();
+        let tree = make_test_tree::<2, 2>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 2);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -592,11 +419,8 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h3() {
-        const HEADER_SIZE: usize = Tree::<2, 3>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<2, 3>::padded_node_size();
         const CAPACITY: usize = Tree::<2, 3>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<2, 3>::new(&mut data).unwrap();
+        let tree = make_test_tree::<2, 3>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 3);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -615,11 +439,8 @@ mod tests {
 
     #[test]
     fn test_new_ternary_tree_h1() {
-        const HEADER_SIZE: usize = Tree::<3, 1>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<3, 1>::padded_node_size();
         const CAPACITY: usize = Tree::<3, 1>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<3, 1>::new(&mut data).unwrap();
+        let tree = make_test_tree::<3, 1>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -633,11 +454,8 @@ mod tests {
 
     #[test]
     fn test_new_ternary_tree_h2() {
-        const HEADER_SIZE: usize = Tree::<3, 2>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<3, 2>::padded_node_size();
         const CAPACITY: usize = Tree::<3, 2>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<3, 2>::new(&mut data).unwrap();
+        let tree = make_test_tree::<3, 2>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 2);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -657,11 +475,8 @@ mod tests {
 
     #[test]
     fn test_new_ternary_tree_h3() {
-        const HEADER_SIZE: usize = Tree::<3, 3>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<3, 3>::padded_node_size();
         const CAPACITY: usize = Tree::<3, 3>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<3, 3>::new(&mut data).unwrap();
+        let tree = make_test_tree::<3, 3>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 3);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -699,11 +514,8 @@ mod tests {
 
     #[test]
     fn test_new_tall_binary_tree() {
-        const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
         const CAPACITY: usize = Tree::<2, 256>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<2, 256>::new(&mut data).unwrap();
+        let tree = make_test_tree::<2, 256>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 256);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -715,11 +527,8 @@ mod tests {
 
     #[test]
     fn test_new_tall_ternary_tree() {
-        const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
         const CAPACITY: usize = Tree::<3, 161>::min_capacity();
-        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
-        let tree = Tree::<3, 161>::new(&mut data).unwrap();
+        let tree = make_test_tree::<3, 161>(CAPACITY).unwrap();
         assert_eq!(tree.size(), 161);
         assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
@@ -731,10 +540,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_binary_tree() {
-        const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
-        let mut tree = Tree::<2, 256>::new(&mut data).unwrap();
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
         tree.put(test_key1(), 42.into());
         assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
@@ -747,10 +553,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_ternary_tree() {
-        const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
-        let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
         tree.put(test_key1(), 42.into());
         assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
@@ -763,29 +566,25 @@ mod tests {
 
     #[test]
     fn test_reload_binary_tree() {
-        const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
-        let root_hash = {
-            let mut tree = Tree::<2, 256>::new(&mut data).unwrap();
+        let (mmap, root_hash) = {
+            let mut tree = make_default_test_tree::<2, 256>().unwrap();
             tree.put(test_key1(), 42.into());
-            tree.root_hash()
+            let root_hash = tree.root_hash();
+            (tree.take(), root_hash)
         };
-        let tree = Tree::<2, 256>::from_data(&mut data).unwrap();
+        let tree = Tree::<2, 256>::load(mmap).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
     }
 
     #[test]
     fn test_reload_ternary_tree() {
-        const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
-        const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
-        let root_hash = {
-            let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
+        let (mmap, root_hash) = {
+            let mut tree = make_default_test_tree::<3, 161>().unwrap();
             tree.put(test_key1(), 42.into());
-            tree.root_hash()
+            let root_hash = tree.root_hash();
+            (tree.take(), root_hash)
         };
-        let tree = Tree::<3, 161>::from_data(&mut data).unwrap();
+        let tree = Tree::<3, 161>::load(mmap).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
     }
 
