@@ -382,7 +382,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         true
     }
 
-    /// REQUIRES: `data` MUST be 8-byte aligned.
+    /// Constructs a `Tree` from the provided data slice.
     pub fn from_data(data: &'a mut [u8]) -> Result<Self> {
         {
             let address = data.as_ptr() as usize;
@@ -457,6 +457,22 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         self.unref_node(self.root_hash(), H - 1);
         self.header_mut().set_root_hash(hash);
     }
+
+    /// Adds an extra ref to the current root so that it can no longer be discarded.
+    ///
+    /// The returned scalar is the reffed root hash.
+    ///
+    /// This method is useful for implementing block closure: at closure time the latest root can be
+    /// "sealed" by calling this method and the returned root hash can be used along with other
+    /// block data to compute the block hash.
+    ///
+    /// NOTE: if a tree doesn't change for K consecutive blocks, the same root node will end up
+    /// getting reffed K times. That is not a problem.
+    pub fn commit(&mut self) -> Scalar {
+        let root_hash = self.header().root_hash();
+        self.ref_node(root_hash);
+        root_hash
+    }
 }
 
 impl<'a, const H: usize> Tree<'a, 2, H> {
@@ -527,6 +543,10 @@ impl<'a, const H: usize> Tree<'a, 3, H> {
 mod tests {
     use super::*;
     use crate::testing::parse_scalar;
+
+    fn test_key1() -> Scalar {
+        parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611")
+    }
 
     #[test]
     fn test_assumptions1() {
@@ -721,12 +741,7 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
         );
-        assert_eq!(
-            tree.get(parse_scalar(
-                "0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611"
-            )),
-            Scalar::ZERO
-        );
+        assert_eq!(tree.get(test_key1()), Scalar::ZERO);
     }
 
     #[test]
@@ -742,12 +757,7 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
         );
-        assert_eq!(
-            tree.get(parse_scalar(
-                "0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611"
-            )),
-            Scalar::ZERO
-        );
+        assert_eq!(tree.get(test_key1()), Scalar::ZERO);
     }
 
     #[test]
@@ -756,16 +766,14 @@ mod tests {
         const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
         let mut tree = Tree::<2, 256>::new(&mut data).unwrap();
-        let key =
-            parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611");
-        tree.put(key, 42.into());
+        tree.put(test_key1(), 42.into());
         assert_eq!(tree.size(), 512);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x41888c7fcb9ae568fd2d8f06451c53cd4e9a4467b43cddf99dd85c0ebe2a9eba")
         );
-        assert_eq!(tree.get(key), 42.into());
+        assert_eq!(tree.get(test_key1()), 42.into());
     }
 
     #[test]
@@ -774,16 +782,42 @@ mod tests {
         const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
         let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
         let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
-        let key =
-            parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611");
-        tree.put(key, 42.into());
+        tree.put(test_key1(), 42.into());
         assert_eq!(tree.size(), 322);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x2fc22d9cc6ce2f9377943565491dc6bdc235d92feed593822450de771dc81da7")
         );
-        assert_eq!(tree.get(key), 42.into());
+        assert_eq!(tree.get(test_key1()), 42.into());
+    }
+
+    #[test]
+    fn test_reload_binary_tree() {
+        const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
+        let root_hash = {
+            let mut tree = Tree::<2, 256>::new(&mut data).unwrap();
+            tree.put(test_key1(), 42.into());
+            tree.root_hash()
+        };
+        let tree = Tree::<2, 256>::from_data(&mut data).unwrap();
+        assert_eq!(tree.root_hash(), root_hash);
+    }
+
+    #[test]
+    fn test_reload_ternary_tree() {
+        const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
+        const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
+        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
+        let root_hash = {
+            let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
+            tree.put(test_key1(), 42.into());
+            tree.root_hash()
+        };
+        let tree = Tree::<3, 161>::from_data(&mut data).unwrap();
+        assert_eq!(tree.root_hash(), root_hash);
     }
 
     // TODO
