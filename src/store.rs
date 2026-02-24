@@ -337,21 +337,35 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
     }
 
+    fn rehash(&mut self, target_capacity: usize) -> Result<()> {
+        let mut new_set = MappedHashSet::<H, T>::new(MmapMut::map_anon(
+            Self::padded_header_size() + target_capacity * Self::padded_node_size(),
+        )?)?;
+        *new_set.header_data_mut() = *self.header_data();
+        for i in 0..self.capacity() {
+            let node = self.node(i);
+            if !node.is_empty() {
+                new_set.insert_hashed(node.value, node.hash())?;
+            }
+        }
+        self.mmap = new_set.take();
+        Ok(())
+    }
+
     /// Inserts an element into the hash set.
-    pub fn insert(&mut self, value: T) -> &mut T {
+    pub fn insert(&mut self, value: T) -> Result<&mut T> {
         let hash = value.hash();
         self.insert_hashed(value, hash)
     }
 
     /// Inserts an element into the hash set, associating it with the given `hash`.
-    pub fn insert_hashed(&mut self, value: T, hash: Scalar) -> &mut T {
+    pub fn insert_hashed(&mut self, value: T, hash: Scalar) -> Result<&mut T> {
         let index = self.probe(hash);
         if self.node(index).is_empty() {
             let new_size = self.header().size() + 1;
             let min_capacity = Self::get_min_capacity_for(new_size);
             if min_capacity > self.capacity() {
-                // TODO: grow & rehash.
-                todo!()
+                self.rehash(min_capacity)?;
             }
             self.header_mut().set_size(new_size);
         }
@@ -359,7 +373,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         if node.is_empty() {
             node.init_with_hash(hash, value);
         }
-        &mut node.value
+        Ok(&mut node.value)
     }
 
     fn probe_for_erasing(&self, hash: Scalar) -> (usize, usize) {
@@ -391,15 +405,10 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
     }
 
-    pub fn shrink(&mut self) -> bool {
-        // TODO: shrink & rehash
-        todo!()
-    }
-
     /// Erases an element from the hash set.
     ///
     /// Returns true if the element was found and erased, false otherwise.
-    pub fn erase(&mut self, hash: Scalar, shrink: bool) -> bool {
+    pub fn erase(&mut self, hash: Scalar) -> bool {
         let (node_index, last_bucket_index) = self.probe_for_erasing(hash);
         if self.node(node_index).is_empty() {
             return false;
@@ -409,14 +418,11 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
         self.node_mut(last_bucket_index).erase();
         self.header_mut().decrement_size();
-        if shrink {
-            self.shrink();
-        }
         true
     }
 
     /// Removes an element from the hash set and returns it if found.
-    pub fn extract(&mut self, hash: Scalar, shrink: bool) -> Option<T> {
+    pub fn extract(&mut self, hash: Scalar) -> Option<T> {
         let (node_index, last_bucket_index) = self.probe_for_erasing(hash);
         let node = self.node(node_index);
         if node.is_empty() {
@@ -428,10 +434,39 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
         self.node_mut(last_bucket_index).erase();
         self.header_mut().decrement_size();
-        if shrink {
-            self.shrink();
-        }
         Some(value)
+    }
+
+    /// Shrinks the capacity to the minimum required to hold the current elements (based on the
+    /// maximum load factor).
+    ///
+    /// This function is a no-op if the current capacity is already the minimum required.
+    ///
+    /// The returned boolean is true iff the capacity was reduced. An error is returned in case
+    /// reallocation fails due to I/O etc.
+    pub fn shrink(&mut self) -> Result<bool> {
+        let target_capacity = Self::get_min_capacity_for(std::cmp::max(self.size(), 1));
+        if target_capacity < self.capacity() {
+            self.rehash(target_capacity)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// Erases an element and shrinks to the minimum required capacity if necessary.
+    pub fn erase_and_shrink(&mut self, hash: Scalar) -> Result<bool> {
+        if !self.erase(hash) {
+            return Ok(false);
+        }
+        self.shrink()?;
+        Ok(true)
+    }
+
+    /// Removes an element and shrinks to the minimum required capacity if necessary.
+    pub fn extract_and_shrink(&mut self, hash: Scalar) -> Result<Option<T>> {
+        let value = self.extract(hash);
+        self.shrink()?;
+        Ok(value)
     }
 }
 
@@ -538,9 +573,84 @@ mod tests {
 
     #[test]
     fn test_insert_one_element() {
+        let mut set = make_test_hash_set(2).unwrap();
+        let element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 4);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_insert_one_element_and_grow() {
+        let mut set = make_test_hash_set(1).unwrap();
+        let element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_erase_from_empty() {
+        let mut set = make_test_hash_set(0).unwrap();
+        assert!(!set.erase(TestNodeData::test_hash2()));
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.get(TestNodeData::test_hash1()).is_none());
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_extract_from_empty() {
+        let mut set = make_test_hash_set(0).unwrap();
+        assert!(set.extract(TestNodeData::test_hash2()).is_none());
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.get(TestNodeData::test_hash1()).is_none());
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_erase_missing_element() {
         let mut set = make_test_hash_set(0).unwrap();
         let element = TestNodeData::test_data1();
-        set.insert(element);
+        assert!(set.insert(element).is_ok());
+        assert!(!set.erase(TestNodeData::test_hash2()));
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_extract_missing_element() {
+        let mut set = make_test_hash_set(0).unwrap();
+        let element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        assert!(set.extract(TestNodeData::test_hash2()).is_none());
         assert_eq!(set.size(), 1);
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
@@ -555,10 +665,10 @@ mod tests {
     fn test_erase_one_element() {
         let mut set = make_test_hash_set(0).unwrap();
         let element = TestNodeData::test_data1();
-        set.insert(element);
-        set.erase(element.hash(), true);
+        assert!(set.insert(element).is_ok());
+        assert!(set.erase(element.hash()));
         assert_eq!(set.size(), 0);
-        assert_eq!(set.capacity(), 1);
+        assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
         assert!(set.get(TestNodeData::test_hash1()).is_none());
@@ -571,25 +681,9 @@ mod tests {
     fn test_extract_one_element() {
         let mut set = make_test_hash_set(0).unwrap();
         let element = TestNodeData::test_data1();
-        set.insert(element);
-        let extracted = set.extract(element.hash(), true).unwrap();
+        assert!(set.insert(element).is_ok());
+        let extracted = set.extract(element.hash()).unwrap();
         assert_eq!(extracted, element);
-        assert_eq!(set.size(), 0);
-        assert_eq!(set.capacity(), 1);
-        assert_eq!(*set.header_data(), TestHeaderData::default());
-        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
-        assert!(set.get(TestNodeData::test_hash1()).is_none());
-        assert!(set.get(TestNodeData::test_hash2()).is_none());
-        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
-        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
-    }
-
-    #[test]
-    fn test_erase_one_element_no_shink() {
-        let mut set = make_test_hash_set(0).unwrap();
-        let element = TestNodeData::test_data1();
-        set.insert(element);
-        set.erase(element.hash(), false);
         assert_eq!(set.size(), 0);
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
@@ -601,11 +695,27 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_one_element_no_shrink() {
+    fn test_erase_one_element_and_shrink() {
         let mut set = make_test_hash_set(0).unwrap();
         let element = TestNodeData::test_data1();
-        set.insert(element);
-        let extracted = set.extract(element.hash(), false).unwrap();
+        assert!(set.insert(element).is_ok());
+        assert!(set.erase_and_shrink(element.hash()).unwrap());
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.get(TestNodeData::test_hash1()).is_none());
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_extract_one_element_and_shrink() {
+        let mut set = make_test_hash_set(0).unwrap();
+        let element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        let extracted = set.extract_and_shrink(element.hash()).unwrap().unwrap();
         assert_eq!(extracted, element);
         assert_eq!(set.size(), 0);
         assert_eq!(set.capacity(), 2);

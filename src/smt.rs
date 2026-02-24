@@ -1,11 +1,9 @@
-use crate::constants;
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
-use crypto::{poseidon, utils, xits};
+use crypto::{poseidon, xits};
 use ff::{Field, PrimeField};
 use memmap2::MmapMut;
-use primitive_types::U256;
 use std::fmt::Debug;
 
 /// A node of the tree.
@@ -132,15 +130,15 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     /// it's a leaf the children are arbitrary values, while if it's an internal node the children
     /// MUST be the hashes of other existing nodes. For internal nodes this algorithm will
     /// automatically increase the reference count of all children.
-    fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> &mut Node<W> {
+    fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> Result<&mut Node<W>> {
         let hash = Node::<W>::hash_node(children);
-        self.hash_set.insert_hashed(Node::new(children), hash);
+        self.hash_set.insert_hashed(Node::new(children), hash)?;
         if !leaf {
             for child_hash in children {
                 self.ref_node(*child_hash);
             }
         }
-        self.hash_set.get_mut(hash).unwrap()
+        Ok(self.hash_set.get_mut(hash).unwrap())
     }
 
     fn unref_node_impl(&mut self, hash: Scalar, level: usize) -> bool {
@@ -151,7 +149,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         } else {
             return true;
         };
-        let node = self.hash_set.extract(hash, false).unwrap();
+        let node = self.hash_set.extract(hash).unwrap();
         if level > 0 {
             for child_hash in node.children() {
                 self.unref_node_impl(child_hash, level - 1);
@@ -199,15 +197,16 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         })
     }
 
-    fn init_empty(&mut self) {
+    fn init_empty(&mut self) -> Result<()> {
         let mut hash = Scalar::ZERO;
         for _ in 0..H {
             hash = self
-                .make_node(&std::array::from_fn(|_| hash), H == 0)
+                .make_node(&std::array::from_fn(|_| hash), H == 0)?
                 .hash();
         }
         self.ref_node(hash);
         self.hash_set.header_data_mut().set_root_hash(hash);
+        Ok(())
     }
 
     /// Initializes a new empty tree over the provided byte slice.
@@ -217,7 +216,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         let mut tree = Self {
             hash_set: MappedHashSet::new(mmap)?,
         };
-        tree.init_empty();
+        tree.init_empty()?;
         Ok(tree)
     }
 
@@ -280,22 +279,23 @@ impl<const H: usize> Tree<2, H> {
         node.child(bit as usize)
     }
 
-    fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
+    fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
         let node = self.hash_set.get(hash).unwrap();
         let mut children = node.children();
         let bit = xits::and1(xits::shr(key, level)).to_repr()[0];
         children[bit as usize] = if level > 0 {
-            self.update(children[bit as usize], level - 1, key, value)
+            self.update(children[bit as usize], level - 1, key, value)?
         } else {
             value
         };
-        self.make_node(&children, level == 0).hash()
+        Ok(self.make_node(&children, level == 0)?.hash())
     }
 
     /// Updates the value associated with the specified key.
-    pub fn put(&mut self, key: Scalar, value: Scalar) {
-        let new_root = self.update(self.root_hash(), H - 1, key, value);
+    pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
+        let new_root = self.update(self.root_hash(), H - 1, key, value)?;
         self.set_root(new_root);
+        Ok(())
     }
 }
 
@@ -312,22 +312,23 @@ impl<const H: usize> Tree<3, H> {
         node.child(trit as usize)
     }
 
-    fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Scalar {
+    fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
         let node = self.hash_set.get(hash).unwrap();
         let mut children = node.children();
         let trit = xits::mod3(xits::div_pow3(key, level)).to_repr()[0];
         children[trit as usize] = if level > 0 {
-            self.update(children[trit as usize], level - 1, key, value)
+            self.update(children[trit as usize], level - 1, key, value)?
         } else {
             value
         };
-        self.make_node(&children, level == 0).hash()
+        Ok(self.make_node(&children, level == 0)?.hash())
     }
 
     /// Updates the value associated with the specified key.
-    pub fn put(&mut self, key: Scalar, value: Scalar) {
-        let new_root = self.update(self.root_hash(), H - 1, key, value);
+    pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
+        let new_root = self.update(self.root_hash(), H - 1, key, value)?;
         self.set_root(new_root);
+        Ok(())
     }
 }
 
@@ -335,6 +336,8 @@ impl<const H: usize> Tree<3, H> {
 mod tests {
     use super::*;
     use crate::testing::parse_scalar;
+    use crypto::utils;
+    use primitive_types::U256;
 
     fn test_key1() -> Scalar {
         parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611")
@@ -541,7 +544,7 @@ mod tests {
     #[test]
     fn test_update_tall_binary_tree() {
         let mut tree = make_default_test_tree::<2, 256>().unwrap();
-        tree.put(test_key1(), 42.into());
+        assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
@@ -554,7 +557,7 @@ mod tests {
     #[test]
     fn test_update_tall_ternary_tree() {
         let mut tree = make_default_test_tree::<3, 161>().unwrap();
-        tree.put(test_key1(), 42.into());
+        assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
@@ -568,7 +571,7 @@ mod tests {
     fn test_reload_binary_tree() {
         let (mmap, root_hash) = {
             let mut tree = make_default_test_tree::<2, 256>().unwrap();
-            tree.put(test_key1(), 42.into());
+            assert!(tree.put(test_key1(), 42.into()).is_ok());
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
@@ -580,7 +583,7 @@ mod tests {
     fn test_reload_ternary_tree() {
         let (mmap, root_hash) = {
             let mut tree = make_default_test_tree::<3, 161>().unwrap();
-            tree.put(test_key1(), 42.into());
+            assert!(tree.put(test_key1(), 42.into()).is_ok());
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
