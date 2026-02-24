@@ -175,6 +175,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         std::mem::size_of::<Node<W>>().next_multiple_of(8)
     }
 
+    /// Returns the minimum capacity (in terms of number of nodes) required to host `size` nodes.
     pub const fn get_min_capacity_for(size: usize) -> usize {
         let dividend = size * Self::MAX_LOAD_FACTOR_DENOMINATOR;
         let remainder = dividend % Self::MAX_LOAD_FACTOR_NUMERATOR;
@@ -383,6 +384,12 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
 
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn from_data(data: &'a mut [u8]) -> Result<Self> {
+        {
+            let address = data.as_ptr() as usize;
+            if address % 8 != 0 {
+                return Err(anyhow!("the data slice is not 8-byte aligned"));
+            }
+        }
         let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
         if data.len() < min_size {
             return Err(anyhow!(
