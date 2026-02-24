@@ -28,3 +28,6 @@ pub const BLOCK_TIME_MS: u64 = 10_000;
 /// balance rather than its staking balance.
 pub const BLOCK_REWARD_NUMERATOR: u64 = 1073741857;
 pub const BLOCK_REWARD_DENOMINATOR_LOG2: u8 = 30;
+
+/// All data files of the node start with this prefix.
+pub const DATA_FILE_SIGNATURE: &'static [u8; 8] = b"libernet";

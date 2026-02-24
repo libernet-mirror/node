@@ -1,3 +1,4 @@
+use crate::constants::DATA_FILE_SIGNATURE;
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{poseidon, utils, xits};
@@ -93,15 +94,12 @@ impl<const W: usize> Node<W> {
         self.hash.to_scalar() == Scalar::ZERO
     }
 
-    fn is_reffed(&self) -> bool {
-        self.ref_count > 0
-    }
-
     fn r#ref(&mut self) {
         self.ref_count += 1;
     }
 
     fn unref(&mut self) -> bool {
+        assert!(self.ref_count > 0);
         self.ref_count -= 1;
         self.ref_count == 0
     }
@@ -130,6 +128,7 @@ impl<const W: usize> Eq for Node<W> {}
 #[derive(Debug)]
 #[repr(C)]
 struct TreeHeader {
+    signature: [u8; 8],
     size: u64,
     root_hash: StoredScalar,
 }
@@ -163,25 +162,33 @@ pub struct Tree<'a, const W: usize, const H: usize> {
 }
 
 impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
-    const MAX_LOAD_FACTOR_NUMERATOR: usize = 3;
-    const MAX_LOAD_FACTOR_DENOMINATOR: usize = 4;
+    const MAX_LOAD_FACTOR_NUMERATOR: usize = 1;
+    const MAX_LOAD_FACTOR_DENOMINATOR: usize = 2;
 
     /// Calculates the space allocated for the header.
-    const fn padded_header_size() -> usize {
+    pub const fn padded_header_size() -> usize {
         std::mem::size_of::<TreeHeader>().next_multiple_of(8)
     }
 
     /// Calculates the space allocated for every node.
-    const fn padded_node_size() -> usize {
+    pub const fn padded_node_size() -> usize {
         std::mem::size_of::<Node<W>>().next_multiple_of(8)
     }
 
-    const fn get_min_capacity_for(size: usize) -> usize {
+    pub const fn get_min_capacity_for(size: usize) -> usize {
         let dividend = size * Self::MAX_LOAD_FACTOR_DENOMINATOR;
         let remainder = dividend % Self::MAX_LOAD_FACTOR_NUMERATOR;
         let quotient =
             dividend / Self::MAX_LOAD_FACTOR_NUMERATOR + if remainder != 0 { 1 } else { 0 };
         quotient.next_power_of_two()
+    }
+
+    /// Returns the minimum capacity (in terms of number of nodes) required for this type of tree.
+    ///
+    /// The data slice provided upon construction must be at least
+    /// `padded_header_size() + min_capacity() * padded_node_size()` bytes long.
+    pub const fn min_capacity() -> usize {
+        Self::get_min_capacity_for(H)
     }
 
     /// Returns an immutable reference to the header.
@@ -285,7 +292,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             self.header_mut().set_size(current_size + 1);
         }
         let node = self.node_mut(index);
-        if node.is_empty() || !node.is_reffed() {
+        if node.is_empty() {
             node.init_with_hash(hash, children);
             if !leaf {
                 for child_hash in children {
@@ -376,8 +383,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
 
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn from_data(data: &'a mut [u8]) -> Result<Self> {
-        let min_size =
-            Self::padded_header_size() + Self::get_min_capacity_for(H) * Self::padded_node_size();
+        let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
         if data.len() < min_size {
             return Err(anyhow!(
                 "data slice too short (was {} bytes, need at least {})",
@@ -386,6 +392,9 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             ));
         }
         let tree = Self { data };
+        if tree.header().signature != *DATA_FILE_SIGNATURE {
+            return Err(anyhow!("invalid file signature"));
+        }
         let capacity = tree.capacity();
         if capacity != capacity.next_power_of_two() {
             return Err(anyhow!(
@@ -412,6 +421,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn new(data: &'a mut [u8]) -> Result<Self> {
         data.fill(0);
+        data[0..8].copy_from_slice(DATA_FILE_SIGNATURE);
         let mut tree = Self::from_data(data)?;
         tree.init_empty();
         Ok(tree)
@@ -535,13 +545,28 @@ mod tests {
     }
 
     #[test]
+    fn test_binary_tree_format() {
+        type TestTree<'a> = Tree<'a, 2, 256>;
+        assert_eq!(TestTree::padded_header_size(), 48);
+        assert_eq!(TestTree::padded_node_size(), 104);
+    }
+
+    #[test]
+    fn test_ternary_tree_format() {
+        type TestTree<'a> = Tree<'a, 3, 161>;
+        assert_eq!(TestTree::padded_header_size(), 48);
+        assert_eq!(TestTree::padded_node_size(), 136);
+    }
+
+    #[test]
     fn test_new_binary_tree_h1() {
         const HEADER_SIZE: usize = Tree::<2, 1>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 1>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 2 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<2, 1>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<2, 1>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), 2);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x44fbea4934de59fe3dea4bb6ce5f053fe967f8c43a872b343a6d12fe40d75ca3")
@@ -554,10 +579,11 @@ mod tests {
     fn test_new_binary_tree_h2() {
         const HEADER_SIZE: usize = Tree::<2, 2>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 2>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<2, 2>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<2, 2>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 2);
-        assert_eq!(tree.capacity(), 4);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x1642477fce8a9cfc7fef8c1adac8bb6212a12603545af958b6fa28f0099cdf1e")
@@ -572,10 +598,11 @@ mod tests {
     fn test_new_binary_tree_h3() {
         const HEADER_SIZE: usize = Tree::<2, 3>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 3>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<2, 3>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<2, 3>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 3);
-        assert_eq!(tree.capacity(), 4);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x30ac7c720131f3ab706f3c8542a0ecdd6ca65b0f690cbea695b699fb2a6a0a6b")
@@ -594,10 +621,11 @@ mod tests {
     fn test_new_ternary_tree_h1() {
         const HEADER_SIZE: usize = Tree::<3, 1>::padded_header_size();
         const NODE_SIZE: usize = Tree::<3, 1>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 2 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<3, 1>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<3, 1>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), 2);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
@@ -611,10 +639,11 @@ mod tests {
     fn test_new_ternary_tree_h2() {
         const HEADER_SIZE: usize = Tree::<3, 2>::padded_header_size();
         const NODE_SIZE: usize = Tree::<3, 2>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<3, 2>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<3, 2>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 2);
-        assert_eq!(tree.capacity(), 4);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x0813d9fa859ac9c7c3c147af1bf38a8d34a95d71dddb59cb362741af4a5ce374")
@@ -634,10 +663,11 @@ mod tests {
     fn test_new_ternary_tree_h3() {
         const HEADER_SIZE: usize = Tree::<3, 3>::padded_header_size();
         const NODE_SIZE: usize = Tree::<3, 3>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 4 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<3, 3>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<3, 3>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 3);
-        assert_eq!(tree.capacity(), 4);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x0d59114550233029c2dd76cb35aed5d87d0c11af9dcc16d59aea354cdf7b1904")
@@ -675,10 +705,11 @@ mod tests {
     fn test_new_tall_binary_tree() {
         const HEADER_SIZE: usize = Tree::<2, 256>::padded_header_size();
         const NODE_SIZE: usize = Tree::<2, 256>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 512 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<2, 256>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<2, 256>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 256);
-        assert_eq!(tree.capacity(), 512);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
@@ -695,10 +726,11 @@ mod tests {
     fn test_new_tall_ternary_tree() {
         const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
         const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 256 * NODE_SIZE];
+        const CAPACITY: usize = Tree::<3, 161>::min_capacity();
+        let mut data = [0u8; HEADER_SIZE + CAPACITY * NODE_SIZE];
         let tree = Tree::<3, 161>::new(&mut data).unwrap();
         assert_eq!(tree.size(), 161);
-        assert_eq!(tree.capacity(), 256);
+        assert_eq!(tree.capacity(), CAPACITY);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
@@ -733,13 +765,13 @@ mod tests {
     fn test_update_tall_ternary_tree() {
         const HEADER_SIZE: usize = Tree::<3, 161>::padded_header_size();
         const NODE_SIZE: usize = Tree::<3, 161>::padded_node_size();
-        let mut data = [0u8; HEADER_SIZE + 512 * NODE_SIZE];
+        let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
         let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
         let key =
             parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611");
         tree.put(key, 42.into());
         assert_eq!(tree.size(), 322);
-        assert_eq!(tree.capacity(), 512);
+        assert_eq!(tree.capacity(), 1024);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x2fc22d9cc6ce2f9377943565491dc6bdc235d92feed593822450de771dc81da7")
