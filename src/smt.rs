@@ -142,6 +142,15 @@ impl TreeHeader {
         self.size = size as u64;
     }
 
+    fn increment_size(&mut self) {
+        self.size += 1;
+    }
+
+    fn decrement_size(&mut self) {
+        assert!(self.size > 0);
+        self.size -= 1;
+    }
+
     fn root_hash(&self) -> Scalar {
         self.root_hash.to_scalar()
     }
@@ -284,13 +293,13 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
         let hash = Node::<W>::hash_node(children);
         let index = self.probe(hash);
         if self.node(index).is_empty() {
-            let current_size = self.header().size();
-            let min_capacity = Self::get_min_capacity_for(current_size + 1);
+            let new_size = self.header().size() + 1;
+            let min_capacity = Self::get_min_capacity_for(new_size);
             if min_capacity > self.capacity() {
                 // TODO: grow & rehash.
                 unimplemented!()
             }
-            self.header_mut().set_size(current_size + 1);
+            self.header_mut().set_size(new_size);
         }
         let node = self.node_mut(index);
         if node.is_empty() {
@@ -351,6 +360,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             *self.node_mut(node_index) = *self.node(last_bucket_index);
         }
         self.node_mut(last_bucket_index).erase();
+        self.header_mut().decrement_size();
         true
     }
 
@@ -767,7 +777,7 @@ mod tests {
         let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
         let mut tree = Tree::<2, 256>::new(&mut data).unwrap();
         tree.put(test_key1(), 42.into());
-        assert_eq!(tree.size(), 512);
+        assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
             tree.root_hash(),
@@ -783,7 +793,7 @@ mod tests {
         let mut data = [0u8; HEADER_SIZE + 1024 * NODE_SIZE];
         let mut tree = Tree::<3, 161>::new(&mut data).unwrap();
         tree.put(test_key1(), 42.into());
-        assert_eq!(tree.size(), 322);
+        assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
             tree.root_hash(),
