@@ -1,52 +1,11 @@
-use crate::constants::DATA_FILE_SIGNATURE;
+use crate::constants;
+use crate::store::StoredScalar;
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{poseidon, utils, xits};
 use ff::{Field, PrimeField};
 use primitive_types::U256;
-use std::cmp::Ordering;
 use std::fmt::Debug;
-
-/// Indicates that a type is suitable for storage in a memory-mapped region.
-pub trait Stored: Sized + Copy + Clone + 'static {}
-
-/// A BLS12-381 scalar stored in the memory-mapped region, in little endian order.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(C)]
-struct StoredScalar(pub [u8; 32]);
-
-impl StoredScalar {
-    fn to_scalar(&self) -> Scalar {
-        Scalar::from_repr_vartime(self.0).unwrap()
-    }
-}
-
-impl Stored for StoredScalar {}
-
-impl From<Scalar> for StoredScalar {
-    fn from(value: Scalar) -> Self {
-        Self(value.to_bytes_le())
-    }
-}
-
-impl Ord for StoredScalar {
-    fn cmp(&self, other: &Self) -> Ordering {
-        for i in (0..32).rev() {
-            if self.0[i] < other.0[i] {
-                return Ordering::Less;
-            } else if self.0[i] > other.0[i] {
-                return Ordering::Greater;
-            }
-        }
-        Ordering::Equal
-    }
-}
-
-impl PartialOrd for StoredScalar {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 /// Manages access to a node in the mapped memory region.
 #[derive(Debug, Copy, Clone)]
@@ -91,7 +50,7 @@ impl<const W: usize> Node<W> {
     }
 
     fn is_empty(&self) -> bool {
-        self.hash.to_scalar() == Scalar::ZERO
+        self.hash.is_zero()
     }
 
     fn r#ref(&mut self) {
@@ -409,7 +368,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
             ));
         }
         let tree = Self { data };
-        if tree.header().signature != *DATA_FILE_SIGNATURE {
+        if tree.header().signature != *constants::DATA_FILE_SIGNATURE {
             return Err(anyhow!("invalid file signature"));
         }
         let capacity = tree.capacity();
@@ -438,7 +397,7 @@ impl<'a, const W: usize, const H: usize> Tree<'a, W, H> {
     /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn new(data: &'a mut [u8]) -> Result<Self> {
         data.fill(0);
-        data[0..8].copy_from_slice(DATA_FILE_SIGNATURE);
+        data[0..8].copy_from_slice(constants::DATA_FILE_SIGNATURE);
         let mut tree = Self::from_data(data)?;
         tree.init_empty();
         Ok(tree)

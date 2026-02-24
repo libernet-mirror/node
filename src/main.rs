@@ -25,6 +25,7 @@ mod proto;
 mod service;
 mod smt;
 mod ssl;
+mod store;
 mod topology;
 mod tree;
 
