@@ -115,14 +115,9 @@ struct Node<T: NodeData> {
 }
 
 impl<T: NodeData> Node<T> {
-    fn init_with_hash(&mut self, hash: Scalar, value: T) {
+    fn init(&mut self, hash: Scalar, value: T) {
         self.hash = hash.into();
         self.value = value;
-    }
-
-    fn init(&mut self, value: T) {
-        let hash = value.hash();
-        self.init_with_hash(hash, value);
     }
 
     fn erase(&mut self) {
@@ -353,12 +348,20 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 
     /// Inserts an element into the hash set.
+    ///
+    /// If an equivalent element (one with the same hash) is already present in the hash set, the
+    /// element is updated by copying the bytes of `value` into it.
     pub fn insert(&mut self, value: T) -> Result<&mut T> {
         let hash = value.hash();
         self.insert_hashed(value, hash)
     }
 
     /// Inserts an element into the hash set, associating it with the given `hash`.
+    ///
+    /// REQUIRES: `value.hash()` must return the same value as `hash`.
+    ///
+    /// If an equivalent element (one with the same hash) is already present in the hash set, the
+    /// element is updated by copying the bytes of `value` into it.
     pub fn insert_hashed(&mut self, value: T, hash: Scalar) -> Result<&mut T> {
         let mut index = self.probe(hash);
         if self.node(index).is_empty() {
@@ -371,9 +374,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
             self.header_mut().set_size(new_size);
         }
         let node = self.node_mut(index);
-        if node.is_empty() {
-            node.init_with_hash(hash, value);
-        }
+        node.init(hash, value);
         Ok(&mut node.value)
     }
 
@@ -491,11 +492,15 @@ mod tests {
 
     #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
     #[repr(C)]
-    struct TestNodeData(StoredScalar, StoredScalar);
+    struct TestNodeData(StoredScalar, StoredScalar, StoredScalar);
 
     impl TestNodeData {
         fn test_data1() -> Self {
-            Self(Scalar::from(12).into(), Scalar::from(34).into())
+            Self(
+                Scalar::from(12).into(),
+                Scalar::from(34).into(),
+                Scalar::from(1).into(),
+            )
         }
 
         fn test_hash1() -> Scalar {
@@ -503,7 +508,11 @@ mod tests {
         }
 
         fn test_data2() -> Self {
-            Self(Scalar::from(56).into(), Scalar::from(78).into())
+            Self(
+                Scalar::from(56).into(),
+                Scalar::from(78).into(),
+                Scalar::from(2).into(),
+            )
         }
 
         fn test_hash2() -> Scalar {
@@ -511,7 +520,11 @@ mod tests {
         }
 
         fn test_data3() -> Self {
-            Self(Scalar::from(90).into(), Scalar::from(12).into())
+            Self(
+                Scalar::from(90).into(),
+                Scalar::from(12).into(),
+                Scalar::from(3).into(),
+            )
         }
 
         fn test_hash3() -> Scalar {
@@ -702,6 +715,24 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_element_twice() {
+        let mut set = make_test_hash_set(1).unwrap();
+        let mut element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        element.2 = element.2.to_scalar().square().into();
+        assert_eq!(element.hash(), TestNodeData::test_hash1());
+        assert!(set.insert(element).is_ok());
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
     fn test_erase_from_empty() {
         let mut set = make_test_hash_set(0).unwrap();
         assert!(!set.erase(TestNodeData::test_hash2()));
@@ -824,6 +855,61 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_erase_one_out_of_two_elements1() {
+        let mut set = make_test_hash_set(2).unwrap();
+        let element1 = TestNodeData::test_data1();
+        let element2 = TestNodeData::test_data2();
+        assert!(set.insert(element1).is_ok());
+        assert!(set.insert(element2).is_ok());
+        assert!(set.erase(element1.hash()));
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 4);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.get(TestNodeData::test_hash1()).is_none());
+        assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+    }
+
+    #[test]
+    fn test_erase_one_out_of_two_elements2() {
+        let mut set = make_test_hash_set(2).unwrap();
+        let element1 = TestNodeData::test_data1();
+        let element2 = TestNodeData::test_data2();
+        assert!(set.insert(element1).is_ok());
+        assert!(set.insert(element2).is_ok());
+        assert!(set.erase(element2.hash()));
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 4);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element1);
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+    }
+
+    #[test]
+    fn test_extract_one_out_of_two_elements2() {
+        let mut set = make_test_hash_set(2).unwrap();
+        let element1 = TestNodeData::test_data1();
+        let element2 = TestNodeData::test_data2();
+        assert!(set.insert(element1).is_ok());
+        assert!(set.insert(element2).is_ok());
+        let extracted = set.extract(element2.hash()).unwrap();
+        assert_eq!(extracted, element2);
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 4);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element1);
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
     }
 
