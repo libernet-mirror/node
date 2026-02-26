@@ -1,8 +1,10 @@
+use crate::libernet::wasm::element::Items;
 use crate::libernet::wasm::{
-    self, CatchElement, ElementSection, Export, ExportSection, FuncType, FunctionSection, Global,
-    GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, PlainType, ProgramModule,
-    RefType, SubType, TableSection, TableType, TagSection, TagType, TypeRefFunc, TypeSection,
-    Version,
+    self, CatchElement, CodeSection, CodeSectionEntry, Data, DataKind, DataSection, Element,
+    ElementExpressions, ElementFunctions, ElementKind, ElementSection, Export, ExportSection,
+    Expression, FuncType, FunctionSection, Global, GlobalSection, GlobalType, ImportSection,
+    Locals, MemorySection, MemoryType, PlainType, ProgramModule, RefType, SubType, TableSection,
+    TableType, TagSection, TagType, TypeRefFunc, TypeSection, Version,
 };
 use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
 use anyhow::{Context, Result, anyhow, bail};
@@ -64,6 +66,14 @@ impl Sha3Hash for String {
 impl Sha3Hash for bool {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         hasher.update([if *self { 1 } else { 0 }]);
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Vec<u8> {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        (self.len() as u64).sha3_hash(hasher)?;
+        hasher.update(self);
         Ok(())
     }
 }
@@ -630,11 +640,14 @@ impl Sha3Hash for GlobalSection {
 impl Sha3Hash for Global {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         self.r#type.context("Type is required")?.sha3_hash(hasher)?;
-        self.init_expr
-            .as_ref()
-            .context("Init expr is required")?
-            .operators
-            .sha3_hash(hasher)?;
+        self.init_expr.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Expression {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.operators.sha3_hash(hasher)?;
         Ok(())
     }
 }
@@ -673,6 +686,117 @@ impl Sha3Hash for Export {
     }
 }
 
+impl Sha3Hash for ElementSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.elements.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+impl Sha3Hash for Element {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.kind
+            .as_ref()
+            .context("Kind is required")?
+            .sha3_hash(hasher)?;
+        self.items.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for ElementKind {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.r#type.context("Type is required")?.sha3_hash(hasher)?;
+        self.table_index.sha3_hash(hasher)?;
+        self.expression.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Items {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        match self {
+            Items::Functions(functions) => functions.sha3_hash(hasher)?,
+            Items::Expressions(expressions) => expressions.sha3_hash(hasher)?,
+        }
+        Ok(())
+    }
+}
+
+impl Sha3Hash for ElementFunctions {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.functions.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for ElementExpressions {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.reference_type
+            .context("Reference type is required")?
+            .sha3_hash(hasher)?;
+        self.expressions.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for CodeSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.code_section_entry.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for CodeSectionEntry {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.locals.sha3_hash(hasher)?;
+        self.body.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Locals {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.count.context("Count is required")?.sha3_hash(hasher)?;
+        self.value_type
+            .context("Value type is required")?
+            .sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for DataSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.datas.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Data {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.kind
+            .as_ref()
+            .context("Kind is required")?
+            .sha3_hash(hasher)?;
+        self.data
+            .as_ref()
+            .context("Data is required")?
+            .sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for DataKind {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.r#type
+            .as_ref()
+            .context("Type is required")?
+            .sha3_hash(hasher)?;
+        self.memory_index.sha3_hash(hasher)?;
+        self.expression.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
 impl Sha3Hash for ProgramModule {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         self.protocol_version
@@ -681,13 +805,6 @@ impl Sha3Hash for ProgramModule {
         self.version
             .context("Version is required")?
             .sha3_hash(hasher)?;
-
-        // #[prost(message, optional, tag = "11")]
-        // pub element_section: ::core::option::Option<ElementSection>,
-        // #[prost(message, optional, tag = "12")]
-        // pub code_section: ::core::option::Option<CodeSection>,
-        // #[prost(message, optional, tag = "13")]
-        // pub data_section: ::core::option::Option<DataSection>,
 
         macro_rules! hash_section {
             ($opt:expr $(,)?) => {{
@@ -706,6 +823,9 @@ impl Sha3Hash for ProgramModule {
         hash_section!(self.tag_section);
         hash_section!(self.global_section);
         hash_section!(self.export_section);
+        hash_section!(self.element_section);
+        hash_section!(self.code_section);
+        hash_section!(self.data_section);
         Ok(())
     }
 }
@@ -725,7 +845,7 @@ mod tests {
     use crate::libernet::wasm::operator::Operator as OperatorVariant;
     use crate::libernet::wasm::{
         BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchElement, CatchOne,
-        CatchOneRef, Expression, Global, GlobalSection, GlobalType, MemArg, MemoryType, RefType,
+        CatchOneRef, MemArg, MemoryType, RefType,
         TableType, TagKind, TagType, TypeRefFunc, ValueType, block_type, catch_element,
     };
     use crate::libernet::wasm::{OpCode, Operator};
@@ -815,6 +935,13 @@ mod tests {
     fn test_string_to_hash() {
         hash_eq!(
             ["hello".to_string()],
+            [&("hello".len() as u64).to_le_bytes()[..], &b"hello"[..]]
+        );
+    }
+    #[test]
+    fn test_bytes_to_hash() {
+        hash_eq!(
+            [b"hello".to_vec()],
             [&("hello".len() as u64).to_le_bytes()[..], &b"hello"[..]]
         );
     }
