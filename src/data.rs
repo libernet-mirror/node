@@ -448,9 +448,8 @@ pub struct Program {
 
 impl proto::EncodeToAny for Program {
     fn encode_to_any(&self) -> Result<prost_types::Any> {
-        Ok(prost_types::Any::from_msg(
-            self.module.as_ref().context("missing program module")?,
-        )?)
+        prost_types::Any::from_msg(self.module.as_ref().context("missing program module")?)
+            .map_err(|e| anyhow!(e.to_string()))
     }
 }
 

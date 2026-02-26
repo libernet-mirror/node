@@ -1,10 +1,11 @@
-use crate::libernet::wasm::{self, CatchElement, PlainType, RefType};
+use crate::libernet::wasm::{
+    self, CatchElement, FuncType, ImportSection, PlainType, ProgramModule, RefType, SubType,
+    TypeRefFunc, TypeSection, Version,
+};
 use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
 use anyhow::{Result, anyhow, bail};
-use blstrs::Scalar;
-use crypto::{merkle::AsScalar, poseidon::hash_t4};
+use sha3::Digest;
 
-#[macro_export]
 macro_rules! some {
     ($expr:expr, $pat:pat => $body:block, $msg:expr $(,)?) => {{
         match $expr {
@@ -14,36 +15,56 @@ macro_rules! some {
     }};
 }
 
-trait ToScalar {
-    fn to_scalar(&self) -> Result<Scalar>;
+trait Sha3Hash {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()>;
 }
 
-impl ToScalar for u32 {
-    fn to_scalar(&self) -> Result<Scalar> {
-        Ok(self.as_scalar())
+impl Sha3Hash for u32 {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        hasher.update(self.to_le_bytes());
+        Ok(())
     }
 }
 
-impl<T> ToScalar for Vec<T>
-where
-    T: ToScalar,
-{
-    fn to_scalar(&self) -> Result<Scalar> {
-        let mut scalar = (self.len() as u64).as_scalar();
+impl Sha3Hash for u64 {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        hasher.update(self.to_le_bytes());
+        Ok(())
+    }
+}
+
+impl Sha3Hash for i32 {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        hasher.update(self.to_le_bytes());
+        Ok(())
+    }
+}
+
+impl Sha3Hash for i64 {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        hasher.update(self.to_le_bytes());
+        Ok(())
+    }
+}
+
+impl<T: Sha3Hash> Sha3Hash for Vec<T> {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        (self.len() as u64).sha3_hash(hasher)?;
         for elem in self {
-            scalar = hash_t4(&[scalar, elem.to_scalar()?]);
+            elem.sha3_hash(hasher)?;
         }
-        Ok(scalar)
+        Ok(())
     }
 }
 
-impl ToScalar for wasm::ValueType {
-    fn to_scalar(&self) -> Result<Scalar> {
+impl Sha3Hash for wasm::ValueType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         let value_code = self
             .value_type
             .ok_or_else(|| anyhow!("Value type is required"))?;
         let plain_type = PlainType::try_from(value_code)?;
-        let body = match plain_type {
+        value_code.sha3_hash(hasher)?;
+        match plain_type {
             PlainType::ValueTypeI32
             | PlainType::ValueTypeI64
             | PlainType::ValueTypeF32
@@ -52,7 +73,7 @@ impl ToScalar for wasm::ValueType {
                 if self.reference_type.is_some() {
                     bail!("Reference type is set for primitive value type");
                 }
-                0.as_scalar()
+                hasher.update([0]);
             }
             PlainType::ValueTypeRef => {
                 let ref_code = self
@@ -61,64 +82,77 @@ impl ToScalar for wasm::ValueType {
                 if RefType::try_from(ref_code).is_err() {
                     bail!("Invalid reference type");
                 }
-                ref_code.as_scalar()
+                ref_code.sha3_hash(hasher)?;
             }
         };
-        Ok(hash_t4(&[value_code.as_scalar(), body]))
+        Ok(())
     }
 }
 
-impl ToScalar for wasm::block_type::BlockType {
-    fn to_scalar(&self) -> Result<Scalar> {
-        Ok(match self {
-            wasm::block_type::BlockType::Empty(_) => -1.as_scalar(),
-            wasm::block_type::BlockType::ValueType(vt) => vt.to_scalar()?,
-            wasm::block_type::BlockType::FunctionType(v) => v.as_scalar(),
-        })
+impl Sha3Hash for wasm::block_type::BlockType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        match self {
+            wasm::block_type::BlockType::Empty(_) => hasher.update([0]),
+            wasm::block_type::BlockType::ValueType(vt) => vt.sha3_hash(hasher)?,
+            wasm::block_type::BlockType::FunctionType(v) => v.sha3_hash(hasher)?,
+        };
+        Ok(())
     }
 }
 
-impl ToScalar for CatchElement {
-    fn to_scalar(&self) -> Result<Scalar> {
+impl Sha3Hash for CatchElement {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         let catch_element = self
             .catch_element
             .ok_or(anyhow!("Catch element is required"))?;
-        Ok(match catch_element {
-            wasm::catch_element::CatchElement::One(one) => hash_t4(&[
-                one.tag.ok_or(anyhow!("One: Tag is required"))?.as_scalar(),
+        match catch_element {
+            wasm::catch_element::CatchElement::One(one) => {
+                hasher.update([0]);
+                one.tag
+                    .ok_or(anyhow!("One: Tag is required"))?
+                    .sha3_hash(hasher)?;
                 one.label
                     .ok_or(anyhow!("One: Label is required"))?
-                    .as_scalar(),
-            ]),
-            wasm::catch_element::CatchElement::OneRef(one_ref) => hash_t4(&[
+                    .sha3_hash(hasher)?;
+            }
+            wasm::catch_element::CatchElement::OneRef(one_ref) => {
+                hasher.update([1]);
                 one_ref
                     .tag
                     .ok_or(anyhow!("OneRef: Tag is required"))?
-                    .as_scalar(),
+                    .sha3_hash(hasher)?;
                 one_ref
                     .label
                     .ok_or(anyhow!("OneRef: Label is required"))?
-                    .as_scalar(),
-            ]),
-            wasm::catch_element::CatchElement::All(all) => hash_t4(&[all
-                .label
-                .ok_or(anyhow!("All: Label is required"))?
-                .as_scalar()]),
-            wasm::catch_element::CatchElement::AllRef(all_ref) => hash_t4(&[all_ref
-                .label
-                .ok_or(anyhow!("AllRef: Label is required"))?
-                .as_scalar()]),
-        })
+                    .sha3_hash(hasher)?;
+            }
+            wasm::catch_element::CatchElement::All(all) => {
+                hasher.update([2]);
+                all.label
+                    .ok_or(anyhow!("All: Label is required"))?
+                    .sha3_hash(hasher)?;
+            }
+            wasm::catch_element::CatchElement::AllRef(all_ref) => {
+                hasher.update([3]);
+                all_ref
+                    .label
+                    .ok_or(anyhow!("AllRef: Label is required"))?
+                    .sha3_hash(hasher)?;
+            }
+        };
+        Ok(())
     }
 }
 
-impl ToScalar for Operator {
-    fn to_scalar(&self) -> Result<Scalar> {
+impl Sha3Hash for Operator {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         let opcode_value = self.opcode.ok_or_else(|| anyhow!("Opcode is required"))?;
         let opcode = OpCode::try_from(opcode_value)?;
         let operator = &self.operator;
 
-        let body: Scalar = match opcode {
+        opcode_value.sha3_hash(hasher)?;
+
+        match opcode {
             OpCode::Unreachable
             | OpCode::Nop
             | OpCode::Else
@@ -267,12 +301,12 @@ impl ToScalar for Operator {
                 if operator.is_some() {
                     bail!("Operator is not allowed for this opcode");
                 }
-                0.into()
+                hasher.update([0]);
             }
             OpCode::Block | OpCode::Loop | OpCode::If | OpCode::LegacyExceptionsExtTry => {
                 some!(operator, BlockType(block_type) => {
                     match block_type.block_type {
-                        Some(block_type) => block_type.to_scalar()?,
+                        Some(block_type) => block_type.sha3_hash(hasher)?,
                         _ => bail!("Block type is required"),
                     }
                 }, "Block type is required")
@@ -282,35 +316,34 @@ impl ToScalar for Operator {
             | OpCode::LegacyExceptionsExtRethrow
             | OpCode::LegacyExceptionsExtDelegate => {
                 some!(operator, RelativeDepth(relative_depth) => {
-                    relative_depth.as_scalar()
+                    relative_depth.sha3_hash(hasher)?;
                 }, "Relative depth is required")
             }
             OpCode::BrTable => {
                 some!(operator, Targets(targets) => {
-                    let default = targets.default.ok_or_else(|| anyhow!("Default target is required"))?;
-                    hash_t4(&[default.as_scalar(), targets.targets.to_scalar()?])
+                    targets.default.ok_or_else(|| anyhow!("Default target is required"))?.sha3_hash(hasher)?;
+                    targets.targets.sha3_hash(hasher)?;
                 }, "Type index is required")
             }
             OpCode::Call => {
                 some!(operator, FunctionIndex(function_index) => {
-                    function_index.as_scalar()
+                    function_index.sha3_hash(hasher)?;
                 }, "Function index is required")
             }
             OpCode::CallIndirect => {
                 some!(operator, CallIndirect(call_indirect) => {
-                    let type_index = call_indirect.type_index.ok_or_else(|| anyhow!("Type index is required"))?;
-                    let table_index = call_indirect.table_index.ok_or_else(|| anyhow!("Table index is required"))?;
-                    hash_t4(&[type_index.as_scalar(), table_index.as_scalar()])
+                    call_indirect.type_index.ok_or_else(|| anyhow!("Type index is required"))?.sha3_hash(hasher)?;
+                    call_indirect.table_index.ok_or_else(|| anyhow!("Table index is required"))?.sha3_hash(hasher)?;
                 }, "Type index and table index are required")
             }
             OpCode::LocalGet | OpCode::LocalSet | OpCode::LocalTee => {
                 some!(operator, LocalIndex(local_index) => {
-                    local_index.as_scalar()
+                    local_index.sha3_hash(hasher)?;
                 }, "Local index is required")
             }
             OpCode::GlobalGet | OpCode::GlobalSet => {
                 some!(operator, GlobalIndex(global_index) => {
-                    global_index.as_scalar()
+                    global_index.sha3_hash(hasher)?;
                 }, "Global index is required")
             }
             OpCode::I32Load
@@ -337,105 +370,195 @@ impl ToScalar for Operator {
             | OpCode::I64Store16
             | OpCode::I64Store32 => {
                 some!(operator, Memarg(memarg) => {
-                    let align = memarg.align.ok_or_else(|| anyhow!("Align is required"))?;
-                    let max_align = memarg.max_align.ok_or_else(|| anyhow!("Max align is required"))?;
-                    let offset = memarg.offset.ok_or_else(|| anyhow!("Offset is required"))?;
-                    let memory = memarg.memory.ok_or_else(|| anyhow!("Memory is required"))?;
-                    hash_t4(&[align.as_scalar(), max_align.as_scalar(), offset.as_scalar(), memory.as_scalar()])
+                    memarg.align.ok_or_else(|| anyhow!("Align is required"))?.sha3_hash(hasher)?;
+                    memarg.max_align.ok_or_else(|| anyhow!("Max align is required"))?.sha3_hash(hasher)?;
+                    memarg.offset.ok_or_else(|| anyhow!("Offset is required"))?.sha3_hash(hasher)?;
+                    memarg.memory.ok_or_else(|| anyhow!("Memory is required"))?.sha3_hash(hasher)?;
                 }, "Mem arg is required")
             }
             OpCode::MemorySize | OpCode::MemoryGrow => {
                 some!(operator, Mem(mem) => {
-                    mem.as_scalar()
+                    mem.sha3_hash(hasher)?;
                 }, "Mem is required")
             }
             OpCode::I32Constant => {
                 some!(operator, I32Value(i32_value) => {
-                    i32_value.as_scalar()
+                    i32_value.sha3_hash(hasher)?;
                 }, "I32 value is required")
             }
             OpCode::I64Constant => {
                 some!(operator, I64Value(i64_value) => {
-                    i64_value.as_scalar()
+                    i64_value.sha3_hash(hasher)?;
                 }, "I64 value is required")
             }
             OpCode::F32Constant => {
                 some!(operator, F32Value(f32_value) => {
-                    f32_value.as_scalar()
+                    f32_value.sha3_hash(hasher)?;
                 }, "F32 value is required")
             }
             OpCode::F64Constant => {
                 some!(operator, F64Value(f64_value) => {
-                    f64_value.as_scalar()
+                    f64_value.sha3_hash(hasher)?;
                 }, "F64 value is required")
             }
             OpCode::BulkMemoryExtMemoryInit => {
                 some!(operator, MemoryInit(memory_init) => {
-                    let data_index = memory_init.data_index.ok_or_else(|| anyhow!("Data index is required"))?;
-                    let address = memory_init.address.ok_or_else(|| anyhow!("Address is required"))?;
-                    hash_t4(&[data_index.as_scalar(), address.as_scalar()])
+                    memory_init.data_index.ok_or_else(|| anyhow!("Data index is required"))?.sha3_hash(hasher)?;
+                    memory_init.address.ok_or_else(|| anyhow!("Address is required"))?.sha3_hash(hasher)?;
                 }, "Data index and address are required")
             }
             OpCode::BulkMemoryExtDataDrop => {
                 some!(operator, DataIndex(data_index) => {
-                    data_index.as_scalar()
+                    data_index.sha3_hash(hasher)?;
                 }, "Data index is required")
             }
             OpCode::BulkMemoryExtMemoryCopy => {
                 some!(operator, MemoryCopy(memory_copy) => {
-                    let destination_address = memory_copy.destination_address.ok_or_else(|| anyhow!("Destination address is required"))?;
-                    let source_address = memory_copy.source_address.ok_or_else(|| anyhow!("Source address is required"))?;
-                    hash_t4(&[destination_address.as_scalar(), source_address.as_scalar()])
+                    memory_copy.destination_address.ok_or_else(|| anyhow!("Destination address is required"))?.sha3_hash(hasher)?;
+                    memory_copy.source_address.ok_or_else(|| anyhow!("Source address is required"))?.sha3_hash(hasher)?;
                 }, "Destination address and source address are required")
             }
             OpCode::BulkMemoryExtMemoryFill => {
                 some!(operator, Mem(mem) => {
-                    mem.as_scalar()
+                    mem.sha3_hash(hasher)?;
                 }, "Mem is required")
             }
             OpCode::BulkMemoryExtTableInit => {
                 some!(operator, TableInit(table_init) => {
-                    let element_index = table_init.element_index.ok_or_else(|| anyhow!("Element index is required"))?;
-                    let table = table_init.table.ok_or_else(|| anyhow!("Table is required"))?;
-                    hash_t4(&[element_index.as_scalar(), table.as_scalar()])
+                    table_init.element_index.ok_or_else(|| anyhow!("Element index is required"))?.sha3_hash(hasher)?;
+                    table_init.table.ok_or_else(|| anyhow!("Table is required"))?.sha3_hash(hasher)?;
                 }, "Table index is required")
             }
             OpCode::BulkMemoryExtElemDrop => {
                 some!(operator, ElementIndex(element_index) => {
-                    element_index.as_scalar()
+                    element_index.sha3_hash(hasher)?;
                 }, "Element index is required")
             }
             OpCode::BulkMemoryExtTableCopy => {
                 some!(operator, TableCopy(table_copy) => {
-                    let dst_table = table_copy.dst_table.ok_or_else(|| anyhow!("Dst table is required"))?;
-                    let src_table = table_copy.src_table.ok_or_else(|| anyhow!("Src table is required"))?;
-                    hash_t4(&[dst_table.as_scalar(), src_table.as_scalar()])
+                    table_copy.dst_table.ok_or_else(|| anyhow!("Dst table is required"))?.sha3_hash(hasher)?;
+                    table_copy.src_table.ok_or_else(|| anyhow!("Src table is required"))?.sha3_hash(hasher)?;
                 }, "Dst table and src table are required")
             }
             OpCode::ExceptionsExtTryTable => {
                 some!(operator, TryTable(try_table) => {
-                    let block_type = try_table.r#type.ok_or_else(|| anyhow!("Block type is required"))?.block_type.ok_or_else(|| anyhow!("Block type is required"))?.to_scalar()?;
-                    let catches = try_table.catches.to_scalar()?;
-                    hash_t4(&[block_type, catches])
+                    try_table.r#type.ok_or_else(|| anyhow!("Block type is required"))?.block_type.ok_or_else(|| anyhow!("Block type is required"))?.sha3_hash(hasher)?;
+                    try_table.catches.sha3_hash(hasher)?;
                 }, "Type index and catches are required")
             }
             OpCode::ExceptionsExtThrow | OpCode::LegacyExceptionsExtCatch => {
                 some!(operator, TagIndex(tag_index) => {
-                    tag_index.as_scalar()
+                    tag_index.sha3_hash(hasher)?;
                 }, "Tag index is required")
             }
         };
 
-        Ok(hash_t4(&[opcode_value.as_scalar(), body]))
+        Ok(())
     }
 }
 
-impl AsScalar for Operator {
-    fn as_scalar(&self) -> Scalar {
-        hash_t4(&match self.to_scalar() {
-            Ok(scalar) => [1.as_scalar(), scalar],
-            Err(_) => [0.as_scalar(), 0.as_scalar()],
-        })
+impl Sha3Hash for Version {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.number
+            .ok_or_else(|| anyhow!("Version number is required"))?
+            .sha3_hash(hasher)?;
+        self.encoding
+            .ok_or_else(|| anyhow!("Version encoding is required"))?
+            .sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for FuncType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.params.sha3_hash(hasher)?;
+        self.results.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for SubType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        match &self.kind {
+            Some(wasm::sub_type::Kind::Func(func_type)) => func_type.sha3_hash(hasher)?,
+            _ => bail!("Sub type kind is required"),
+        }
+        Ok(())
+    }
+}
+
+impl Sha3Hash for TypeSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.types.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for TypeRefFunc {
+    fn sha3_hash<D: Digest>(&self, _hasher: &mut D) -> Result<()> {
+        // let module = self
+        //     .module
+        //     .as_ref()
+        //     .ok_or_else(|| anyhow!("Module is required"))?;
+        // let name = self
+        //     .name
+        //     .as_ref()
+        //     .ok_or_else(|| anyhow!("Name is required"))?;
+        // let function_type = self
+        //     .function_type
+        //     .ok_or_else(|| anyhow!("Function type is required"))?;
+        //TODO
+        Ok(())
+    }
+}
+
+impl Sha3Hash for ImportSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.imports.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for ProgramModule {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.protocol_version
+            .ok_or_else(|| anyhow!("Protocol version is required"))?
+            .sha3_hash(hasher)?;
+        self.version
+            .ok_or_else(|| anyhow!("Version is required"))?
+            .sha3_hash(hasher)?;
+
+        // pub import_section: ::core::option::Option<ImportSection>,
+        // #[prost(message, optional, tag = "5")]
+        // pub function_section: ::core::option::Option<FunctionSection>,
+        // #[prost(message, optional, tag = "6")]
+        // pub table_section: ::core::option::Option<TableSection>,
+        // #[prost(message, optional, tag = "7")]
+        // pub memory_section: ::core::option::Option<MemorySection>,
+        // #[prost(message, optional, tag = "8")]
+        // pub tag_section: ::core::option::Option<TagSection>,
+        // #[prost(message, optional, tag = "9")]
+        // pub global_section: ::core::option::Option<GlobalSection>,
+        // #[prost(message, optional, tag = "10")]
+        // pub export_section: ::core::option::Option<ExportSection>,
+        // #[prost(message, optional, tag = "11")]
+        // pub element_section: ::core::option::Option<ElementSection>,
+        // #[prost(message, optional, tag = "12")]
+        // pub code_section: ::core::option::Option<CodeSection>,
+        // #[prost(message, optional, tag = "13")]
+        // pub data_section: ::core::option::Option<DataSection>,
+
+        macro_rules! hash_section {
+            ($opt:expr $(,)?) => {{
+                match &$opt {
+                    Some(v) => v.sha3_hash(hasher)?,
+                    None => hasher.update([0]),
+                }
+            }};
+        }
+
+        hash_section!(self.type_section);
+        Ok(())
     }
 }
 
@@ -444,11 +567,39 @@ mod tests {
     use super::*;
     use crate::libernet::wasm::operator::Operator as OperatorVariant;
     use crate::libernet::wasm::{
-        BreakTargets, CallIndirectOp, CatchAllElements, CatchElement, CatchOne, MemArg, ValueType,
-        block_type, catch_element,
+        BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchElement, CatchOne,
+        CatchOneRef, MemArg, ValueType, block_type, catch_element,
     };
     use crate::libernet::wasm::{OpCode, Operator};
-    use crypto::merkle::AsScalar;
+
+    fn sha512<I: IntoIterator<Item = T>, T: AsRef<[u8]>>(parts: I) -> String {
+        let mut hasher = sha3::Sha3_512::new();
+        for p in parts {
+            hasher.update(p.as_ref());
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    fn hash<I: IntoIterator<Item = T>, T: Sha3Hash>(parts: I) -> String {
+        let mut hasher = sha3::Sha3_512::new();
+        for p in parts {
+            p.sha3_hash(&mut hasher).unwrap();
+        }
+        hex::encode(hasher.finalize())
+    }
+
+    macro_rules! hash_eq {
+        ($left:expr, $right:expr) => {
+            assert_eq!(hash($left), sha512($right));
+        };
+    }
+
+    macro_rules! hash_err {
+        ($left:expr) => {
+            let mut hasher = sha3::Sha3_512::new();
+            assert!($left.sha3_hash(&mut hasher).is_err());
+        };
+    }
 
     #[test]
     fn test_some_macro_success() {
@@ -471,38 +622,46 @@ mod tests {
     }
 
     #[test]
-    fn test_u32_to_scalar() {
-        let scalar = 42u32.to_scalar().unwrap();
-        assert_eq!(scalar, 42u32.as_scalar());
+    fn test_u32_to_hash() {
+        hash_eq!([42u32], [42u32.to_le_bytes()]);
     }
 
     #[test]
-    fn test_vec_to_scalar() {
-        let empty: Vec<u32> = vec![];
-        let empty_scalar = empty.to_scalar().unwrap();
-        assert_eq!(empty_scalar, 0u64.as_scalar());
+    fn test_u64_to_hash() {
+        hash_eq!([42u64], [42u64.to_le_bytes()]);
+    }
 
-        let vec = vec![1u32, 2u32];
-        let scalar = vec.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[
-                hash_t4(&[2u64.as_scalar(), 1u32.as_scalar()]),
-                2u32.as_scalar()
-            ])
+    #[test]
+    fn test_i32_to_hash() {
+        hash_eq!([42i32], [42i32.to_le_bytes()]);
+    }
+
+    #[test]
+    fn test_i64_to_hash() {
+        hash_eq!([42i64], [42i64.to_le_bytes()]);
+    }
+
+    #[test]
+    fn test_vec_to_hash() {
+        hash_eq!([Vec::<u32>::new()], [0u64.to_le_bytes()]);
+        hash_eq!(
+            [vec![1u32, 2u32]],
+            [
+                &2u64.to_le_bytes()[..],
+                &1u32.to_le_bytes()[..],
+                &2u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_value_type_i32_to_scalar() {
-        let vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
-        let scalar = vt.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[(PlainType::ValueTypeI32 as i32).as_scalar(), 0.as_scalar()])
+    fn test_value_type_i32_to_hash() {
+        hash_eq!(
+            [ValueType {
+                value_type: Some(PlainType::ValueTypeI32 as i32),
+                reference_type: None,
+            }],
+            [&(PlainType::ValueTypeI32 as i32).to_le_bytes()[..], &[0]]
         );
     }
 
@@ -512,7 +671,7 @@ mod tests {
             value_type: None,
             reference_type: None,
         };
-        assert!(vt.to_scalar().is_err());
+        hash_err!(vt);
     }
 
     #[test]
@@ -521,30 +680,55 @@ mod tests {
             value_type: Some(PlainType::ValueTypeI32 as i32),
             reference_type: Some(RefType::RefFunc as i32),
         };
-        assert!(vt.to_scalar().is_err());
+        hash_err!(vt);
     }
 
     #[test]
-    fn test_catch_element_one_to_scalar() {
+    fn test_catch_element_one_to_hash() {
         let ce = CatchElement {
             catch_element: Some(catch_element::CatchElement::One(CatchOne {
                 tag: Some(1),
                 label: Some(2),
             })),
         };
-        let scalar = ce.to_scalar().unwrap();
-        assert_ne!(scalar, 0u64.as_scalar());
+        hash_eq!(
+            [ce],
+            [&[0], &1u32.to_le_bytes()[..], &2u32.to_le_bytes()[..]]
+        );
     }
 
     #[test]
-    fn test_catch_element_all_to_scalar() {
+    fn test_catch_element_one_ref_to_hash() {
+        let ce = CatchElement {
+            catch_element: Some(catch_element::CatchElement::OneRef(CatchOneRef {
+                tag: Some(1),
+                label: Some(2),
+            })),
+        };
+        hash_eq!(
+            [ce],
+            [&[1], &1u32.to_le_bytes()[..], &2u32.to_le_bytes()[..]]
+        );
+    }
+
+    #[test]
+    fn test_catch_element_all_to_hash() {
         let ce = CatchElement {
             catch_element: Some(catch_element::CatchElement::All(CatchAllElements {
                 label: Some(5),
             })),
         };
-        let scalar = ce.to_scalar().unwrap();
-        assert_ne!(scalar, 0u64.as_scalar());
+        hash_eq!([ce], [&[2], &5u32.to_le_bytes()[..]]);
+    }
+
+    #[test]
+    fn test_catch_element_all_ref_to_hash() {
+        let ce = CatchElement {
+            catch_element: Some(catch_element::CatchElement::AllRef(CatchAllRef {
+                label: Some(5),
+            })),
+        };
+        hash_eq!([ce], [&[3], &5u32.to_le_bytes()[..]]);
     }
 
     #[test]
@@ -552,17 +736,16 @@ mod tests {
         let ce = CatchElement {
             catch_element: None,
         };
-        assert!(ce.to_scalar().is_err());
+        hash_err!(ce);
     }
 
     #[test]
-    fn test_operator_nop_to_scalar() {
+    fn test_operator_nop_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Nop as i32),
             operator: None,
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_ne!(scalar, 0u64.as_scalar());
+        hash_eq!([op], [&(OpCode::Nop as i32).to_le_bytes()[..], &[0]]);
     }
 
     #[test]
@@ -571,17 +754,22 @@ mod tests {
             opcode: Some(OpCode::Nop as i32),
             operator: Some(OperatorVariant::LocalIndex(0)),
         };
-        assert!(op.to_scalar().is_err());
+        hash_err!(op);
     }
 
     #[test]
-    fn test_operator_call_to_scalar() {
+    fn test_operator_call_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Call as i32),
             operator: Some(OperatorVariant::FunctionIndex(42)),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_ne!(scalar, 0u64.as_scalar());
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::Call as i32).to_le_bytes()[..],
+                &42u32.to_le_bytes()[..]
+            ]
+        );
     }
 
     #[test]
@@ -590,39 +778,37 @@ mod tests {
             opcode: Some(OpCode::Call as i32),
             operator: None,
         };
-        assert!(op.to_scalar().is_err());
+        hash_err!(op);
     }
 
     #[test]
-    fn test_operator_i32_constant_to_scalar() {
+    fn test_operator_i32_constant_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::I32Constant as i32),
             operator: Some(OperatorVariant::I32Value(100)),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[(OpCode::I32Constant as i32).as_scalar(), 100u64.as_scalar()])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::I32Constant as i32).to_le_bytes()[..],
+                &100u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_block_empty_to_scalar() {
+    fn test_operator_block_empty_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
             operator: Some(OperatorVariant::BlockType(wasm::BlockType {
                 block_type: Some(block_type::BlockType::Empty(110)),
             })),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[(OpCode::Block as i32).as_scalar(), -1.as_scalar()])
-        );
+        hash_eq!([op], [&(OpCode::Block as i32).to_le_bytes()[..], &[0]]);
     }
 
     #[test]
-    fn test_operator_block_value_type_to_scalar() {
+    fn test_operator_block_value_type_to_hash() {
         let value_type = ValueType {
             value_type: Some(PlainType::ValueTypeI32 as i32),
             reference_type: None,
@@ -633,46 +819,50 @@ mod tests {
                 block_type: Some(block_type::BlockType::ValueType(value_type)),
             })),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[
-                (OpCode::Block as i32).as_scalar(),
-                value_type.to_scalar().unwrap()
-            ])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::Block as i32).to_le_bytes()[..],
+                &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
+                &[0]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_block_function_type_to_scalar() {
+    fn test_operator_block_function_type_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
             operator: Some(OperatorVariant::BlockType(wasm::BlockType {
                 block_type: Some(block_type::BlockType::FunctionType(110)),
             })),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[(OpCode::Block as i32).as_scalar(), 110u64.as_scalar()])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::Block as i32).to_le_bytes()[..],
+                &110u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_local_get_to_scalar() {
+    fn test_operator_local_get_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::LocalGet as i32),
             operator: Some(OperatorVariant::LocalIndex(3)),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[(OpCode::LocalGet as i32).as_scalar(), 3u64.as_scalar()])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::LocalGet as i32).to_le_bytes()[..],
+                &3u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_memarg_to_scalar() {
+    fn test_operator_memarg_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::I32Load as i32),
             operator: Some(OperatorVariant::Memarg(MemArg {
@@ -682,23 +872,20 @@ mod tests {
                 memory: Some(4),
             })),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[
-                (OpCode::I32Load as i32).as_scalar(),
-                hash_t4(&[
-                    1u64.as_scalar(),
-                    2u64.as_scalar(),
-                    3u64.as_scalar(),
-                    4u64.as_scalar()
-                ])
-            ])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::I32Load as i32).to_le_bytes()[..],
+                &1u32.to_le_bytes()[..],
+                &2u32.to_le_bytes()[..],
+                &3u64.to_le_bytes()[..],
+                &4u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_br_table_to_scalar() {
+    fn test_operator_br_table_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::BrTable as i32),
             operator: Some(OperatorVariant::Targets(BreakTargets {
@@ -706,18 +893,21 @@ mod tests {
                 targets: vec![1, 2, 3],
             })),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[
-                (OpCode::BrTable as i32).as_scalar(),
-                hash_t4(&[5.as_scalar(), vec![1, 2, 3].to_scalar().unwrap()])
-            ])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::BrTable as i32).to_le_bytes()[..],
+                &5u32.to_le_bytes()[..],
+                &3u64.to_le_bytes()[..],
+                &1u32.to_le_bytes()[..],
+                &2u32.to_le_bytes()[..],
+                &3u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_call_indirect_to_scalar() {
+    fn test_operator_call_indirect_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::CallIndirect as i32),
             operator: Some(OperatorVariant::CallIndirect(CallIndirectOp {
@@ -725,29 +915,33 @@ mod tests {
                 table_index: Some(2),
             })),
         };
-        let scalar = op.to_scalar().unwrap();
-        assert_eq!(
-            scalar,
-            hash_t4(&[
-                (OpCode::CallIndirect as i32).as_scalar(),
-                hash_t4(&[1.as_scalar(), 2.as_scalar()])
-            ])
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::CallIndirect as i32).to_le_bytes()[..],
+                &1u32.to_le_bytes()[..],
+                &2u32.to_le_bytes()[..]
+            ]
         );
     }
 
     #[test]
-    fn test_operator_as_scalar_deterministic() {
+    fn test_operator_hash_deterministic() {
         let op = Operator {
             opcode: Some(OpCode::Nop as i32),
             operator: None,
         };
-        let s1 = op.as_scalar();
-        let s2 = op.as_scalar();
-        assert_eq!(s1, s2);
+        let mut hasher1 = sha3::Sha3_512::new();
+        let mut hasher2 = sha3::Sha3_512::new();
+        op.sha3_hash(&mut hasher1).unwrap();
+        op.sha3_hash(&mut hasher2).unwrap();
+        assert_eq!(hasher1.finalize(), hasher2.finalize());
     }
 
     #[test]
-    fn test_operator_as_scalar_different_operators_different_scalars() {
+    fn test_operator_hash_different_operators_different_scalars() {
+        let mut hasher1 = sha3::Sha3_512::new();
+        let mut hasher2 = sha3::Sha3_512::new();
         let nop = Operator {
             opcode: Some(OpCode::Nop as i32),
             operator: None,
@@ -756,25 +950,15 @@ mod tests {
             opcode: Some(OpCode::Return as i32),
             operator: None,
         };
-        assert_ne!(nop.as_scalar(), ret.as_scalar());
+        nop.sha3_hash(&mut hasher1).unwrap();
+        ret.sha3_hash(&mut hasher2).unwrap();
+        assert_ne!(hasher1.finalize(), hasher2.finalize());
     }
 
     #[test]
-    fn test_operator_as_scalar_invalid_returns_error_scalar() {
-        let invalid = Operator {
-            opcode: None,
-            operator: None,
-        };
-        let scalar = invalid.as_scalar();
-        let valid = Operator {
-            opcode: Some(OpCode::Nop as i32),
-            operator: None,
-        };
-        assert_ne!(scalar, valid.as_scalar());
-    }
-
-    #[test]
-    fn test_operator_same_op_same_scalar() {
+    fn test_operator_same_op_same_hash() {
+        let mut hasher1 = sha3::Sha3_512::new();
+        let mut hasher2 = sha3::Sha3_512::new();
         let op1 = Operator {
             opcode: Some(OpCode::I32Constant as i32),
             operator: Some(OperatorVariant::I32Value(42)),
@@ -783,6 +967,8 @@ mod tests {
             opcode: Some(OpCode::I32Constant as i32),
             operator: Some(OperatorVariant::I32Value(42)),
         };
-        assert_eq!(op1.as_scalar(), op2.as_scalar());
+        op1.sha3_hash(&mut hasher1).unwrap();
+        op2.sha3_hash(&mut hasher2).unwrap();
+        assert_eq!(hasher1.finalize(), hasher2.finalize());
     }
 }
