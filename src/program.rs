@@ -847,11 +847,10 @@ mod tests {
     use super::*;
     use crate::libernet::wasm::operator::Operator as OperatorVariant;
     use crate::libernet::wasm::{
-        BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchElement, CatchOne,
-        CatchOneRef, DataKindType, ElementKindType, Encoding, ExternalKind, MemArg, MemoryType,
-        RefType, TableType, TagKind, TagType, TypeRefFunc, ValueType, block_type, catch_element,
+        BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchOne, CatchOneRef,
+        DataKindType, ElementKindType, Encoding, ExternalKind, MemArg, TagKind, ValueType,
+        block_type, catch_element,
     };
-    use crate::libernet::wasm::{OpCode, Operator};
 
     fn sha512<I: IntoIterator<Item = T>, T: AsRef<[u8]>>(parts: I) -> String {
         let mut hasher = sha3::Sha3_512::new();
@@ -882,6 +881,44 @@ mod tests {
         };
     }
 
+    fn i32_vt() -> ValueType {
+        ValueType {
+            value_type: Some(PlainType::ValueTypeI32 as i32),
+            reference_type: None,
+        }
+    }
+
+    fn empty_expr() -> Expression {
+        Expression { operators: vec![] }
+    }
+
+    fn default_version() -> Version {
+        Version {
+            number: Some(1),
+            encoding: Some(Encoding::Module as i32),
+        }
+    }
+
+    fn default_pm() -> ProgramModule {
+        ProgramModule {
+            protocol_version: Some(1),
+            version: Some(default_version()),
+            type_section: None,
+            import_section: None,
+            function_section: None,
+            table_section: None,
+            memory_section: None,
+            tag_section: None,
+            global_section: None,
+            export_section: None,
+            element_section: None,
+            code_section: None,
+            data_section: None,
+        }
+    }
+
+    // --- some! macro ---
+
     #[test]
     fn test_some_macro_success() {
         let result: Result<u32, _> = (|| {
@@ -901,6 +938,8 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().to_string(), "expected some");
     }
+
+    // --- primitives ---
 
     #[test]
     fn test_u32_to_hash() {
@@ -941,6 +980,7 @@ mod tests {
             [&("hello".len() as u64).to_le_bytes()[..], &b"hello"[..]]
         );
     }
+
     #[test]
     fn test_bytes_to_hash() {
         hash_eq!(
@@ -962,96 +1002,55 @@ mod tests {
         );
     }
 
+    // --- ValueType ---
+
     #[test]
     fn test_value_type_i32_to_hash() {
         hash_eq!(
-            [ValueType {
-                value_type: Some(PlainType::ValueTypeI32 as i32),
-                reference_type: None,
-            }],
+            [i32_vt()],
             [&(PlainType::ValueTypeI32 as i32).to_le_bytes()[..], &[0]]
         );
     }
 
     #[test]
+    fn test_value_type_ref_to_hash() {
+        hash_eq!(
+            [ValueType {
+                value_type: Some(PlainType::ValueTypeRef as i32),
+                reference_type: Some(RefType::RefFunc as i32),
+            }],
+            [
+                &(PlainType::ValueTypeRef as i32).to_le_bytes()[..],
+                &(RefType::RefFunc as i32).to_le_bytes()[..]
+            ]
+        );
+    }
+
+    #[test]
     fn test_value_type_missing_value_type_fails() {
-        let vt = ValueType {
+        hash_err!(ValueType {
             value_type: None,
             reference_type: None,
-        };
-        hash_err!(vt);
+        });
     }
 
     #[test]
     fn test_value_type_ref_type_with_primitive_fails() {
-        let vt = ValueType {
+        hash_err!(ValueType {
             value_type: Some(PlainType::ValueTypeI32 as i32),
             reference_type: Some(RefType::RefFunc as i32),
-        };
-        hash_err!(vt);
+        });
     }
 
     #[test]
-    fn test_table_type_to_hash() {
-        let table = TableType {
-            reference_type: Some(RefType::RefFunc as i32),
-            table64: Some(true),
-            initial: Some(100),
-            maximum: Some(200),
-            shared: Some(false),
-        };
-        hash_eq!(
-            [table],
-            [
-                &(RefType::RefFunc as i32).to_le_bytes()[..],
-                &[1],
-                &100u64.to_le_bytes()[..],
-                &[1, 1],
-                &200u64.to_le_bytes()[..],
-                &[0]
-            ]
-        );
+    fn test_value_type_ref_missing_reference_type_fails() {
+        hash_err!(ValueType {
+            value_type: Some(PlainType::ValueTypeRef as i32),
+            reference_type: None,
+        });
     }
 
-    #[test]
-    fn test_memory_type_to_hash() {
-        let memory = MemoryType {
-            memory64: Some(true),
-            shared: Some(false),
-            initial: Some(1),
-            maximum: Some(256),
-            page_size_log2: Some(16),
-        };
-        hash_eq!(
-            [memory],
-            [
-                &[1],
-                &[0],
-                &1u64.to_le_bytes()[..],
-                &[1, 1],
-                &256u64.to_le_bytes()[..],
-                &[1, 1],
-                &16u32.to_le_bytes()[..]
-            ]
-        );
-    }
-
-    #[test]
-    fn test_tag_type_to_hash() {
-        let tag = TagType {
-            kind: Some(TagKind::Exception as i32),
-            function_type_idx: Some(42),
-        };
-        hash_eq!(
-            [tag],
-            [
-                &[1, 1],
-                &(TagKind::Exception as i32).to_le_bytes()[..],
-                &[1, 1],
-                &42u32.to_le_bytes()[..]
-            ]
-        );
-    }
+    // --- CatchElement ---
 
     #[test]
     fn test_catch_element_one_to_hash() {
@@ -1103,11 +1102,12 @@ mod tests {
 
     #[test]
     fn test_catch_element_missing_fails() {
-        let ce = CatchElement {
+        hash_err!(CatchElement {
             catch_element: None,
-        };
-        hash_err!(ce);
+        });
     }
+
+    // --- Operator ---
 
     #[test]
     fn test_operator_nop_to_hash() {
@@ -1120,11 +1120,10 @@ mod tests {
 
     #[test]
     fn test_operator_nop_with_operator_fails() {
-        let op = Operator {
+        hash_err!(Operator {
             opcode: Some(OpCode::Nop as i32),
             operator: Some(OperatorVariant::LocalIndex(0)),
-        };
-        hash_err!(op);
+        });
     }
 
     #[test]
@@ -1144,11 +1143,10 @@ mod tests {
 
     #[test]
     fn test_operator_call_missing_function_index_fails() {
-        let op = Operator {
+        hash_err!(Operator {
             opcode: Some(OpCode::Call as i32),
             operator: None,
-        };
-        hash_err!(op);
+        });
     }
 
     #[test]
@@ -1179,14 +1177,10 @@ mod tests {
 
     #[test]
     fn test_operator_block_value_type_to_hash() {
-        let value_type = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
             operator: Some(OperatorVariant::BlockType(wasm::BlockType {
-                block_type: Some(block_type::BlockType::ValueType(value_type)),
+                block_type: Some(block_type::BlockType::ValueType(i32_vt())),
             })),
         };
         hash_eq!(
@@ -1295,6 +1289,79 @@ mod tests {
         );
     }
 
+    // --- Version ---
+
+    #[test]
+    fn test_version_to_hash() {
+        hash_eq!(
+            [default_version()],
+            [
+                &1u32.to_le_bytes()[..],
+                &(Encoding::Module as i32).to_le_bytes()[..]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_version_missing_number_fails() {
+        hash_err!(Version {
+            number: None,
+            encoding: Some(Encoding::Module as i32),
+        });
+    }
+
+    #[test]
+    fn test_version_missing_encoding_fails() {
+        hash_err!(Version {
+            number: Some(1),
+            encoding: None,
+        });
+    }
+
+    // --- FuncType ---
+
+    #[test]
+    fn test_func_type_with_params_and_results_to_hash() {
+        let ft = FuncType {
+            params: vec![i32_vt()],
+            results: vec![i32_vt()],
+        };
+        hash_eq!(
+            [ft],
+            [
+                &1u64.to_le_bytes()[..],
+                &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
+                &[0],
+                &1u64.to_le_bytes()[..],
+                &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
+                &[0]
+            ]
+        );
+    }
+
+    // --- SubType ---
+
+    #[test]
+    fn test_sub_type_func_to_hash() {
+        let st = SubType {
+            kind: Some(wasm::sub_type::Kind::Func(FuncType {
+                params: vec![],
+                results: vec![],
+            })),
+        };
+        hash_eq!(
+            [st],
+            [&[1], &0u64.to_le_bytes()[..], &0u64.to_le_bytes()[..]]
+        );
+    }
+
+    #[test]
+    fn test_sub_type_missing_kind_fails() {
+        hash_err!(SubType { kind: None });
+    }
+
+    // --- TypeRefFunc ---
+
     #[test]
     fn test_type_ref_func_to_hash() {
         let trf = TypeRefFunc {
@@ -1316,204 +1383,71 @@ mod tests {
 
     #[test]
     fn test_type_ref_func_missing_module_fails() {
-        let trf = TypeRefFunc {
+        hash_err!(TypeRefFunc {
             module: None,
             name: Some("foo".to_string()),
             function_type: Some(42),
-        };
-        hash_err!(trf);
+        });
     }
 
     #[test]
     fn test_type_ref_func_missing_name_fails() {
-        let trf = TypeRefFunc {
+        hash_err!(TypeRefFunc {
             module: Some("env".to_string()),
             name: None,
             function_type: Some(42),
-        };
-        hash_err!(trf);
+        });
     }
 
     #[test]
     fn test_type_ref_func_missing_function_type_fails() {
-        let trf = TypeRefFunc {
+        hash_err!(TypeRefFunc {
             module: Some("env".to_string()),
             name: Some("foo".to_string()),
             function_type: None,
-        };
-        hash_err!(trf);
+        });
     }
 
-    #[test]
-    fn test_operator_hash_deterministic() {
-        let op = Operator {
-            opcode: Some(OpCode::Nop as i32),
-            operator: None,
-        };
-        let mut hasher1 = sha3::Sha3_512::new();
-        let mut hasher2 = sha3::Sha3_512::new();
-        op.sha3_hash(&mut hasher1).unwrap();
-        op.sha3_hash(&mut hasher2).unwrap();
-        assert_eq!(hasher1.finalize(), hasher2.finalize());
-    }
+    // --- Sections (empty) ---
 
     #[test]
-    fn test_operator_hash_different_operators_different_scalars() {
-        let mut hasher1 = sha3::Sha3_512::new();
-        let mut hasher2 = sha3::Sha3_512::new();
-        let nop = Operator {
-            opcode: Some(OpCode::Nop as i32),
-            operator: None,
-        };
-        let ret = Operator {
-            opcode: Some(OpCode::Return as i32),
-            operator: None,
-        };
-        nop.sha3_hash(&mut hasher1).unwrap();
-        ret.sha3_hash(&mut hasher2).unwrap();
-        assert_ne!(hasher1.finalize(), hasher2.finalize());
-    }
-
-    #[test]
-    fn test_operator_same_op_same_hash() {
-        let mut hasher1 = sha3::Sha3_512::new();
-        let mut hasher2 = sha3::Sha3_512::new();
-        let op1 = Operator {
-            opcode: Some(OpCode::I32Constant as i32),
-            operator: Some(OperatorVariant::I32Value(42)),
-        };
-        let op2 = Operator {
-            opcode: Some(OpCode::I32Constant as i32),
-            operator: Some(OperatorVariant::I32Value(42)),
-        };
-        op1.sha3_hash(&mut hasher1).unwrap();
-        op2.sha3_hash(&mut hasher2).unwrap();
-        assert_eq!(hasher1.finalize(), hasher2.finalize());
-    }
-
-    #[test]
-    fn test_value_type_ref_to_hash() {
-        hash_eq!(
-            [ValueType {
-                value_type: Some(PlainType::ValueTypeRef as i32),
-                reference_type: Some(RefType::RefFunc as i32),
-            }],
-            [
-                &(PlainType::ValueTypeRef as i32).to_le_bytes()[..],
-                &(RefType::RefFunc as i32).to_le_bytes()[..]
-            ]
+    fn test_empty_sections_to_hash() {
+        let empty_vec_hash = sha512([0u64.to_le_bytes()]);
+        assert_eq!(hash([TypeSection { types: vec![] }]), empty_vec_hash);
+        assert_eq!(hash([ImportSection { imports: vec![] }]), empty_vec_hash);
+        assert_eq!(
+            hash([FunctionSection { type_idxs: vec![] }]),
+            empty_vec_hash
         );
-    }
-
-    #[test]
-    fn test_value_type_ref_missing_reference_type_fails() {
-        let vt = ValueType {
-            value_type: Some(PlainType::ValueTypeRef as i32),
-            reference_type: None,
-        };
-        hash_err!(vt);
-    }
-
-    #[test]
-    fn test_version_to_hash() {
-        let version = Version {
-            number: Some(1),
-            encoding: Some(Encoding::Module as i32),
-        };
-        hash_eq!(
-            [version],
-            [
-                &1u32.to_le_bytes()[..],
-                &(Encoding::Module as i32).to_le_bytes()[..]
-            ]
+        assert_eq!(hash([TableSection { types: vec![] }]), empty_vec_hash);
+        assert_eq!(
+            hash([MemorySection {
+                memory_types: vec![]
+            }]),
+            empty_vec_hash
         );
-    }
-
-    #[test]
-    fn test_version_missing_number_fails() {
-        let v = Version {
-            number: None,
-            encoding: Some(Encoding::Module as i32),
-        };
-        hash_err!(v);
-    }
-
-    #[test]
-    fn test_version_missing_encoding_fails() {
-        let v = Version {
-            number: Some(1),
-            encoding: None,
-        };
-        hash_err!(v);
-    }
-
-    #[test]
-    fn test_func_type_empty_to_hash() {
-        let ft = FuncType {
-            params: vec![],
-            results: vec![],
-        };
-        hash_eq!([ft], [0u64.to_le_bytes(), 0u64.to_le_bytes()]);
-    }
-
-    #[test]
-    fn test_func_type_with_params_and_results_to_hash() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
-        let ft = FuncType {
-            params: vec![i32_vt],
-            results: vec![i32_vt],
-        };
-        hash_eq!(
-            [ft],
-            [
-                &1u64.to_le_bytes()[..],
-                &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0],
-                &1u64.to_le_bytes()[..],
-                &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0]
-            ]
+        assert_eq!(hash([TagSection { tags: vec![] }]), empty_vec_hash);
+        assert_eq!(hash([GlobalSection { globals: vec![] }]), empty_vec_hash);
+        assert_eq!(hash([ExportSection { exports: vec![] }]), empty_vec_hash);
+        assert_eq!(hash([ElementSection { elements: vec![] }]), empty_vec_hash);
+        assert_eq!(
+            hash([CodeSection {
+                code_section_entry: vec![]
+            }]),
+            empty_vec_hash
         );
+        assert_eq!(hash([DataSection { datas: vec![] }]), empty_vec_hash);
     }
 
-    #[test]
-    fn test_sub_type_func_to_hash() {
-        let ft = FuncType {
-            params: vec![],
-            results: vec![],
-        };
-        let st = SubType {
-            kind: Some(wasm::sub_type::Kind::Func(ft)),
-        };
-        hash_eq!(
-            [st],
-            [&[1], &0u64.to_le_bytes()[..], &0u64.to_le_bytes()[..]]
-        );
-    }
-
-    #[test]
-    fn test_sub_type_missing_kind_fails() {
-        let st = SubType { kind: None };
-        hash_err!(st);
-    }
-
-    #[test]
-    fn test_type_section_empty_to_hash() {
-        let ts = TypeSection { types: vec![] };
-        hash_eq!([ts], [0u64.to_le_bytes()]);
-    }
+    // --- TypeSection (non-empty) ---
 
     #[test]
     fn test_type_section_with_types_to_hash() {
-        let ft = FuncType {
-            params: vec![],
-            results: vec![],
-        };
         let st = SubType {
-            kind: Some(wasm::sub_type::Kind::Func(ft)),
+            kind: Some(wasm::sub_type::Kind::Func(FuncType {
+                params: vec![],
+                results: vec![],
+            })),
         };
         let ts = TypeSection { types: vec![st] };
         hash_eq!(
@@ -1527,11 +1461,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_import_section_empty_to_hash() {
-        let is = ImportSection { imports: vec![] };
-        hash_eq!([is], [0u64.to_le_bytes()]);
-    }
+    // --- FunctionSection (non-empty) ---
 
     #[test]
     fn test_function_section_to_hash() {
@@ -1548,40 +1478,80 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_function_section_empty_to_hash() {
-        let fs = FunctionSection { type_idxs: vec![] };
-        hash_eq!([fs], [0u64.to_le_bytes()]);
-    }
+    // --- TableType ---
 
     #[test]
-    fn test_table_section_empty_to_hash() {
-        let ts = TableSection { types: vec![] };
-        hash_eq!([ts], [0u64.to_le_bytes()]);
-    }
-
-    #[test]
-    fn test_memory_section_empty_to_hash() {
-        let ms = MemorySection {
-            memory_types: vec![],
+    fn test_table_type_to_hash() {
+        let table = TableType {
+            reference_type: Some(RefType::RefFunc as i32),
+            table64: Some(true),
+            initial: Some(100),
+            maximum: Some(200),
+            shared: Some(false),
         };
-        hash_eq!([ms], [0u64.to_le_bytes()]);
+        hash_eq!(
+            [table],
+            [
+                &(RefType::RefFunc as i32).to_le_bytes()[..],
+                &[1],
+                &100u64.to_le_bytes()[..],
+                &[1, 1],
+                &200u64.to_le_bytes()[..],
+                &[0]
+            ]
+        );
     }
 
+    // --- MemoryType ---
+
     #[test]
-    fn test_tag_section_empty_to_hash() {
-        let ts = TagSection { tags: vec![] };
-        hash_eq!([ts], [0u64.to_le_bytes()]);
+    fn test_memory_type_to_hash() {
+        let memory = MemoryType {
+            memory64: Some(true),
+            shared: Some(false),
+            initial: Some(1),
+            maximum: Some(256),
+            page_size_log2: Some(16),
+        };
+        hash_eq!(
+            [memory],
+            [
+                &[1],
+                &[0],
+                &1u64.to_le_bytes()[..],
+                &[1, 1],
+                &256u64.to_le_bytes()[..],
+                &[1, 1],
+                &16u32.to_le_bytes()[..]
+            ]
+        );
     }
+
+    // --- TagType ---
+
+    #[test]
+    fn test_tag_type_to_hash() {
+        let tag = TagType {
+            kind: Some(TagKind::Exception as i32),
+            function_type_idx: Some(42),
+        };
+        hash_eq!(
+            [tag],
+            [
+                &[1, 1],
+                &(TagKind::Exception as i32).to_le_bytes()[..],
+                &[1, 1],
+                &42u32.to_le_bytes()[..]
+            ]
+        );
+    }
+
+    // --- GlobalType ---
 
     #[test]
     fn test_global_type_to_hash() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
         let gt = GlobalType {
-            content_type: Some(i32_vt),
+            content_type: Some(i32_vt()),
             mutable: Some(true),
             shared: Some(false),
         };
@@ -1598,47 +1568,32 @@ mod tests {
 
     #[test]
     fn test_global_type_missing_content_type_fails() {
-        let gt = GlobalType {
+        hash_err!(GlobalType {
             content_type: None,
             mutable: Some(true),
             shared: Some(false),
-        };
-        hash_err!(gt);
+        });
     }
 
     #[test]
     fn test_global_type_missing_mutable_fails() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
-        let gt = GlobalType {
-            content_type: Some(i32_vt),
+        hash_err!(GlobalType {
+            content_type: Some(i32_vt()),
             mutable: None,
             shared: Some(false),
-        };
-        hash_err!(gt);
+        });
     }
 
     #[test]
     fn test_global_type_missing_shared_fails() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
-        let gt = GlobalType {
-            content_type: Some(i32_vt),
+        hash_err!(GlobalType {
+            content_type: Some(i32_vt()),
             mutable: Some(true),
             shared: None,
-        };
-        hash_err!(gt);
+        });
     }
 
-    #[test]
-    fn test_expression_empty_to_hash() {
-        let expr = Expression { operators: vec![] };
-        hash_eq!([expr], [0u64.to_le_bytes()]);
-    }
+    // --- Expression ---
 
     #[test]
     fn test_expression_with_operators_to_hash() {
@@ -1659,21 +1614,18 @@ mod tests {
         );
     }
 
+    // --- Global ---
+
     #[test]
     fn test_global_to_hash() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
         let gt = GlobalType {
-            content_type: Some(i32_vt),
+            content_type: Some(i32_vt()),
             mutable: Some(false),
             shared: Some(false),
         };
-        let init = Expression { operators: vec![] };
         let g = Global {
             r#type: Some(gt),
-            init_expr: Some(init),
+            init_expr: Some(empty_expr()),
         };
         hash_eq!(
             [g],
@@ -1690,18 +1642,13 @@ mod tests {
 
     #[test]
     fn test_global_missing_type_fails() {
-        let g = Global {
+        hash_err!(Global {
             r#type: None,
-            init_expr: Some(Expression { operators: vec![] }),
-        };
-        hash_err!(g);
+            init_expr: Some(empty_expr()),
+        });
     }
 
-    #[test]
-    fn test_global_section_empty_to_hash() {
-        let gs = GlobalSection { globals: vec![] };
-        hash_eq!([gs], [0u64.to_le_bytes()]);
-    }
+    // --- Export ---
 
     #[test]
     fn test_export_to_hash() {
@@ -1723,46 +1670,39 @@ mod tests {
 
     #[test]
     fn test_export_missing_name_fails() {
-        let e = Export {
+        hash_err!(Export {
             name: None,
             kind: Some(ExternalKind::ExtFunc as i32),
             index: Some(0),
-        };
-        hash_err!(e);
+        });
     }
 
     #[test]
     fn test_export_missing_kind_fails() {
-        let e = Export {
+        hash_err!(Export {
             name: Some("foo".to_string()),
             kind: None,
             index: Some(0),
-        };
-        hash_err!(e);
+        });
     }
 
     #[test]
     fn test_export_missing_index_fails() {
-        let e = Export {
+        hash_err!(Export {
             name: Some("foo".to_string()),
             kind: Some(ExternalKind::ExtFunc as i32),
             index: None,
-        };
-        hash_err!(e);
+        });
     }
 
-    #[test]
-    fn test_export_section_empty_to_hash() {
-        let es = ExportSection { exports: vec![] };
-        hash_eq!([es], [0u64.to_le_bytes()]);
-    }
+    // --- ElementKind ---
 
     #[test]
     fn test_element_kind_active_to_hash() {
         let ek = ElementKind {
             r#type: Some(ElementKindType::ElActive as i32),
             table_index: Some(0),
-            expression: Some(Expression { operators: vec![] }),
+            expression: Some(empty_expr()),
         };
         hash_eq!(
             [ek],
@@ -1795,13 +1735,14 @@ mod tests {
 
     #[test]
     fn test_element_kind_missing_type_fails() {
-        let ek = ElementKind {
+        hash_err!(ElementKind {
             r#type: None,
             table_index: None,
             expression: None,
-        };
-        hash_err!(ek);
+        });
     }
+
+    // --- ElementFunctions / ElementExpressions / Items ---
 
     #[test]
     fn test_element_functions_to_hash() {
@@ -1817,12 +1758,6 @@ mod tests {
                 &3u32.to_le_bytes()[..]
             ]
         );
-    }
-
-    #[test]
-    fn test_element_functions_empty_to_hash() {
-        let ef = ElementFunctions { functions: vec![] };
-        hash_eq!([ef], [0u64.to_le_bytes()]);
     }
 
     #[test]
@@ -1842,11 +1777,10 @@ mod tests {
 
     #[test]
     fn test_element_expressions_missing_ref_type_fails() {
-        let ee = ElementExpressions {
+        hash_err!(ElementExpressions {
             reference_type: None,
             expressions: vec![],
-        };
-        hash_err!(ee);
+        });
     }
 
     #[test]
@@ -1869,6 +1803,8 @@ mod tests {
             ]
         );
     }
+
+    // --- Element ---
 
     #[test]
     fn test_element_to_hash() {
@@ -1917,18 +1853,13 @@ mod tests {
 
     #[test]
     fn test_element_missing_kind_fails() {
-        let el = Element {
+        hash_err!(Element {
             kind: None,
             items: None,
-        };
-        hash_err!(el);
+        });
     }
 
-    #[test]
-    fn test_element_section_empty_to_hash() {
-        let es = ElementSection { elements: vec![] };
-        hash_eq!([es], [0u64.to_le_bytes()]);
-    }
+    // --- CodeSectionEntry / Locals ---
 
     #[test]
     fn test_code_section_entry_empty_to_hash() {
@@ -1941,13 +1872,9 @@ mod tests {
 
     #[test]
     fn test_locals_to_hash() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
         let l = Locals {
             count: Some(3),
-            value_type: Some(i32_vt),
+            value_type: Some(i32_vt()),
         };
         hash_eq!(
             [l],
@@ -1961,33 +1888,21 @@ mod tests {
 
     #[test]
     fn test_locals_missing_count_fails() {
-        let i32_vt = ValueType {
-            value_type: Some(PlainType::ValueTypeI32 as i32),
-            reference_type: None,
-        };
-        let l = Locals {
+        hash_err!(Locals {
             count: None,
-            value_type: Some(i32_vt),
-        };
-        hash_err!(l);
+            value_type: Some(i32_vt()),
+        });
     }
 
     #[test]
     fn test_locals_missing_value_type_fails() {
-        let l = Locals {
+        hash_err!(Locals {
             count: Some(3),
             value_type: None,
-        };
-        hash_err!(l);
+        });
     }
 
-    #[test]
-    fn test_code_section_empty_to_hash() {
-        let cs = CodeSection {
-            code_section_entry: vec![],
-        };
-        hash_eq!([cs], [0u64.to_le_bytes()]);
-    }
+    // --- DataKind / Data ---
 
     #[test]
     fn test_data_kind_passive_to_hash() {
@@ -2011,7 +1926,7 @@ mod tests {
         let dk = DataKind {
             r#type: Some(DataKindType::Active as i32),
             memory_index: Some(0),
-            expression: Some(Expression { operators: vec![] }),
+            expression: Some(empty_expr()),
         };
         hash_eq!(
             [dk],
@@ -2027,12 +1942,11 @@ mod tests {
 
     #[test]
     fn test_data_kind_missing_type_fails() {
-        let dk = DataKind {
+        hash_err!(DataKind {
             r#type: None,
             memory_index: None,
             expression: None,
-        };
-        hash_err!(dk);
+        });
     }
 
     #[test]
@@ -2060,11 +1974,10 @@ mod tests {
 
     #[test]
     fn test_data_missing_kind_fails() {
-        let d = Data {
+        hash_err!(Data {
             kind: None,
             data: Some(b"hi".to_vec()),
-        };
-        hash_err!(d);
+        });
     }
 
     #[test]
@@ -2074,41 +1987,18 @@ mod tests {
             memory_index: None,
             expression: None,
         };
-        let d = Data {
+        hash_err!(Data {
             kind: Some(dk),
             data: None,
-        };
-        hash_err!(d);
+        });
     }
 
-    #[test]
-    fn test_data_section_empty_to_hash() {
-        let ds = DataSection { datas: vec![] };
-        hash_eq!([ds], [0u64.to_le_bytes()]);
-    }
+    // --- ProgramModule ---
 
     #[test]
     fn test_program_module_minimal_to_hash() {
-        let pm = ProgramModule {
-            protocol_version: Some(1),
-            version: Some(Version {
-                number: Some(1),
-                encoding: Some(Encoding::Module as i32),
-            }),
-            type_section: None,
-            import_section: None,
-            function_section: None,
-            table_section: None,
-            memory_section: None,
-            tag_section: None,
-            global_section: None,
-            export_section: None,
-            element_section: None,
-            code_section: None,
-            data_section: None,
-        };
         hash_eq!(
-            [pm],
+            [default_pm()],
             [
                 &1u32.to_le_bytes()[..],
                 &1u32.to_le_bytes()[..],
@@ -2120,66 +2010,27 @@ mod tests {
 
     #[test]
     fn test_program_module_missing_protocol_version_fails() {
-        let pm = ProgramModule {
+        hash_err!(ProgramModule {
             protocol_version: None,
-            version: Some(Version {
-                number: Some(1),
-                encoding: Some(Encoding::Module as i32),
-            }),
-            type_section: None,
-            import_section: None,
-            function_section: None,
-            table_section: None,
-            memory_section: None,
-            tag_section: None,
-            global_section: None,
-            export_section: None,
-            element_section: None,
-            code_section: None,
-            data_section: None,
-        };
-        hash_err!(pm);
+            ..default_pm()
+        });
     }
 
     #[test]
     fn test_program_module_missing_version_fails() {
-        let pm = ProgramModule {
-            protocol_version: Some(1),
+        hash_err!(ProgramModule {
             version: None,
-            type_section: None,
-            import_section: None,
-            function_section: None,
-            table_section: None,
-            memory_section: None,
-            tag_section: None,
-            global_section: None,
-            export_section: None,
-            element_section: None,
-            code_section: None,
-            data_section: None,
-        };
-        hash_err!(pm);
+            ..default_pm()
+        });
     }
 
     #[test]
     fn test_program_module_with_sections_to_hash() {
         let pm = ProgramModule {
-            protocol_version: Some(1),
-            version: Some(Version {
-                number: Some(1),
-                encoding: Some(Encoding::Module as i32),
-            }),
             type_section: Some(TypeSection { types: vec![] }),
             import_section: Some(ImportSection { imports: vec![] }),
             function_section: Some(FunctionSection { type_idxs: vec![] }),
-            table_section: None,
-            memory_section: None,
-            tag_section: None,
-            global_section: None,
-            export_section: None,
-            element_section: None,
-            code_section: None,
-            data_section: None,
+            ..default_pm()
         };
         hash_eq!(
             [pm],
