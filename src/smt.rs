@@ -296,6 +296,7 @@ impl<const H: usize> Tree<2, H> {
             let child_hash = node.child(bit as usize);
             node = self.hash_set.get(child_hash).unwrap();
         }
+        path[0] = node.children();
         let bit = xits::and1(key).to_repr()[0];
         let value = node.child(bit as usize);
         merkle::Proof::new(key, value, path, self.root_hash())
@@ -346,6 +347,7 @@ impl<const H: usize> Tree<3, H> {
             let child_hash = node.child(trit as usize);
             node = self.hash_set.get(child_hash).unwrap();
         }
+        path[0] = node.children();
         let trit = xits::mod3(key).to_repr()[0];
         let value = node.child(trit as usize);
         merkle::Proof::new(key, value, path, self.root_hash())
@@ -402,9 +404,11 @@ mod tests {
     fn test_assumptions2() {
         let max = -Scalar::from(1);
         let msb = xits::and1(xits::shr(max, 255));
-        let mst = xits::mod3(xits::div_pow3(max, 161));
+        let mst1 = xits::mod3(xits::div_pow3(max, 161));
+        let mst2 = xits::mod3(xits::div_pow3(max, 160));
         assert_eq!(msb, 0.into());
-        assert_eq!(mst, 0.into());
+        assert_eq!(mst1, 0.into());
+        assert_eq!(mst2, 2.into());
     }
 
     #[test]
