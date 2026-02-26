@@ -1,12 +1,14 @@
 use crate::libernet::wasm::{
-    self, CatchElement, FuncType, ImportSection, PlainType, ProgramModule, RefType, SubType,
-    TypeRefFunc, TypeSection, Version,
+    self, CatchElement, ElementSection, Export, ExportSection, FuncType, FunctionSection, Global,
+    GlobalSection, GlobalType, ImportSection, MemorySection, MemoryType, PlainType, ProgramModule,
+    RefType, SubType, TableSection, TableType, TagSection, TagType, TypeRefFunc, TypeSection,
+    Version,
 };
 use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
 use anyhow::{Context, Result, anyhow, bail};
 use blstrs::Scalar;
 use crypto::merkle::AsScalar;
-use crypto::utils::{self, h512_to_scalar};
+use crypto::utils::h512_to_scalar;
 use primitive_types::H512;
 use sha3::Digest;
 
@@ -47,6 +49,34 @@ impl Sha3Hash for i32 {
 impl Sha3Hash for i64 {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         hasher.update(self.to_le_bytes());
+        Ok(())
+    }
+}
+
+impl Sha3Hash for String {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        (self.len() as u64).sha3_hash(hasher)?;
+        hasher.update(self.as_bytes());
+        Ok(())
+    }
+}
+
+impl Sha3Hash for bool {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        hasher.update([if *self { 1 } else { 0 }]);
+        Ok(())
+    }
+}
+
+impl<T: Sha3Hash> Sha3Hash for Option<T> {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        match self {
+            Some(v) => {
+                hasher.update([1, 1]);
+                v.sha3_hash(hasher)?;
+            }
+            None => hasher.update([1, 0]),
+        }
         Ok(())
     }
 }
@@ -495,19 +525,18 @@ impl Sha3Hash for TypeSection {
 }
 
 impl Sha3Hash for TypeRefFunc {
-    fn sha3_hash<D: Digest>(&self, _hasher: &mut D) -> Result<()> {
-        // let module = self
-        //     .module
-        //     .as_ref()
-        //     .context("Module is required")?;
-        // let name = self
-        //     .name
-        //     .as_ref()
-        //     .context("Name is required")?;
-        // let function_type = self
-        //     .function_type
-        //     .context("Function type is required")?;
-        //TODO
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.module
+            .as_ref()
+            .context("Module is required")?
+            .sha3_hash(hasher)?;
+        self.name
+            .as_ref()
+            .context("Name is required")?
+            .sha3_hash(hasher)?;
+        self.function_type
+            .context("Function type is required")?
+            .sha3_hash(hasher)?;
         Ok(())
     }
 }
@@ -515,6 +544,131 @@ impl Sha3Hash for TypeRefFunc {
 impl Sha3Hash for ImportSection {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         self.imports.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for FunctionSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.type_idxs.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for TableSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.types.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for TableType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.reference_type
+            .context("Reference type is required")?
+            .sha3_hash(hasher)?;
+        self.table64
+            .context("Table64 is required")?
+            .sha3_hash(hasher)?;
+        self.initial
+            .context("Initial is required")?
+            .sha3_hash(hasher)?;
+        self.maximum.sha3_hash(hasher)?;
+        self.shared
+            .context("Shared is required")?
+            .sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for MemorySection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.memory_types.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for MemoryType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.memory64
+            .context("Memory64 is required")?
+            .sha3_hash(hasher)?;
+        self.shared
+            .context("Shared is required")?
+            .sha3_hash(hasher)?;
+        self.initial
+            .context("Initial is required")?
+            .sha3_hash(hasher)?;
+        self.maximum.sha3_hash(hasher)?;
+        self.page_size_log2.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for TagSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.tags.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for TagType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.kind.sha3_hash(hasher)?;
+        self.function_type_idx.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for GlobalSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.globals.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Global {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.r#type.context("Type is required")?.sha3_hash(hasher)?;
+        self.init_expr
+            .as_ref()
+            .context("Init expr is required")?
+            .operators
+            .sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for GlobalType {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.content_type
+            .context("Content type is required")?
+            .sha3_hash(hasher)?;
+        self.mutable
+            .context("Mutable is required")?
+            .sha3_hash(hasher)?;
+        self.shared
+            .context("Shared is required")?
+            .sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for ExportSection {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.exports.sha3_hash(hasher)?;
+        Ok(())
+    }
+}
+
+impl Sha3Hash for Export {
+    fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
+        self.name
+            .as_ref()
+            .context("Name is required")?
+            .sha3_hash(hasher)?;
+        self.kind.context("Kind is required")?.sha3_hash(hasher)?;
+        self.index.context("Index is required")?.sha3_hash(hasher)?;
         Ok(())
     }
 }
@@ -528,19 +682,6 @@ impl Sha3Hash for ProgramModule {
             .context("Version is required")?
             .sha3_hash(hasher)?;
 
-        // pub import_section: ::core::option::Option<ImportSection>,
-        // #[prost(message, optional, tag = "5")]
-        // pub function_section: ::core::option::Option<FunctionSection>,
-        // #[prost(message, optional, tag = "6")]
-        // pub table_section: ::core::option::Option<TableSection>,
-        // #[prost(message, optional, tag = "7")]
-        // pub memory_section: ::core::option::Option<MemorySection>,
-        // #[prost(message, optional, tag = "8")]
-        // pub tag_section: ::core::option::Option<TagSection>,
-        // #[prost(message, optional, tag = "9")]
-        // pub global_section: ::core::option::Option<GlobalSection>,
-        // #[prost(message, optional, tag = "10")]
-        // pub export_section: ::core::option::Option<ExportSection>,
         // #[prost(message, optional, tag = "11")]
         // pub element_section: ::core::option::Option<ElementSection>,
         // #[prost(message, optional, tag = "12")]
@@ -558,6 +699,13 @@ impl Sha3Hash for ProgramModule {
         }
 
         hash_section!(self.type_section);
+        hash_section!(self.import_section);
+        hash_section!(self.function_section);
+        hash_section!(self.table_section);
+        hash_section!(self.memory_section);
+        hash_section!(self.tag_section);
+        hash_section!(self.global_section);
+        hash_section!(self.export_section);
         Ok(())
     }
 }
@@ -577,7 +725,8 @@ mod tests {
     use crate::libernet::wasm::operator::Operator as OperatorVariant;
     use crate::libernet::wasm::{
         BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchElement, CatchOne,
-        CatchOneRef, MemArg, ValueType, block_type, catch_element,
+        CatchOneRef, Expression, Global, GlobalSection, GlobalType, MemArg, MemoryType, RefType,
+        TableType, TagKind, TagType, TypeRefFunc, ValueType, block_type, catch_element,
     };
     use crate::libernet::wasm::{OpCode, Operator};
 
@@ -651,6 +800,26 @@ mod tests {
     }
 
     #[test]
+    fn test_bool_to_hash() {
+        hash_eq!([true], [&[1]]);
+        hash_eq!([false], [&[0]]);
+    }
+
+    #[test]
+    fn test_option_to_hash() {
+        hash_eq!([Some(42u32)], [&[1, 1], &42u32.to_le_bytes()[..]]);
+        hash_eq!([None::<u32>], [&[1, 0]]);
+    }
+
+    #[test]
+    fn test_string_to_hash() {
+        hash_eq!(
+            ["hello".to_string()],
+            [&("hello".len() as u64).to_le_bytes()[..], &b"hello"[..]]
+        );
+    }
+
+    #[test]
     fn test_vec_to_hash() {
         hash_eq!([Vec::<u32>::new()], [0u64.to_le_bytes()]);
         hash_eq!(
@@ -690,6 +859,68 @@ mod tests {
             reference_type: Some(RefType::RefFunc as i32),
         };
         hash_err!(vt);
+    }
+
+    #[test]
+    fn test_table_type_to_hash() {
+        let table = TableType {
+            reference_type: Some(RefType::RefFunc as i32),
+            table64: Some(true),
+            initial: Some(100),
+            maximum: Some(200),
+            shared: Some(false),
+        };
+        hash_eq!(
+            [table],
+            [
+                &(RefType::RefFunc as i32).to_le_bytes()[..],
+                &[1],
+                &100u64.to_le_bytes()[..],
+                &[1, 1],
+                &200u64.to_le_bytes()[..],
+                &[0]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_memory_type_to_hash() {
+        let memory = MemoryType {
+            memory64: Some(true),
+            shared: Some(false),
+            initial: Some(1),
+            maximum: Some(256),
+            page_size_log2: Some(16),
+        };
+        hash_eq!(
+            [memory],
+            [
+                &[1],
+                &[0],
+                &1u64.to_le_bytes()[..],
+                &[1, 1],
+                &256u64.to_le_bytes()[..],
+                &[1, 1],
+                &16u32.to_le_bytes()[..]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_tag_type_to_hash() {
+        let tag = TagType {
+            kind: Some(TagKind::Exception as i32),
+            function_type_idx: Some(42),
+        };
+        hash_eq!(
+            [tag],
+            [
+                &[1, 1],
+                &(TagKind::Exception as i32).to_le_bytes()[..],
+                &[1, 1],
+                &42u32.to_le_bytes()[..]
+            ]
+        );
     }
 
     #[test]
@@ -932,6 +1163,55 @@ mod tests {
                 &2u32.to_le_bytes()[..]
             ]
         );
+    }
+
+    #[test]
+    fn test_type_ref_func_to_hash() {
+        let trf = TypeRefFunc {
+            module: Some("env".to_string()),
+            name: Some("foo".to_string()),
+            function_type: Some(42),
+        };
+        hash_eq!(
+            [trf],
+            [
+                &3u64.to_le_bytes()[..],
+                b"env",
+                &3u64.to_le_bytes()[..],
+                b"foo",
+                &42u32.to_le_bytes()[..]
+            ]
+        );
+    }
+
+    #[test]
+    fn test_type_ref_func_missing_module_fails() {
+        let trf = TypeRefFunc {
+            module: None,
+            name: Some("foo".to_string()),
+            function_type: Some(42),
+        };
+        hash_err!(trf);
+    }
+
+    #[test]
+    fn test_type_ref_func_missing_name_fails() {
+        let trf = TypeRefFunc {
+            module: Some("env".to_string()),
+            name: None,
+            function_type: Some(42),
+        };
+        hash_err!(trf);
+    }
+
+    #[test]
+    fn test_type_ref_func_missing_function_type_fails() {
+        let trf = TypeRefFunc {
+            module: Some("env".to_string()),
+            name: Some("foo".to_string()),
+            function_type: None,
+        };
+        hash_err!(trf);
     }
 
     #[test]
