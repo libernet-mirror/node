@@ -3,7 +3,7 @@ use crate::libernet::wasm::{
     TypeRefFunc, TypeSection, Version,
 };
 use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use sha3::Digest;
 
 macro_rules! some {
@@ -59,9 +59,7 @@ impl<T: Sha3Hash> Sha3Hash for Vec<T> {
 
 impl Sha3Hash for wasm::ValueType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
-        let value_code = self
-            .value_type
-            .ok_or_else(|| anyhow!("Value type is required"))?;
+        let value_code = self.value_type.context("Value type is required")?;
         let plain_type = PlainType::try_from(value_code)?;
         value_code.sha3_hash(hasher)?;
         match plain_type {
@@ -76,9 +74,7 @@ impl Sha3Hash for wasm::ValueType {
                 hasher.update([0]);
             }
             PlainType::ValueTypeRef => {
-                let ref_code = self
-                    .reference_type
-                    .ok_or_else(|| anyhow!("Reference type is required"))?;
+                let ref_code = self.reference_type.context("Reference type is required")?;
                 if RefType::try_from(ref_code).is_err() {
                     bail!("Invalid reference type");
                 }
@@ -146,7 +142,7 @@ impl Sha3Hash for CatchElement {
 
 impl Sha3Hash for Operator {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
-        let opcode_value = self.opcode.ok_or_else(|| anyhow!("Opcode is required"))?;
+        let opcode_value = self.opcode.context("Opcode is required")?;
         let opcode = OpCode::try_from(opcode_value)?;
         let operator = &self.operator;
 
@@ -321,7 +317,7 @@ impl Sha3Hash for Operator {
             }
             OpCode::BrTable => {
                 some!(operator, Targets(targets) => {
-                    targets.default.ok_or_else(|| anyhow!("Default target is required"))?.sha3_hash(hasher)?;
+                    targets.default.context("Default target is required")?.sha3_hash(hasher)?;
                     targets.targets.sha3_hash(hasher)?;
                 }, "Type index is required")
             }
@@ -332,8 +328,8 @@ impl Sha3Hash for Operator {
             }
             OpCode::CallIndirect => {
                 some!(operator, CallIndirect(call_indirect) => {
-                    call_indirect.type_index.ok_or_else(|| anyhow!("Type index is required"))?.sha3_hash(hasher)?;
-                    call_indirect.table_index.ok_or_else(|| anyhow!("Table index is required"))?.sha3_hash(hasher)?;
+                    call_indirect.type_index.context("Type index is required")?.sha3_hash(hasher)?;
+                    call_indirect.table_index.context("Table index is required")?.sha3_hash(hasher)?;
                 }, "Type index and table index are required")
             }
             OpCode::LocalGet | OpCode::LocalSet | OpCode::LocalTee => {
@@ -370,10 +366,10 @@ impl Sha3Hash for Operator {
             | OpCode::I64Store16
             | OpCode::I64Store32 => {
                 some!(operator, Memarg(memarg) => {
-                    memarg.align.ok_or_else(|| anyhow!("Align is required"))?.sha3_hash(hasher)?;
-                    memarg.max_align.ok_or_else(|| anyhow!("Max align is required"))?.sha3_hash(hasher)?;
-                    memarg.offset.ok_or_else(|| anyhow!("Offset is required"))?.sha3_hash(hasher)?;
-                    memarg.memory.ok_or_else(|| anyhow!("Memory is required"))?.sha3_hash(hasher)?;
+                    memarg.align.context("Align is required")?.sha3_hash(hasher)?;
+                    memarg.max_align.context("Max align is required")?.sha3_hash(hasher)?;
+                    memarg.offset.context("Offset is required")?.sha3_hash(hasher)?;
+                    memarg.memory.context("Memory is required")?.sha3_hash(hasher)?;
                 }, "Mem arg is required")
             }
             OpCode::MemorySize | OpCode::MemoryGrow => {
@@ -403,8 +399,8 @@ impl Sha3Hash for Operator {
             }
             OpCode::BulkMemoryExtMemoryInit => {
                 some!(operator, MemoryInit(memory_init) => {
-                    memory_init.data_index.ok_or_else(|| anyhow!("Data index is required"))?.sha3_hash(hasher)?;
-                    memory_init.address.ok_or_else(|| anyhow!("Address is required"))?.sha3_hash(hasher)?;
+                    memory_init.data_index.context("Data index is required")?.sha3_hash(hasher)?;
+                    memory_init.address.context("Address is required")?.sha3_hash(hasher)?;
                 }, "Data index and address are required")
             }
             OpCode::BulkMemoryExtDataDrop => {
@@ -414,8 +410,8 @@ impl Sha3Hash for Operator {
             }
             OpCode::BulkMemoryExtMemoryCopy => {
                 some!(operator, MemoryCopy(memory_copy) => {
-                    memory_copy.destination_address.ok_or_else(|| anyhow!("Destination address is required"))?.sha3_hash(hasher)?;
-                    memory_copy.source_address.ok_or_else(|| anyhow!("Source address is required"))?.sha3_hash(hasher)?;
+                    memory_copy.destination_address.context("Destination address is required")?.sha3_hash(hasher)?;
+                    memory_copy.source_address.context("Source address is required")?.sha3_hash(hasher)?;
                 }, "Destination address and source address are required")
             }
             OpCode::BulkMemoryExtMemoryFill => {
@@ -425,8 +421,8 @@ impl Sha3Hash for Operator {
             }
             OpCode::BulkMemoryExtTableInit => {
                 some!(operator, TableInit(table_init) => {
-                    table_init.element_index.ok_or_else(|| anyhow!("Element index is required"))?.sha3_hash(hasher)?;
-                    table_init.table.ok_or_else(|| anyhow!("Table is required"))?.sha3_hash(hasher)?;
+                    table_init.element_index.context("Element index is required")?.sha3_hash(hasher)?;
+                    table_init.table.context("Table is required")?.sha3_hash(hasher)?;
                 }, "Table index is required")
             }
             OpCode::BulkMemoryExtElemDrop => {
@@ -436,13 +432,13 @@ impl Sha3Hash for Operator {
             }
             OpCode::BulkMemoryExtTableCopy => {
                 some!(operator, TableCopy(table_copy) => {
-                    table_copy.dst_table.ok_or_else(|| anyhow!("Dst table is required"))?.sha3_hash(hasher)?;
-                    table_copy.src_table.ok_or_else(|| anyhow!("Src table is required"))?.sha3_hash(hasher)?;
+                    table_copy.dst_table.context("Dst table is required")?.sha3_hash(hasher)?;
+                    table_copy.src_table.context("Src table is required")?.sha3_hash(hasher)?;
                 }, "Dst table and src table are required")
             }
             OpCode::ExceptionsExtTryTable => {
                 some!(operator, TryTable(try_table) => {
-                    try_table.r#type.ok_or_else(|| anyhow!("Block type is required"))?.block_type.ok_or_else(|| anyhow!("Block type is required"))?.sha3_hash(hasher)?;
+                    try_table.r#type.context("Block type is required")?.block_type.context("Block type is required")?.sha3_hash(hasher)?;
                     try_table.catches.sha3_hash(hasher)?;
                 }, "Type index and catches are required")
             }
@@ -460,10 +456,10 @@ impl Sha3Hash for Operator {
 impl Sha3Hash for Version {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         self.number
-            .ok_or_else(|| anyhow!("Version number is required"))?
+            .context("Version number is required")?
             .sha3_hash(hasher)?;
         self.encoding
-            .ok_or_else(|| anyhow!("Version encoding is required"))?
+            .context("Version encoding is required")?
             .sha3_hash(hasher)?;
         Ok(())
     }
@@ -499,14 +495,14 @@ impl Sha3Hash for TypeRefFunc {
         // let module = self
         //     .module
         //     .as_ref()
-        //     .ok_or_else(|| anyhow!("Module is required"))?;
+        //     .context("Module is required")?;
         // let name = self
         //     .name
         //     .as_ref()
-        //     .ok_or_else(|| anyhow!("Name is required"))?;
+        //     .context("Name is required")?;
         // let function_type = self
         //     .function_type
-        //     .ok_or_else(|| anyhow!("Function type is required"))?;
+        //     .context("Function type is required")?;
         //TODO
         Ok(())
     }
@@ -522,10 +518,10 @@ impl Sha3Hash for ImportSection {
 impl Sha3Hash for ProgramModule {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         self.protocol_version
-            .ok_or_else(|| anyhow!("Protocol version is required"))?
+            .context("Protocol version is required")?
             .sha3_hash(hasher)?;
         self.version
-            .ok_or_else(|| anyhow!("Version is required"))?
+            .context("Version is required")?
             .sha3_hash(hasher)?;
 
         // pub import_section: ::core::option::Option<ImportSection>,
