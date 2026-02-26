@@ -1,7 +1,7 @@
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
-use crypto::{poseidon, xits};
+use crypto::{merkle, poseidon, xits};
 use ff::{Field, PrimeField};
 use memmap2::MmapMut;
 use std::fmt::Debug;
@@ -284,6 +284,23 @@ impl<const H: usize> Tree<2, H> {
         node.child(bit as usize)
     }
 
+    /// Looks up an element and returns it along with a Merkle proof for it.
+    ///
+    /// Returns `None` if the element is not found.
+    pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+        let mut path = [[Scalar::ZERO; 2]; H];
+        let mut node = self.hash_set.get(self.root_hash()).unwrap();
+        for i in (1..H).rev() {
+            path[i] = node.children();
+            let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
+            let child_hash = node.child(bit as usize);
+            node = self.hash_set.get(child_hash).unwrap();
+        }
+        let bit = xits::and1(key).to_repr()[0];
+        let value = node.child(bit as usize);
+        merkle::Proof::new(key, value, path, self.root_hash())
+    }
+
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
         let node = self.hash_set.get(hash).unwrap();
         let mut children = node.children();
@@ -315,6 +332,23 @@ impl<const H: usize> Tree<3, H> {
         }
         let trit = xits::mod3(key).to_repr()[0];
         node.child(trit as usize)
+    }
+
+    /// Looks up an element and returns it along with a Merkle proof for it.
+    ///
+    /// Returns `None` if the element is not found.
+    pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+        let mut path = [[Scalar::ZERO; 3]; H];
+        let mut node = self.hash_set.get(self.root_hash()).unwrap();
+        for i in (1..H).rev() {
+            path[i] = node.children();
+            let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
+            let child_hash = node.child(trit as usize);
+            node = self.hash_set.get(child_hash).unwrap();
+        }
+        let trit = xits::mod3(key).to_repr()[0];
+        let value = node.child(trit as usize);
+        merkle::Proof::new(key, value, path, self.root_hash())
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -400,6 +434,22 @@ mod tests {
         make_test_tree(Tree::<W, H>::min_capacity())
     }
 
+    fn lookup2<const H: usize>(tree: &Tree<2, H>, key: Scalar) -> Scalar {
+        let value = tree.get(key);
+        let proof = tree.get_proof(key);
+        assert!(proof.verify().is_ok());
+        assert_eq!(*proof.value(), value);
+        value
+    }
+
+    fn lookup3<const H: usize>(tree: &Tree<3, H>, key: Scalar) -> Scalar {
+        let value = tree.get(key);
+        let proof = tree.get_proof(key);
+        assert!(proof.verify().is_ok());
+        assert_eq!(*proof.value(), value);
+        value
+    }
+
     #[test]
     fn test_new_binary_tree_h1() {
         const CAPACITY: usize = Tree::<2, 1>::min_capacity();
@@ -410,8 +460,8 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x44fbea4934de59fe3dea4bb6ce5f053fe967f8c43a872b343a6d12fe40d75ca3")
         );
-        assert_eq!(tree.get(0.into()), Scalar::ZERO);
-        assert_eq!(tree.get(1.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
     }
 
     #[test]
@@ -424,10 +474,10 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x1642477fce8a9cfc7fef8c1adac8bb6212a12603545af958b6fa28f0099cdf1e")
         );
-        assert_eq!(tree.get(0.into()), Scalar::ZERO);
-        assert_eq!(tree.get(1.into()), Scalar::ZERO);
-        assert_eq!(tree.get(2.into()), Scalar::ZERO);
-        assert_eq!(tree.get(3.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 3.into()), Scalar::ZERO);
     }
 
     #[test]
@@ -440,14 +490,14 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x30ac7c720131f3ab706f3c8542a0ecdd6ca65b0f690cbea695b699fb2a6a0a6b")
         );
-        assert_eq!(tree.get(0.into()), Scalar::ZERO);
-        assert_eq!(tree.get(1.into()), Scalar::ZERO);
-        assert_eq!(tree.get(2.into()), Scalar::ZERO);
-        assert_eq!(tree.get(3.into()), Scalar::ZERO);
-        assert_eq!(tree.get(4.into()), Scalar::ZERO);
-        assert_eq!(tree.get(5.into()), Scalar::ZERO);
-        assert_eq!(tree.get(6.into()), Scalar::ZERO);
-        assert_eq!(tree.get(7.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 3.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 4.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 5.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 6.into()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, 7.into()), Scalar::ZERO);
     }
 
     #[test]
@@ -460,9 +510,9 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
         );
-        assert_eq!(tree.get(0.into()), Scalar::ZERO);
-        assert_eq!(tree.get(1.into()), Scalar::ZERO);
-        assert_eq!(tree.get(2.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
     }
 
     #[test]
@@ -475,15 +525,15 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x0813d9fa859ac9c7c3c147af1bf38a8d34a95d71dddb59cb362741af4a5ce374")
         );
-        assert_eq!(tree.get(0.into()), Scalar::ZERO);
-        assert_eq!(tree.get(1.into()), Scalar::ZERO);
-        assert_eq!(tree.get(2.into()), Scalar::ZERO);
-        assert_eq!(tree.get(3.into()), Scalar::ZERO);
-        assert_eq!(tree.get(4.into()), Scalar::ZERO);
-        assert_eq!(tree.get(5.into()), Scalar::ZERO);
-        assert_eq!(tree.get(6.into()), Scalar::ZERO);
-        assert_eq!(tree.get(7.into()), Scalar::ZERO);
-        assert_eq!(tree.get(8.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 3.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 4.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 5.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 6.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 7.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 8.into()), Scalar::ZERO);
     }
 
     #[test]
@@ -496,33 +546,33 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x0d59114550233029c2dd76cb35aed5d87d0c11af9dcc16d59aea354cdf7b1904")
         );
-        assert_eq!(tree.get(0.into()), Scalar::ZERO);
-        assert_eq!(tree.get(1.into()), Scalar::ZERO);
-        assert_eq!(tree.get(2.into()), Scalar::ZERO);
-        assert_eq!(tree.get(3.into()), Scalar::ZERO);
-        assert_eq!(tree.get(4.into()), Scalar::ZERO);
-        assert_eq!(tree.get(5.into()), Scalar::ZERO);
-        assert_eq!(tree.get(6.into()), Scalar::ZERO);
-        assert_eq!(tree.get(7.into()), Scalar::ZERO);
-        assert_eq!(tree.get(8.into()), Scalar::ZERO);
-        assert_eq!(tree.get(9.into()), Scalar::ZERO);
-        assert_eq!(tree.get(10.into()), Scalar::ZERO);
-        assert_eq!(tree.get(11.into()), Scalar::ZERO);
-        assert_eq!(tree.get(12.into()), Scalar::ZERO);
-        assert_eq!(tree.get(13.into()), Scalar::ZERO);
-        assert_eq!(tree.get(14.into()), Scalar::ZERO);
-        assert_eq!(tree.get(15.into()), Scalar::ZERO);
-        assert_eq!(tree.get(16.into()), Scalar::ZERO);
-        assert_eq!(tree.get(17.into()), Scalar::ZERO);
-        assert_eq!(tree.get(18.into()), Scalar::ZERO);
-        assert_eq!(tree.get(19.into()), Scalar::ZERO);
-        assert_eq!(tree.get(20.into()), Scalar::ZERO);
-        assert_eq!(tree.get(21.into()), Scalar::ZERO);
-        assert_eq!(tree.get(22.into()), Scalar::ZERO);
-        assert_eq!(tree.get(23.into()), Scalar::ZERO);
-        assert_eq!(tree.get(24.into()), Scalar::ZERO);
-        assert_eq!(tree.get(25.into()), Scalar::ZERO);
-        assert_eq!(tree.get(26.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 3.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 4.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 5.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 6.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 7.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 8.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 9.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 10.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 11.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 12.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 13.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 14.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 15.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 16.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 17.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 18.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 19.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 20.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 21.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 22.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 23.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 24.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 25.into()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, 26.into()), Scalar::ZERO);
     }
 
     #[test]
@@ -535,7 +585,7 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
         );
-        assert_eq!(tree.get(test_key1()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
     }
 
     #[test]
@@ -548,7 +598,7 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
         );
-        assert_eq!(tree.get(test_key1()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
     }
 
     #[test]
@@ -561,7 +611,7 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x41888c7fcb9ae568fd2d8f06451c53cd4e9a4467b43cddf99dd85c0ebe2a9eba")
         );
-        assert_eq!(tree.get(test_key1()), 42.into());
+        assert_eq!(lookup2(&tree, test_key1()), 42.into());
     }
 
     #[test]
@@ -574,7 +624,7 @@ mod tests {
             tree.root_hash(),
             parse_scalar("0x2fc22d9cc6ce2f9377943565491dc6bdc235d92feed593822450de771dc81da7")
         );
-        assert_eq!(tree.get(test_key1()), 42.into());
+        assert_eq!(lookup3(&tree, test_key1()), 42.into());
     }
 
     #[test]
