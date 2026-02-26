@@ -90,7 +90,7 @@ impl Sha3Hash for wasm::block_type::BlockType {
         match self {
             wasm::block_type::BlockType::Empty(_) => hasher.update([0]),
             wasm::block_type::BlockType::ValueType(vt) => vt.sha3_hash(hasher)?,
-            wasm::block_type::BlockType::FunctionType(v) => v.sha3_hash(hasher)?,
+            wasm::block_type::BlockType::TypeIndex(v) => v.sha3_hash(hasher)?,
         };
         Ok(())
     }
@@ -830,7 +830,7 @@ mod tests {
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
             operator: Some(OperatorVariant::BlockType(wasm::BlockType {
-                block_type: Some(block_type::BlockType::FunctionType(110)),
+                block_type: Some(block_type::BlockType::TypeIndex(110)),
             })),
         };
         hash_eq!(
