@@ -174,12 +174,12 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     ///
     /// At the end of all (possibly recursive) removals, the new minimum capacity is reassessed and
     /// if it's less than the current capacity the hash map is shrunk and rehashed.
-    fn unref_node(&mut self, hash: Scalar, level: usize) -> bool {
+    fn unref_node(&mut self, hash: Scalar, level: usize) -> Result<bool> {
         if !self.unref_node_impl(hash, level) {
-            return false;
+            return Ok(false);
         }
-        self.hash_set.shrink();
-        true
+        self.hash_set.shrink()?;
+        Ok(true)
     }
 
     /// Constructs a `Tree` from the provided data slice.
@@ -243,10 +243,11 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     }
 
     /// REQUIRES: `hash` must refer to an existing node at level H-1.
-    fn set_root(&mut self, hash: Scalar) {
+    fn set_root(&mut self, hash: Scalar) -> Result<()> {
         self.ref_node(hash);
-        self.unref_node(self.root_hash(), H - 1);
+        self.unref_node(self.root_hash(), H - 1)?;
         self.hash_set.header_data_mut().set_root_hash(hash);
+        Ok(())
     }
 
     /// Adds an extra ref to the current root so that it can no longer be discarded.
@@ -294,7 +295,7 @@ impl<const H: usize> Tree<2, H> {
     /// Updates the value associated with the specified key.
     pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
         let new_root = self.update(self.root_hash(), H - 1, key, value)?;
-        self.set_root(new_root);
+        self.set_root(new_root)?;
         Ok(())
     }
 }
@@ -327,7 +328,7 @@ impl<const H: usize> Tree<3, H> {
     /// Updates the value associated with the specified key.
     pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
         let new_root = self.update(self.root_hash(), H - 1, key, value)?;
-        self.set_root(new_root);
+        self.set_root(new_root)?;
         Ok(())
     }
 }

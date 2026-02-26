@@ -134,8 +134,10 @@ impl<T: NodeData> Node<T> {
     }
 }
 
-/// A generic hash table with open addressing and quadratic probing that works on a memory-mapped
-/// file.
+/// A generic hash table that works on a memory-mapped file.
+///
+/// Our implementation uses open addressing (https://en.wikipedia.org/wiki/Open_addressing) with
+/// linear probing.
 #[derive(Debug)]
 pub struct MappedHashSet<H: HeaderData, T: NodeData> {
     mmap: MmapMut,
@@ -297,18 +299,21 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         self.header_mut().data_mut()
     }
 
+    fn get_slot_index(&self, hash: Scalar) -> u64 {
+        let mask = self.capacity() as u64 - 1;
+        (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64()
+    }
+
     fn probe(&self, hash: Scalar) -> usize {
         let mask = self.capacity() as u64 - 1;
-        let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
-        let mut j = 0;
+        let mut i = self.get_slot_index(hash);
         loop {
             let index = (i & mask) as usize;
             let node = self.node(index);
             if node.is_empty() || node.hash() == hash {
                 return index;
             }
-            j += 1;
-            i += j;
+            i += 1;
         }
     }
 
@@ -378,65 +383,44 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         Ok(&mut node.value)
     }
 
-    fn probe_for_erasing(&self, hash: Scalar) -> (usize, usize) {
-        let mask = self.capacity() as u64 - 1;
-        let mut i = (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64();
-        let mut j = 0;
-        let mut node_index;
-        loop {
-            node_index = (i & mask) as usize;
-            let node = self.node(node_index);
-            if node.is_empty() {
-                return (node_index, node_index);
-            }
-            if node.hash() == hash {
-                break;
-            }
-            j += 1;
-            i += j;
-        }
-        let mut last_bucket_index = node_index;
-        loop {
-            let index = (i & mask) as usize;
-            if self.node(index).is_empty() {
-                return (node_index, last_bucket_index);
-            }
-            last_bucket_index = index;
-            j += 1;
-            i += j;
-        }
-    }
-
     /// Erases an element from the hash set.
     ///
     /// Returns true if the element was found and erased, false otherwise.
     pub fn erase(&mut self, hash: Scalar) -> bool {
-        let (node_index, last_bucket_index) = self.probe_for_erasing(hash);
-        if self.node(node_index).is_empty() {
-            return false;
-        }
-        if last_bucket_index != node_index {
-            *self.node_mut(node_index) = *self.node(last_bucket_index);
-        }
-        self.node_mut(last_bucket_index).erase();
-        self.header_mut().decrement_size();
-        true
+        self.extract(hash).is_some()
     }
 
     /// Removes an element from the hash set and returns it if found.
     pub fn extract(&mut self, hash: Scalar) -> Option<T> {
-        let (node_index, last_bucket_index) = self.probe_for_erasing(hash);
-        let node = self.node(node_index);
-        if node.is_empty() {
-            return None;
+        let mask = (self.capacity() - 1) as u64;
+        let mut i = self.get_slot_index(hash);
+        let value;
+        loop {
+            let node = self.node_mut(i as usize);
+            if node.is_empty() {
+                return None;
+            }
+            if node.hash() == hash {
+                value = node.value;
+                node.erase();
+                self.header_mut().decrement_size();
+                break;
+            }
+            i = (i + 1) & mask;
         }
-        let value = node.value;
-        if last_bucket_index != node_index {
-            *self.node_mut(node_index) = *self.node(last_bucket_index);
+        let mut j = (i + 1) & mask;
+        loop {
+            let node = self.node(j as usize);
+            if node.is_empty() {
+                return Some(value);
+            }
+            let k = self.get_slot_index(node.hash());
+            if k <= i || k > j {
+                *self.node_mut(i as usize) = *node;
+                i = j;
+            }
+            j = (j + 1) & mask;
         }
-        self.node_mut(last_bucket_index).erase();
-        self.header_mut().decrement_size();
-        Some(value)
     }
 
     /// Shrinks the capacity to the minimum required to hold the current elements (based on the
