@@ -10,7 +10,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 /// Indicates that a type is suitable for storage in a memory-mapped region.
-pub trait Stored: Sized + Debug + Copy + Clone + 'static {}
+pub trait Stored: Sized + Debug + Default + Copy + Clone + 'static {}
 
 /// A BLS12-381 scalar stored in the memory-mapped region, in little endian order.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
@@ -61,11 +61,42 @@ pub trait HeaderData: Stored {}
 #[repr(C)]
 struct Header<T: HeaderData> {
     signature: [u8; 8],
+    flags: [u8; 8],
     size: u64,
     data: T,
 }
 
 impl<T: HeaderData> Header<T> {
+    fn parse_flags(&self) -> (u32, u32) {
+        let mut lo = [0u8; 4];
+        lo.copy_from_slice(&self.flags[0..4]);
+        let mut hi = [0u8; 4];
+        hi.copy_from_slice(&self.flags[4..8]);
+        (u32::from_le_bytes(lo), u32::from_le_bytes(hi))
+    }
+
+    fn new(flags: u32) -> Self {
+        let mut header = Self {
+            signature: *constants::DATA_FILE_SIGNATURE,
+            flags: [0u8; 8],
+            size: 0,
+            data: Default::default(),
+        };
+        header.flags[0..4].copy_from_slice(&constants::DATA_FILE_FLAG_VERSION.to_le_bytes());
+        header.flags[4..8].copy_from_slice(&flags.to_le_bytes());
+        header
+    }
+
+    fn file_version(&self) -> u32 {
+        let (version, _) = self.parse_flags();
+        version
+    }
+
+    fn flags(&self) -> u32 {
+        let (_, flags) = self.parse_flags();
+        flags
+    }
+
     fn size(&self) -> usize {
         self.size as usize
     }
@@ -96,9 +127,6 @@ impl<T: HeaderData> Header<T> {
 pub trait NodeData: Stored {
     /// Hashes the value.
     fn hash(&self) -> Scalar;
-
-    /// Erases the value from storage.
-    fn erase(&mut self);
 }
 
 /// Manages access to a node in the mapped memory region.
@@ -122,7 +150,7 @@ impl<T: NodeData> Node<T> {
 
     fn erase(&mut self) {
         self.hash = Scalar::ZERO.into();
-        self.value.erase();
+        self.value = T::default();
     }
 
     fn is_empty(&self) -> bool {
@@ -231,7 +259,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 
     /// Constructs a hash set from the provided data.
-    pub fn load(mut mmap: MmapMut) -> Result<Self> {
+    pub fn load(mut mmap: MmapMut, expected_flags: u32) -> Result<Self> {
         let data = &mut mmap[..];
         {
             let address = data.as_ptr() as usize;
@@ -254,6 +282,18 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         if set.header().signature != *constants::DATA_FILE_SIGNATURE {
             return Err(anyhow!("invalid file signature"));
         }
+        let file_version = set.header().file_version();
+        if file_version != constants::DATA_FILE_FLAG_VERSION {
+            return Err(anyhow!(
+                "unrecognized data file version {} (want {})",
+                file_version,
+                constants::DATA_FILE_FLAG_VERSION
+            ));
+        }
+        let flags = set.header().flags();
+        if flags & expected_flags != expected_flags {
+            return Err(anyhow!("invalid flags for this file type"));
+        }
         let capacity = set.capacity();
         if capacity != capacity.next_power_of_two() {
             return Err(anyhow!(
@@ -265,11 +305,25 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 
     /// Initializes a new hash set on the provided memory-mapped region.
-    pub fn new(mut mmap: MmapMut) -> Result<Self> {
+    pub fn new(mut mmap: MmapMut, flags: u32) -> Result<Self> {
         let data = &mut mmap[..];
         data.fill(0);
-        data[0..8].copy_from_slice(constants::DATA_FILE_SIGNATURE);
-        Self::load(mmap)
+        *unsafe { &mut *(std::ptr::from_ref(data) as *mut Header<H>) } = Header::<H>::new(flags);
+        Self::load(mmap, flags)
+    }
+
+    /// Returns the file format version as specified in the file.
+    ///
+    /// It must be `constants::DATA_FILE_FLAG_VERSION`.
+    pub fn file_version(&self) -> u32 {
+        self.header().file_version()
+    }
+
+    /// Returns the flags specified in the file.
+    ///
+    /// Use the `DATA_FILE_FLAG_TYPE_*` constants to check for the presence of each flag.
+    pub fn flags(&self) -> u32 {
+        self.header().flags()
     }
 
     /// Returns the number of nodes in the underlying hash set.
@@ -338,9 +392,12 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 
     fn rehash(&mut self, target_capacity: usize) -> Result<()> {
-        let mut new_set = MappedHashSet::<H, T>::new(MmapMut::map_anon(
-            Self::padded_header_size() + target_capacity * Self::padded_node_size(),
-        )?)?;
+        let mut new_set = MappedHashSet::<H, T>::new(
+            MmapMut::map_anon(
+                Self::padded_header_size() + target_capacity * Self::padded_node_size(),
+            )?,
+            self.flags(),
+        )?;
         *new_set.header_data_mut() = *self.header_data();
         for i in 0..self.capacity() {
             let node = self.node(i);
@@ -461,6 +518,9 @@ mod tests {
     use super::*;
     use crypto::poseidon;
 
+    const TEST_FLAGS: u32 =
+        constants::DATA_FILE_FLAG_TYPE_ACCOUNT_TREE | constants::DATA_FILE_FLAG_TYPE_TEST_TREE;
+
     #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
     #[repr(C)]
     struct TestHeaderData(StoredScalar);
@@ -522,11 +582,6 @@ mod tests {
         fn hash(&self) -> Scalar {
             poseidon::hash_t3(&[self.0.to_scalar(), self.1.to_scalar()])
         }
-
-        fn erase(&mut self) {
-            self.0 = Scalar::ZERO.into();
-            self.1 = Scalar::ZERO.into();
-        }
     }
 
     type TestMappedHashSet = MappedHashSet<TestHeaderData, TestNodeData>;
@@ -537,7 +592,7 @@ mod tests {
             TestMappedHashSet::padded_header_size()
                 + capacity * TestMappedHashSet::padded_node_size(),
         )?;
-        MappedHashSet::new(mmap)
+        MappedHashSet::new(mmap, TEST_FLAGS)
     }
 
     #[test]
@@ -558,6 +613,8 @@ mod tests {
     #[test]
     fn test_initial_state() {
         let mut set = make_test_hash_set(0).unwrap();
+        assert_eq!(set.file_version(), constants::DATA_FILE_FLAG_VERSION);
+        assert_eq!(set.flags(), TEST_FLAGS);
         assert_eq!(set.size(), 0);
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());

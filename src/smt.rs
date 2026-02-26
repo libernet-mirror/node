@@ -53,20 +53,24 @@ impl<const W: usize> Node<W> {
     }
 }
 
+impl<const W: usize> Default for Node<W> {
+    fn default() -> Self {
+        Self {
+            ref_count: 0,
+            children: std::array::from_fn(|_| StoredScalar::default()),
+        }
+    }
+}
+
 impl<const W: usize> Stored for Node<W> {}
 
 impl<const W: usize> NodeData for Node<W> {
     fn hash(&self) -> Scalar {
         Self::hash_node(&self.children.map(|child_hash| child_hash.to_scalar()))
     }
-
-    fn erase(&mut self) {
-        self.ref_count = 0;
-        self.children = std::array::from_fn(|_| Scalar::ZERO.into());
-    }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 struct TreeHeader {
     root_hash: StoredScalar,
@@ -183,7 +187,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     }
 
     /// Constructs a `Tree` from the provided data slice.
-    pub fn load(mmap: MmapMut) -> Result<Self> {
+    pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
         let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
         if mmap.len() < min_size {
             return Err(anyhow!(
@@ -193,7 +197,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
             ));
         }
         Ok(Self {
-            hash_set: MappedHashSet::load(mmap)?,
+            hash_set: MappedHashSet::load(mmap, expected_flags)?,
         })
     }
 
@@ -212,9 +216,9 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     /// Initializes a new empty tree over the provided byte slice.
     ///
     /// REQUIRES: `data` MUST be 8-byte aligned.
-    pub fn new(mmap: MmapMut) -> Result<Self> {
+    pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
         let mut tree = Self {
-            hash_set: MappedHashSet::new(mmap)?,
+            hash_set: MappedHashSet::new(mmap, flags)?,
         };
         tree.init_empty()?;
         Ok(tree)
@@ -336,9 +340,11 @@ impl<const H: usize> Tree<3, H> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::parse_scalar;
+    use crate::{constants, testing::parse_scalar};
     use crypto::utils;
     use primitive_types::U256;
+
+    const TEST_FLAGS: u32 = constants::DATA_FILE_FLAG_TYPE_TEST_TREE;
 
     fn test_key1() -> Scalar {
         parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611")
@@ -370,21 +376,24 @@ mod tests {
     #[test]
     fn test_binary_tree_format() {
         type TestTree = Tree<2, 256>;
-        assert_eq!(TestTree::padded_header_size(), 48);
+        assert_eq!(TestTree::padded_header_size(), 56);
         assert_eq!(TestTree::padded_node_size(), 104);
     }
 
     #[test]
     fn test_ternary_tree_format() {
         type TestTree = Tree<3, 161>;
-        assert_eq!(TestTree::padded_header_size(), 48);
+        assert_eq!(TestTree::padded_header_size(), 56);
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
     fn make_test_tree<const W: usize, const H: usize>(capacity: usize) -> Result<Tree<W, H>> {
-        Tree::new(MmapMut::map_anon(
-            Tree::<W, H>::padded_header_size() + capacity * Tree::<W, H>::padded_node_size(),
-        )?)
+        Tree::new(
+            MmapMut::map_anon(
+                Tree::<W, H>::padded_header_size() + capacity * Tree::<W, H>::padded_node_size(),
+            )?,
+            TEST_FLAGS,
+        )
     }
 
     fn make_default_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
@@ -576,7 +585,7 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<2, 256>::load(mmap).unwrap();
+        let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
     }
 
@@ -588,7 +597,7 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<3, 161>::load(mmap).unwrap();
+        let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
     }
 
