@@ -444,6 +444,23 @@ impl DecodeAccountProof for AccountProof {
 #[cfg_attr(test, derive(PartialEq))]
 pub struct Program {
     module: Option<libernet::wasm::ProgramModule>,
+    hash: Scalar,
+}
+
+impl Program {
+    pub fn new(module: libernet::wasm::ProgramModule) -> Self {
+        let hash = module.as_scalar();
+        Self {
+            module: Some(module),
+            hash,
+        }
+    }
+}
+
+impl AsScalar for Program {
+    fn as_scalar(&self) -> Scalar {
+        self.hash
+    }
 }
 
 impl proto::EncodeToAny for Program {
@@ -456,8 +473,10 @@ impl proto::EncodeToAny for Program {
 impl proto::DecodeFromAny for Program {
     fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
         let proto = proto.to_msg::<libernet::wasm::ProgramModule>()?;
+        let hash = proto.as_scalar();
         Ok(Self {
             module: Some(proto),
+            hash,
         })
     }
 }
@@ -738,6 +757,7 @@ mod tests {
     use super::*;
     use crate::proto::{DecodeFromAny, EncodeMerkleProof, EncodeToAny};
     use crate::testing::parse_scalar;
+    use crypto::utils;
     use std::time::Duration;
 
     const TEST_CHAIN_ID: u64 = 42;
@@ -1296,15 +1316,18 @@ mod tests {
 
     #[test]
     fn test_encode_decode_empty_program() {
-        let program = Program {
-            module: Some(libernet::wasm::ProgramModule {
-                protocol_version: Some(1),
-                version: Some(libernet::wasm::Version {
-                    number: Some(1),
-                    encoding: Some(libernet::wasm::Encoding::Module as i32),
-                }),
-                ..Default::default()
+        let module = libernet::wasm::ProgramModule {
+            protocol_version: Some(1),
+            version: Some(libernet::wasm::Version {
+                number: Some(1),
+                encoding: Some(libernet::wasm::Encoding::Module as i32),
             }),
+            ..Default::default()
+        };
+        let hash = module.as_scalar();
+        let program = Program {
+            module: Some(module),
+            hash,
         };
         let proto = program.encode_to_any().unwrap();
         let decoded = Program::decode_from_any(&proto).unwrap();

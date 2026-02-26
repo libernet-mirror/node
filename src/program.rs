@@ -4,6 +4,10 @@ use crate::libernet::wasm::{
 };
 use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
 use anyhow::{Context, Result, anyhow, bail};
+use blstrs::Scalar;
+use crypto::merkle::AsScalar;
+use crypto::utils::{self, h512_to_scalar};
+use primitive_types::H512;
 use sha3::Digest;
 
 macro_rules! some {
@@ -555,6 +559,15 @@ impl Sha3Hash for ProgramModule {
 
         hash_section!(self.type_section);
         Ok(())
+    }
+}
+
+impl AsScalar for ProgramModule {
+    fn as_scalar(&self) -> Scalar {
+        let mut hasher = sha3::Sha3_512::new();
+        self.sha3_hash(&mut hasher).unwrap();
+        let hash = hasher.finalize();
+        h512_to_scalar(H512::from_slice(hash.as_slice()))
     }
 }
 
