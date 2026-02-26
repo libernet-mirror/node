@@ -386,6 +386,10 @@ mod tests {
         parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611")
     }
 
+    fn test_key2() -> Scalar {
+        parse_scalar("0x08579a2aff29eb5764cbae109a4e47c68537877ade4cfd317f21cc8984a4f4a1")
+    }
+
     #[test]
     fn test_assumptions1() {
         let mut value = utils::scalar_to_u256(-Scalar::from(1));
@@ -590,6 +594,7 @@ mod tests {
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
         );
         assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
     }
 
     #[test]
@@ -603,10 +608,11 @@ mod tests {
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
         );
         assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
     }
 
     #[test]
-    fn test_update_tall_binary_tree() {
+    fn test_update_tall_binary_tree1() {
         let mut tree = make_default_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
@@ -616,10 +622,55 @@ mod tests {
             parse_scalar("0x41888c7fcb9ae568fd2d8f06451c53cd4e9a4467b43cddf99dd85c0ebe2a9eba")
         );
         assert_eq!(lookup2(&tree, test_key1()), 42.into());
+        assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
     }
 
     #[test]
-    fn test_update_tall_ternary_tree() {
+    fn test_update_tall_binary_tree2() {
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        assert!(tree.put(test_key2(), 42.into()).is_ok());
+        assert_eq!(tree.size(), 511);
+        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x54c178302d47924841f468ec60fe19c7ba00ab7f462033addbf2017883674394")
+        );
+        assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
+        assert_eq!(lookup2(&tree, test_key2()), 42.into());
+    }
+
+    #[test]
+    fn test_update_tall_binary_tree3() {
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        assert!(tree.put(test_key1(), 12.into()).is_ok());
+        assert!(tree.put(test_key2(), 34.into()).is_ok());
+        assert_eq!(tree.size(), 764);
+        assert_eq!(tree.capacity(), 2048);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x1f25951405498baaf9350017b7a798219489047db7482a071e74fca027d9f32b")
+        );
+        assert_eq!(lookup2(&tree, test_key1()), 12.into());
+        assert_eq!(lookup2(&tree, test_key2()), 34.into());
+    }
+
+    #[test]
+    fn test_update_tall_binary_tree_twice() {
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        assert!(tree.put(test_key1(), 123.into()).is_ok());
+        assert!(tree.put(test_key1(), 42.into()).is_ok());
+        assert_eq!(tree.size(), 511);
+        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x41888c7fcb9ae568fd2d8f06451c53cd4e9a4467b43cddf99dd85c0ebe2a9eba")
+        );
+        assert_eq!(lookup2(&tree, test_key1()), 42.into());
+        assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_update_tall_ternary_tree1() {
         let mut tree = make_default_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
@@ -629,6 +680,51 @@ mod tests {
             parse_scalar("0x2fc22d9cc6ce2f9377943565491dc6bdc235d92feed593822450de771dc81da7")
         );
         assert_eq!(lookup3(&tree, test_key1()), 42.into());
+        assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
+    }
+
+    #[test]
+    fn test_update_tall_ternary_tree2() {
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        assert!(tree.put(test_key2(), 42.into()).is_ok());
+        assert_eq!(tree.size(), 321);
+        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2b29d23dcca6d4e20382956f22d69da75780fd29901fd04009bd1495ca629b85")
+        );
+        assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
+        assert_eq!(lookup3(&tree, test_key2()), 42.into());
+    }
+
+    #[test]
+    fn test_update_tall_ternary_tree3() {
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        assert!(tree.put(test_key1(), 12.into()).is_ok());
+        assert!(tree.put(test_key2(), 34.into()).is_ok());
+        assert_eq!(tree.size(), 481);
+        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x5a588281d792add7c1fc9fda9a10bf136559e6be638fcf19f41876cb0acd0637")
+        );
+        assert_eq!(lookup3(&tree, test_key1()), 12.into());
+        assert_eq!(lookup3(&tree, test_key2()), 34.into());
+    }
+
+    #[test]
+    fn test_update_tall_ternary_tree_twice() {
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        assert!(tree.put(test_key1(), 123.into()).is_ok());
+        assert!(tree.put(test_key1(), 42.into()).is_ok());
+        assert_eq!(tree.size(), 321);
+        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2fc22d9cc6ce2f9377943565491dc6bdc235d92feed593822450de771dc81da7")
+        );
+        assert_eq!(lookup3(&tree, test_key1()), 42.into());
+        assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
     }
 
     #[test]
