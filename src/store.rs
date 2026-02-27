@@ -511,7 +511,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 return Some(value);
             }
             let k = self.get_slot_index(node.hash());
-            if k <= i || k > j {
+            if j > i && (k <= i || k > j) || (k <= i && k > j) {
                 *self.node_mut(i as usize) = *node;
                 i = j;
             }
