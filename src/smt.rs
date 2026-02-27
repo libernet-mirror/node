@@ -1,4 +1,4 @@
-use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar};
+use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{merkle, poseidon, xits};
@@ -11,7 +11,7 @@ use std::fmt::Debug;
 #[repr(C)]
 struct Node<const W: usize> {
     /// Tracks how many other nodes refer to this node.
-    ref_count: u64,
+    ref_count: StoredU64,
 
     /// For leaf nodes these are arbitrary values, while for internal nodes they're the hashes of
     /// the child nodes.
@@ -29,19 +29,22 @@ impl<const W: usize> Node<W> {
 
     fn new(children: &[Scalar; W]) -> Self {
         Self {
-            ref_count: 0,
+            ref_count: 0.into(),
             children: children.map(StoredScalar::from),
         }
     }
 
     fn r#ref(&mut self) {
-        self.ref_count += 1;
+        self.ref_count = (self.ref_count.to_u64() + 1).into();
     }
 
     fn unref(&mut self) -> bool {
-        assert!(self.ref_count > 0);
-        self.ref_count -= 1;
-        self.ref_count == 0
+        let mut ref_count = self.ref_count.to_u64();
+        assert!(ref_count > 0);
+        ref_count -= 1;
+        let is_zero = ref_count == 0;
+        self.ref_count = ref_count.into();
+        is_zero
     }
 
     fn children(&self) -> [Scalar; W] {
@@ -56,7 +59,7 @@ impl<const W: usize> Node<W> {
 impl<const W: usize> Default for Node<W> {
     fn default() -> Self {
         Self {
-            ref_count: 0,
+            ref_count: 0.into(),
             children: std::array::from_fn(|_| StoredScalar::default()),
         }
     }

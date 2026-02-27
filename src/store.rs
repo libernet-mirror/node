@@ -12,6 +12,44 @@ use std::marker::PhantomData;
 /// Indicates that a type is suitable for storage in a memory-mapped region.
 pub trait Stored: Sized + Debug + Default + Copy + Clone + 'static {}
 
+/// A `u64` stored in the memory-mapped region, in little endian order.
+///
+/// Do not store `u64` directly, as its endianness would change based on the CPU and that would make
+/// data files non-portable.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[repr(C)]
+pub struct StoredU64(pub [u8; 8]);
+
+impl StoredU64 {
+    pub fn is_zero(&self) -> bool {
+        self.0 == [0u8; 8]
+    }
+
+    pub fn to_u64(&self) -> u64 {
+        u64::from_le_bytes(self.0)
+    }
+}
+
+impl Stored for StoredU64 {}
+
+impl From<u64> for StoredU64 {
+    fn from(value: u64) -> Self {
+        Self(value.to_le_bytes())
+    }
+}
+
+impl Ord for StoredU64 {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.to_u64().cmp(&other.to_u64())
+    }
+}
+
+impl PartialOrd for StoredU64 {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 /// A BLS12-381 scalar stored in the memory-mapped region, in little endian order.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
@@ -62,7 +100,7 @@ pub trait HeaderData: Stored {}
 struct Header<T: HeaderData> {
     signature: [u8; 8],
     flags: [u8; 8],
-    size: u64,
+    size: StoredU64,
     data: T,
 }
 
@@ -79,8 +117,8 @@ impl<T: HeaderData> Header<T> {
         let mut header = Self {
             signature: *constants::DATA_FILE_SIGNATURE,
             flags: [0u8; 8],
-            size: 0,
-            data: Default::default(),
+            size: 0.into(),
+            data: T::default(),
         };
         header.flags[0..4].copy_from_slice(&constants::DATA_FILE_FLAG_VERSION.to_le_bytes());
         header.flags[4..8].copy_from_slice(&flags.to_le_bytes());
@@ -98,20 +136,21 @@ impl<T: HeaderData> Header<T> {
     }
 
     fn size(&self) -> usize {
-        self.size as usize
+        self.size.to_u64() as usize
     }
 
     fn set_size(&mut self, size: usize) {
-        self.size = size as u64;
+        self.size = (size as u64).into();
     }
 
     fn increment_size(&mut self) {
-        self.size += 1;
+        self.size = (self.size.to_u64() + 1).into();
     }
 
     fn decrement_size(&mut self) {
-        assert!(self.size > 0);
-        self.size -= 1;
+        let size = self.size.to_u64();
+        assert!(size > 0);
+        self.size = (size - 1).into();
     }
 
     fn data(&self) -> &T {
@@ -593,6 +632,21 @@ mod tests {
                 + capacity * TestMappedHashSet::padded_node_size(),
         )?;
         MappedHashSet::new(mmap, TEST_FLAGS)
+    }
+
+    #[test]
+    fn test_default_stored_u64() {
+        let value = StoredU64::default();
+        assert_eq!(value, 0.into());
+        assert!(value.is_zero());
+        assert_eq!(value.to_u64(), 0);
+    }
+
+    #[test]
+    fn test_stored_u64() {
+        let value: StoredU64 = 42.into();
+        assert!(!value.is_zero());
+        assert_eq!(value.to_u64(), 42);
     }
 
     #[test]
