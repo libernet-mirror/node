@@ -89,10 +89,19 @@ impl TreeHeader {
 impl Stored for TreeHeader {}
 impl HeaderData for TreeHeader {}
 
-/// Manages a Sparse Merkle Tree of nodes backed by a hash map.
+/// A Sparse Merkle Tree backed by a `MappedHashSet`.
 ///
-/// The underlying hash map has open addressing with quadratic probing and is implemented as a
-/// simple node array over the memory-mapped region.
+/// The nodes of the tree are immutable and are indexed in the underlying hash set by their actual
+/// Merkle hash.
+///
+/// The nodes are reference counted and are automatically removed when their reference count drops
+/// to zero. Cyclic references are not a concern because a tree is an acyclic graph by definition.
+///
+/// Note that a node may appear as the child of another node more than once. For example, if the two
+/// subtrees of a binary tree node are identical they won't be stored twice; instead they'll have
+/// node-by-node identical hashes, so they'll be stored as a single subtree referenced by the parent
+/// node twice. Case in point, an empty tree with height `H` only requires storing `H` nodes in our
+/// implementation.
 #[derive(Debug)]
 pub struct Tree<const W: usize, const H: usize> {
     hash_set: MappedHashSet<TreeHeader, Node<W>>,
@@ -166,18 +175,19 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     /// longer referenced.
     ///
     /// If no node identified by the provided hash exists this function does nothing and returns
-    /// false.
+    /// true.
     ///
-    /// If a node identified by the provided hash exists but its reference count is not zero this
-    /// function does nothing and returns false.
+    /// If a node identified by the provided hash exists its reference count is decremented. If the
+    /// reference count becomes zero after decrementing, this function will erase the node. If the
+    /// node is an internal one rather than a leaf, and therefore its children are hashes referring
+    /// to other nodes, this function will also decrement the reference counts of those nodes. This
+    /// may in turn start a recursive cascade that frees all branches that are no longer referenced.
     ///
-    /// If a node identified by the provided hash exists and its reference count is zero, the node
-    /// is erased and the function returns true. If the node is an internal node (ie. `level > 0`)
-    /// all children are automatically unreffed and freed recursively if their reference count
-    /// reaches zero. Subtrees whose reference count doesn't reach zero are retained.
+    /// If one or more nodes were actually deleted in the process this function returns true,
+    /// otherwise it returns false.
     ///
     /// At the end of all (possibly recursive) removals, the new minimum capacity is reassessed and
-    /// if it's less than the current capacity the hash map is shrunk and rehashed.
+    /// if it's less than the current capacity the underlying hash set is shrunk and rehashed.
     fn unref_node(&mut self, hash: Scalar, level: usize) -> Result<bool> {
         if !self.unref_node_impl(hash, level) {
             return Ok(false);
