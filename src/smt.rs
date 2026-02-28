@@ -891,4 +891,38 @@ mod tests {
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
     }
+
+    #[test]
+    fn test_reload_random_binary_tree() {
+        let (mmap, root_hash) = {
+            let mut tree = make_default_test_tree::<2, 256>().unwrap();
+            for _ in 0..100 {
+                assert!(
+                    tree.put(utils::get_random_scalar(), utils::get_random_scalar())
+                        .is_ok()
+                );
+            }
+            let root_hash = tree.root_hash();
+            (tree.take(), root_hash)
+        };
+        let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(tree.root_hash(), root_hash);
+    }
+
+    #[test]
+    fn test_reload_random_ternary_tree() {
+        let (mmap, root_hash) = {
+            let mut tree = make_default_test_tree::<3, 161>().unwrap();
+            for _ in 0..100 {
+                assert!(
+                    tree.put(utils::get_random_scalar(), utils::get_random_scalar())
+                        .is_ok()
+                );
+            }
+            let root_hash = tree.root_hash();
+            (tree.take(), root_hash)
+        };
+        let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(tree.root_hash(), root_hash);
+    }
 }
