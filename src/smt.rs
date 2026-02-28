@@ -387,68 +387,60 @@ impl<const H: usize> Tree<3, H> {
 }
 
 #[cfg(test)]
-use crypto::utils;
-
-#[cfg(test)]
-use std::collections::BTreeSet;
-
-#[cfg(test)]
-#[derive(Debug)]
-struct ConsistencyChecker<'a, const W: usize, const H: usize> {
-    tree: &'a Tree<W, H>,
-    visited: BTreeSet<Scalar>,
-}
-
-#[cfg(test)]
-impl<'a, const W: usize, const H: usize> ConsistencyChecker<'a, W, H> {
-    pub fn new(tree: &'a Tree<W, H>) -> Self {
-        Self {
-            tree,
-            visited: BTreeSet::default(),
-        }
-    }
-
-    fn check_impl(&mut self, hash: Scalar, level: usize) -> Result<()> {
-        if !self.visited.insert(hash) {
-            return Ok(());
-        }
-        if level == 0 {
-            return Ok(());
-        }
-        match self.tree.hash_set.get(hash) {
-            Some(node) => {
-                if node.hash() != hash {
-                    return Err(anyhow!("wrong hash (got {}, want {})", hash, node.hash()));
-                }
-                node.children()
-                    .iter()
-                    .map(|child_hash| self.check_impl(*child_hash, level - 1))
-                    .collect::<Result<()>>()?;
-                Ok(())
-            }
-            None => Err(anyhow!("node {} not found", utils::format_scalar(hash))),
-        }
-    }
-
-    pub fn check(&mut self) -> Result<()> {
-        self.check_impl(self.tree.root_hash(), H - 1)
-    }
-}
-
-#[cfg(test)]
-pub fn check_consistency<const W: usize, const H: usize>(tree: &Tree<W, H>) -> Result<()> {
-    tree.hash_set.check_consistency()?;
-    ConsistencyChecker::new(tree).check()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::{constants, testing::parse_scalar};
     use crypto::utils;
     use primitive_types::U256;
+    use std::collections::BTreeSet;
 
     const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_TREE;
+
+    #[derive(Debug)]
+    struct ConsistencyChecker<'a, const W: usize, const H: usize> {
+        tree: &'a Tree<W, H>,
+        visited: BTreeSet<Scalar>,
+    }
+
+    impl<'a, const W: usize, const H: usize> ConsistencyChecker<'a, W, H> {
+        fn new(tree: &'a Tree<W, H>) -> Self {
+            Self {
+                tree,
+                visited: BTreeSet::default(),
+            }
+        }
+
+        fn check_impl(&mut self, hash: Scalar, level: usize) -> Result<()> {
+            if !self.visited.insert(hash) {
+                return Ok(());
+            }
+            if level == 0 {
+                return Ok(());
+            }
+            match self.tree.hash_set.get(hash) {
+                Some(node) => {
+                    if node.hash() != hash {
+                        return Err(anyhow!("wrong hash (got {}, want {})", hash, node.hash()));
+                    }
+                    node.children()
+                        .iter()
+                        .map(|child_hash| self.check_impl(*child_hash, level - 1))
+                        .collect::<Result<()>>()?;
+                    Ok(())
+                }
+                None => Err(anyhow!("node {} not found", utils::format_scalar(hash))),
+            }
+        }
+
+        fn check(&mut self) -> Result<()> {
+            self.check_impl(self.tree.root_hash(), H - 1)
+        }
+    }
+
+    fn check_consistency<const W: usize, const H: usize>(tree: &Tree<W, H>) -> Result<()> {
+        tree.hash_set.check_consistency()?;
+        ConsistencyChecker::new(tree).check()
+    }
 
     fn test_key1() -> Scalar {
         parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611")
