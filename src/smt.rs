@@ -199,6 +199,11 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         Ok(true)
     }
 
+    #[cfg(test)]
+    pub fn check_consistency(&self) -> Result<()> {
+        self.hash_set.check_consistency()
+    }
+
     /// Constructs a `Tree` from the provided data slice.
     pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
         let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
@@ -485,6 +490,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -501,6 +507,7 @@ mod tests {
         assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 2.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 3.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -521,6 +528,7 @@ mod tests {
         assert_eq!(lookup2(&tree, 5.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 6.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 7.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -536,6 +544,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -557,6 +566,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 6.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 7.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 8.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -596,6 +606,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 24.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 25.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 26.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -611,6 +622,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, 0.into()), 42.into());
         assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -626,6 +638,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 1.into()), 42.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -645,6 +658,7 @@ mod tests {
         assert_eq!(lookup2(&tree, 1.into()), 34.into());
         assert_eq!(lookup2(&tree, 2.into()), 56.into());
         assert_eq!(lookup2(&tree, 3.into()), 78.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -661,6 +675,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), 42.into());
         assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -677,6 +692,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 1.into()), 42.into());
         assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -693,6 +709,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 2.into()), 42.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -722,6 +739,7 @@ mod tests {
         assert_eq!(lookup3(&tree, 6.into()), 312.into());
         assert_eq!(lookup3(&tree, 7.into()), 645.into());
         assert_eq!(lookup3(&tree, 8.into()), 978.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -736,6 +754,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -750,6 +769,7 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -764,6 +784,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), 42.into());
         assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -778,6 +799,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, test_key2()), 42.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -793,6 +815,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), 12.into());
         assert_eq!(lookup2(&tree, test_key2()), 34.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -808,6 +831,7 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), 42.into());
         assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -822,6 +846,7 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), 42.into());
         assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -836,6 +861,7 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, test_key2()), 42.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -851,6 +877,7 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), 12.into());
         assert_eq!(lookup3(&tree, test_key2()), 34.into());
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -866,6 +893,7 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), 42.into());
         assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -878,6 +906,7 @@ mod tests {
         };
         let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -890,6 +919,7 @@ mod tests {
         };
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -907,6 +937,7 @@ mod tests {
         };
         let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
+        assert!(tree.check_consistency().is_ok());
     }
 
     #[test]
@@ -924,5 +955,6 @@ mod tests {
         };
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
+        assert!(tree.check_consistency().is_ok());
     }
 }

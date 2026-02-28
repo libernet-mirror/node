@@ -303,6 +303,62 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
     }
 
+    #[cfg(test)]
+    pub fn check_consistency(&self) -> Result<()> {
+        let capacity = self.capacity();
+        if !capacity.is_power_of_two() {
+            return Err(anyhow!("capacity is not a power of 2 (got {})", capacity));
+        }
+        let size = self.size();
+        if size * Self::MAX_LOAD_FACTOR_DENOMINATOR > capacity * Self::MAX_LOAD_FACTOR_NUMERATOR {
+            return Err(anyhow!(
+                "the size exceeds the max load factor ({} > {} * {} / {})",
+                size,
+                capacity,
+                Self::MAX_LOAD_FACTOR_NUMERATOR,
+                Self::MAX_LOAD_FACTOR_DENOMINATOR,
+            ));
+        }
+        let mask = capacity - 1;
+        let mut count = 0;
+        for i in 0..capacity {
+            let node = self.node(i);
+            if !node.is_empty() {
+                let hash = node.value.hash();
+                if node.hash() != hash {
+                    return Err(anyhow!(
+                        "wrong hash stored at slot {} (got {}, want {})",
+                        i,
+                        utils::format_scalar(node.hash()),
+                        utils::format_scalar(hash)
+                    ));
+                }
+                count += 1;
+                let j = self.get_natural_position(node.hash()) as usize;
+                let mut k = j;
+                while k != i {
+                    if self.node(k).is_empty() {
+                        return Err(anyhow!(
+                            "expected cluster [{}, {}] but found a hole at {}",
+                            j,
+                            i,
+                            k
+                        ));
+                    }
+                    k = (k + 1) & mask;
+                }
+            }
+        }
+        if count != size {
+            return Err(anyhow!(
+                "incorrect size (got {}, want {})",
+                self.size(),
+                count
+            ));
+        }
+        Ok(())
+    }
+
     /// Constructs a hash set from the provided data.
     pub fn load(mut mmap: MmapMut, expected_flags: u32) -> Result<Self> {
         let data = &mut mmap[..];
@@ -524,6 +580,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         loop {
             let node = self.node(j as usize);
             if node.is_empty() {
+                self.node_mut(i as usize).erase();
                 return Some(value);
             }
             let k = self.get_natural_position(node.hash());
@@ -693,6 +750,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -702,6 +760,7 @@ mod tests {
         *set.header_data_mut() = header;
         assert_eq!(*set.header_data(), header);
         assert_eq!(*set.header_data_mut(), header);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -717,6 +776,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -732,6 +792,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -747,6 +808,7 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -764,6 +826,7 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -781,6 +844,7 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -802,6 +866,7 @@ mod tests {
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get_mut(TestNodeData::test_hash3()).unwrap(), element3);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -823,6 +888,7 @@ mod tests {
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get_mut(TestNodeData::test_hash3()).unwrap(), element3);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -841,6 +907,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -855,6 +922,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -869,6 +937,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -885,6 +954,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -901,6 +971,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -917,6 +988,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -934,6 +1006,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -950,6 +1023,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -967,6 +1041,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -984,6 +1059,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1001,6 +1077,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1019,6 +1096,7 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1037,6 +1115,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1056,6 +1135,7 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1075,6 +1155,7 @@ mod tests {
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1094,6 +1175,7 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
     }
 
     #[test]
@@ -1113,5 +1195,6 @@ mod tests {
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
     }
 }
