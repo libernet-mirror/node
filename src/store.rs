@@ -141,6 +141,10 @@ impl<T: HeaderData> Header<T> {
         self.capacity.to_u64() as usize
     }
 
+    fn set_capacity(&mut self, capacity: usize) {
+        self.capacity = (capacity as u64).into();
+    }
+
     fn size(&self) -> usize {
         self.size.to_u64() as usize
     }
@@ -520,6 +524,76 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         Ok(())
     }
 
+    fn grow(&mut self) -> Result<()> {
+        let old_capacity = self.capacity();
+        let new_capacity = old_capacity * 2;
+
+        unsafe {
+            self.mmap.remap(
+                Self::padded_header_size() + new_capacity * Self::padded_node_size(),
+                memmap2::RemapOptions::default().may_move(true),
+            )
+        }?;
+
+        // Step 1: extract wraparound elements.
+        let wraparound_elements = {
+            let mut elements = vec![];
+            let mut i = 0;
+            while i < old_capacity {
+                let node = self.node(i);
+                if node.is_empty() {
+                    break;
+                }
+                let j = self.get_natural_position(node.hash());
+                if j > i as u64 {
+                    elements.push(*node);
+                    self.node_mut(i).erase();
+                }
+                i += 1;
+            }
+            elements
+        };
+
+        self.header_mut().set_capacity(new_capacity);
+
+        // Step 2: split.
+        for i in 0..old_capacity {
+            let node = self.node(i);
+            if !node.is_empty() {
+                let index = self.get_natural_position(node.hash());
+                if index & (old_capacity as u64) != 0 {
+                    *self.node_mut(i + old_capacity) = *node;
+                    self.node_mut(i).erase();
+                }
+            }
+        }
+
+        // Step 3: compact.
+        let mask = new_capacity - 1;
+        for i in 0..new_capacity {
+            let node = self.node(i);
+            if !node.is_empty() {
+                let j = self.get_natural_position(node.hash()) as usize;
+                let mut k = j;
+                while k != i {
+                    if self.node(k).is_empty() {
+                        *self.node_mut(k) = *node;
+                        self.node_mut(i).erase();
+                        break;
+                    }
+                    k = (k + 1) & mask;
+                }
+            }
+        }
+
+        // Step 4: reinsert wraparound elements.
+        for node in wraparound_elements {
+            self.insert_hashed(node.value, node.hash())?;
+        }
+
+        Ok(())
+    }
+
     /// Inserts an element into the hash set.
     ///
     /// If an equivalent element (one with the same hash) is already present in the hash set, the
@@ -539,9 +613,8 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         let mut index = self.probe(hash);
         if self.node(index).is_empty() {
             let new_size = self.header().size() + 1;
-            let min_capacity = Self::get_min_capacity_for(new_size);
-            if min_capacity > self.capacity() {
-                self.rehash(min_capacity)?;
+            if Self::get_min_capacity_for(new_size) > self.capacity() {
+                self.grow()?;
                 index = self.probe(hash);
             }
             self.header_mut().set_size(new_size);
