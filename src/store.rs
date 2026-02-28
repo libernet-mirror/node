@@ -100,6 +100,7 @@ pub trait HeaderData: Stored {}
 struct Header<T: HeaderData> {
     signature: [u8; 8],
     flags: [u8; 8],
+    capacity: StoredU64,
     size: StoredU64,
     data: T,
 }
@@ -113,10 +114,11 @@ impl<T: HeaderData> Header<T> {
         (u32::from_le_bytes(lo), u32::from_le_bytes(hi))
     }
 
-    fn new(flags: u32) -> Self {
+    fn new(flags: u32, capacity: usize) -> Self {
         let mut header = Self {
             signature: *constants::DATA_FILE_SIGNATURE,
             flags: [0u8; 8],
+            capacity: StoredU64::from(capacity as u64),
             size: 0.into(),
             data: T::default(),
         };
@@ -133,6 +135,10 @@ impl<T: HeaderData> Header<T> {
     fn flags(&self) -> u32 {
         let (_, flags) = self.parse_flags();
         flags
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity.to_u64() as usize
     }
 
     fn size(&self) -> usize {
@@ -340,6 +346,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 capacity
             ));
         }
+        let expected_length = Self::padded_header_size() + capacity * Self::padded_node_size();
+        if set.mmap.len() != expected_length {
+            return Err(anyhow!(
+                "incorrect mmap length (was {} bytes but this capacity requires {})",
+                set.mmap.len(),
+                expected_length
+            ));
+        }
         Ok(set)
     }
 
@@ -347,7 +361,9 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     pub fn new(mut mmap: MmapMut, flags: u32) -> Result<Self> {
         let data = &mut mmap[..];
         data.fill(0);
-        *unsafe { &mut *(std::ptr::from_ref(data) as *mut Header<H>) } = Header::<H>::new(flags);
+        let capacity = (data.len() - Self::padded_header_size()) / Self::padded_node_size();
+        *unsafe { &mut *(std::ptr::from_ref(data) as *mut Header<H>) } =
+            Header::<H>::new(flags, capacity);
         Self::load(mmap, flags)
     }
 
@@ -374,7 +390,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     ///
     /// NOTE: this will always return a power of 2.
     pub fn capacity(&self) -> usize {
-        (self.mmap.len() - Self::padded_header_size()) / Self::padded_node_size()
+        self.header().capacity()
     }
 
     /// Destroys the `MappedHashSet` and returns the wrapped memory map.
@@ -444,7 +460,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 new_set.insert_hashed(node.value, node.hash())?;
             }
         }
-        self.mmap = new_set.take();
+        *self = new_set;
         Ok(())
     }
 

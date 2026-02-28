@@ -433,14 +433,14 @@ mod tests {
     #[test]
     fn test_binary_tree_format() {
         type TestTree = Tree<2, 256>;
-        assert_eq!(TestTree::padded_header_size(), 56);
+        assert_eq!(TestTree::padded_header_size(), 64);
         assert_eq!(TestTree::padded_node_size(), 104);
     }
 
     #[test]
     fn test_ternary_tree_format() {
         type TestTree = Tree<3, 161>;
-        assert_eq!(TestTree::padded_header_size(), 56);
+        assert_eq!(TestTree::padded_header_size(), 64);
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
