@@ -29,24 +29,24 @@ pub const BLOCK_TIME_MS: u64 = 10_000;
 pub const BLOCK_REWARD_NUMERATOR: u64 = 1073741857;
 pub const BLOCK_REWARD_DENOMINATOR_LOG2: u8 = 30;
 
-/// All data files of the node start with this prefix.
+/// All data files start with this prefix.
 pub const DATA_FILE_SIGNATURE: &'static [u8; 8] = b"libernet";
 
-/// Data file flag constants follow.
-
 /// Current data file format version.
-pub const DATA_FILE_FLAG_VERSION: u32 = 1;
+pub const DATA_FILE_VERSION: u32 = 1;
 
 /// Basic data file types.
-pub const DATA_FILE_FLAG_TYPE_ACCOUNT_TREE: u32 = 1;
-pub const DATA_FILE_FLAG_TYPE_ACCOUNT_DATA: u32 = 2;
-pub const DATA_FILE_FLAG_TYPE_PROGRAM_CODE_TREE: u32 = 4;
-pub const DATA_FILE_FLAG_TYPE_PROGRAM_STORAGE_TREE: u32 = 8;
+pub const DATA_FILE_TYPE_BLOCK_DESCRIPTORS: u32 = 1;
+pub const DATA_FILE_TYPE_ACCOUNT_TREE: u32 = 2;
+pub const DATA_FILE_TYPE_ACCOUNT_DATA: u32 = 3;
+pub const DATA_FILE_TYPE_PROGRAM_CODE_TREE: u32 = 4;
+pub const DATA_FILE_TYPE_PROGRAM_STORAGE_TREE: u32 = 5;
+pub const DATA_FILE_TYPE_PROGRAM_STORAGE_FOREST: u32 = 6;
 
 /// Transaction data file types.
-pub const DATA_FILE_FLAG_TYPE_TRANSACTION_TREE: u32 = 16;
-pub const DATA_FILE_FLAG_TYPE_SEND_COINS_TRANSACTIONS: u32 = 32;
-pub const DATA_FILE_FLAG_TYPE_CREATE_PROGRAM_TRANSACTIONS: u32 = 64;
+pub const DATA_FILE_TYPE_TRANSACTION_TREE: u32 = 7;
+pub const DATA_FILE_TYPE_SEND_COINS_TRANSACTIONS: u32 = 8;
+pub const DATA_FILE_TYPE_CREATE_PROGRAM_TRANSACTIONS: u32 = 9;
 
 /// Test data file type.
-pub const DATA_FILE_FLAG_TYPE_TEST_TREE: u32 = 256;
+pub const DATA_FILE_TYPE_TEST_TREE: u32 = 0x01000000;

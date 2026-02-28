@@ -393,7 +393,7 @@ mod tests {
     use crypto::utils;
     use primitive_types::U256;
 
-    const TEST_FLAGS: u32 = constants::DATA_FILE_FLAG_TYPE_TEST_TREE;
+    const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_TREE;
 
     fn test_key1() -> Scalar {
         parse_scalar("0x37c75d7b351d02bc8d5193a1d445f1e8e453df601a2b0a7b8ec33a23cab82611")

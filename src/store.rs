@@ -120,7 +120,7 @@ impl<T: HeaderData> Header<T> {
             size: 0.into(),
             data: T::default(),
         };
-        header.flags[0..4].copy_from_slice(&constants::DATA_FILE_FLAG_VERSION.to_le_bytes());
+        header.flags[0..4].copy_from_slice(&constants::DATA_FILE_VERSION.to_le_bytes());
         header.flags[4..8].copy_from_slice(&flags.to_le_bytes());
         header
     }
@@ -322,11 +322,11 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
             return Err(anyhow!("invalid file signature"));
         }
         let file_version = set.header().file_version();
-        if file_version != constants::DATA_FILE_FLAG_VERSION {
+        if file_version != constants::DATA_FILE_VERSION {
             return Err(anyhow!(
                 "unrecognized data file version {} (want {})",
                 file_version,
-                constants::DATA_FILE_FLAG_VERSION
+                constants::DATA_FILE_VERSION
             ));
         }
         let flags = set.header().flags();
@@ -353,14 +353,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
     /// Returns the file format version as specified in the file.
     ///
-    /// It must be `constants::DATA_FILE_FLAG_VERSION`.
+    /// It must be `constants::DATA_FILE_VERSION`.
     pub fn file_version(&self) -> u32 {
         self.header().file_version()
     }
 
     /// Returns the flags specified in the file.
     ///
-    /// Use the `DATA_FILE_FLAG_TYPE_*` constants to check for the presence of each flag.
+    /// Use the `DATA_FILE_TYPE_*` constants to check for the presence of each flag.
     pub fn flags(&self) -> u32 {
         self.header().flags()
     }
@@ -392,14 +392,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         self.header_mut().data_mut()
     }
 
-    fn get_slot_index(&self, hash: Scalar) -> u64 {
+    fn get_natural_position(&self, hash: Scalar) -> u64 {
         let mask = self.capacity() as u64 - 1;
         (utils::scalar_to_u256(hash) & U256::from(mask)).as_u64()
     }
 
     fn probe(&self, hash: Scalar) -> usize {
         let mask = self.capacity() as u64 - 1;
-        let mut i = self.get_slot_index(hash);
+        let mut i = self.get_natural_position(hash);
         loop {
             let index = (i & mask) as usize;
             let node = self.node(index);
@@ -489,7 +489,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// Removes an element from the hash set and returns it if found.
     pub fn extract(&mut self, hash: Scalar) -> Option<T> {
         let mask = (self.capacity() - 1) as u64;
-        let mut i = self.get_slot_index(hash);
+        let mut i = self.get_natural_position(hash);
         let value;
         loop {
             let node = self.node_mut(i as usize);
@@ -510,7 +510,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
             if node.is_empty() {
                 return Some(value);
             }
-            let k = self.get_slot_index(node.hash());
+            let k = self.get_natural_position(node.hash());
             if (i < j && (k <= i || k > j)) || (j < i && (k <= i && k > j)) {
                 *self.node_mut(i as usize) = *node;
                 i = j;
@@ -558,7 +558,7 @@ mod tests {
     use crypto::poseidon;
 
     const TEST_FLAGS: u32 =
-        constants::DATA_FILE_FLAG_TYPE_ACCOUNT_TREE | constants::DATA_FILE_FLAG_TYPE_TEST_TREE;
+        constants::DATA_FILE_TYPE_ACCOUNT_TREE | constants::DATA_FILE_TYPE_TEST_TREE;
 
     #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
     #[repr(C)]
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn test_initial_state() {
         let mut set = make_test_hash_set(0).unwrap();
-        assert_eq!(set.file_version(), constants::DATA_FILE_FLAG_VERSION);
+        assert_eq!(set.file_version(), constants::DATA_FILE_VERSION);
         assert_eq!(set.flags(), TEST_FLAGS);
         assert_eq!(set.size(), 0);
         assert_eq!(set.capacity(), 2);
