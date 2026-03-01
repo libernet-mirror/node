@@ -228,8 +228,7 @@ impl<
 > InternalNode<K, V, 2>
 {
     fn get_bit(&self, key: K) -> usize {
-        let count = Scalar::from(self.level as u64 - 1);
-        let bit = xits::and1(xits::shr(key.as_scalar(), count));
+        let bit = xits::and1(xits::shr(key.as_scalar(), self.level - 1));
         bit.to_bytes_le()[0] as usize
     }
 }
@@ -268,7 +267,7 @@ impl<
 > InternalNode<K, V, 3>
 {
     fn get_trit(&self, key: K) -> usize {
-        let count = (self.level - 1) as u8;
+        let count = self.level - 1;
         let trit = xits::mod3(xits::div_pow3(key.as_scalar(), count));
         trit.to_bytes_le()[0] as usize
     }
