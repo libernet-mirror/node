@@ -237,6 +237,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
     /// Returns the minimum capacity (in terms of number of nodes) required to host `size` nodes.
     pub const fn get_min_capacity_for(size: usize) -> usize {
+        let size = if size < 1 { 1 } else { size };
         let dividend = size * Self::MAX_LOAD_FACTOR_DENOMINATOR;
         let remainder = dividend % Self::MAX_LOAD_FACTOR_NUMERATOR;
         let quotient =
@@ -309,10 +310,16 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
     #[cfg(test)]
     pub fn check_consistency(&self) -> Result<()> {
+        use std::collections::BTreeSet;
+
         let capacity = self.capacity();
         if !capacity.is_power_of_two() {
-            return Err(anyhow!("capacity is not a power of 2 (got {})", capacity));
+            return Err(anyhow!(
+                "the capacity is not a power of 2 (got {})",
+                capacity
+            ));
         }
+
         let size = self.size();
         if size * Self::MAX_LOAD_FACTOR_DENOMINATOR > capacity * Self::MAX_LOAD_FACTOR_NUMERATOR {
             return Err(anyhow!(
@@ -323,8 +330,9 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 Self::MAX_LOAD_FACTOR_DENOMINATOR,
             ));
         }
+
+        let mut hashes = BTreeSet::default();
         let mask = capacity - 1;
-        let mut count = 0;
         for i in 0..capacity {
             let node = self.node(i);
             if !node.is_empty() {
@@ -337,7 +345,9 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                         utils::format_scalar(hash)
                     ));
                 }
-                count += 1;
+                if !hashes.insert(hash) {
+                    return Err(anyhow!("duplicate hash {}", utils::format_scalar(hash)));
+                }
                 let j = self.get_natural_position(node.hash()) as usize;
                 let mut k = j;
                 while k != i {
@@ -353,13 +363,15 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 }
             }
         }
-        if count != size {
+
+        if hashes.len() != size {
             return Err(anyhow!(
                 "incorrect size (got {}, want {})",
                 self.size(),
-                count
+                hashes.len()
             ));
         }
+
         Ok(())
     }
 
@@ -474,15 +486,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 
     fn probe(&self, hash: Scalar) -> usize {
-        let mask = self.capacity() as u64 - 1;
-        let mut i = self.get_natural_position(hash);
+        let mask = self.capacity() - 1;
+        let mut i = self.get_natural_position(hash) as usize;
         loop {
-            let index = (i & mask) as usize;
-            let node = self.node(index);
+            let node = self.node(i);
             if node.is_empty() || node.hash() == hash {
-                return index;
+                return i;
             }
-            i += 1;
+            i = (i + 1) & mask;
         }
     }
 
@@ -506,21 +517,63 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
     }
 
-    fn rehash(&mut self, target_capacity: usize) -> Result<()> {
-        let mut new_set = MappedHashSet::<H, T>::new(
-            MmapMut::map_anon(
-                Self::padded_header_size() + target_capacity * Self::padded_node_size(),
-            )?,
-            self.flags(),
-        )?;
-        *new_set.header_data_mut() = *self.header_data();
+    fn extract_wraparound_nodes(&mut self) -> Vec<Node<T>> {
+        let mut elements = vec![];
         for i in 0..self.capacity() {
             let node = self.node(i);
-            if !node.is_empty() {
-                new_set.insert_hashed(node.value, node.hash())?;
+            if node.is_empty() {
+                break;
+            }
+            let j = self.get_natural_position(node.hash());
+            if j > i as u64 {
+                elements.push(*node);
+                self.node_mut(i).erase();
             }
         }
-        *self = new_set;
+        elements
+    }
+
+    fn insert_wraparound_nodes(&mut self, nodes: Vec<Node<T>>) -> Result<()> {
+        for node in nodes {
+            let destination = self.node_mut(self.probe(node.hash()));
+            assert!(destination.is_empty());
+            *destination = node;
+        }
+        Ok(())
+    }
+
+    fn shrink(&mut self) -> Result<()> {
+        let old_capacity = self.capacity();
+        if old_capacity < 2 {
+            return Ok(());
+        }
+        let new_capacity = old_capacity >> 1;
+
+        // Step 1: extract wraparound elements.
+        let wraparound_nodes = self.extract_wraparound_nodes();
+        self.header_mut().set_capacity(new_capacity);
+
+        // Step 2: reinsert upper half.
+        for i in new_capacity..old_capacity {
+            let node = self.node(i);
+            if !node.is_empty() {
+                let node = *node;
+                let destination = self.node_mut(self.probe(node.hash()));
+                assert!(destination.is_empty());
+                *destination = node;
+            }
+        }
+
+        // Step 3: reinsert wraparound elements.
+        self.insert_wraparound_nodes(wraparound_nodes)?;
+
+        unsafe {
+            self.mmap.remap(
+                Self::padded_header_size() + new_capacity * Self::padded_node_size(),
+                memmap2::RemapOptions::default().may_move(true),
+            )
+        }?;
+
         Ok(())
     }
 
@@ -536,24 +589,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }?;
 
         // Step 1: extract wraparound elements.
-        let wraparound_elements = {
-            let mut elements = vec![];
-            let mut i = 0;
-            while i < old_capacity {
-                let node = self.node(i);
-                if node.is_empty() {
-                    break;
-                }
-                let j = self.get_natural_position(node.hash());
-                if j > i as u64 {
-                    elements.push(*node);
-                    self.node_mut(i).erase();
-                }
-                i += 1;
-            }
-            elements
-        };
-
+        let wraparound_nodes = self.extract_wraparound_nodes();
         self.header_mut().set_capacity(new_capacity);
 
         // Step 2: split.
@@ -587,9 +623,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
 
         // Step 4: reinsert wraparound elements.
-        for node in wraparound_elements {
-            self.insert_hashed(node.value, node.hash())?;
-        }
+        self.insert_wraparound_nodes(wraparound_nodes)?;
 
         Ok(())
     }
@@ -637,13 +671,12 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         let mut i = self.get_natural_position(hash);
         let value;
         loop {
-            let node = self.node_mut(i as usize);
+            let node = self.node(i as usize);
             if node.is_empty() {
                 return None;
             }
             if node.hash() == hash {
                 value = node.value;
-                node.erase();
                 self.header_mut().decrement_size();
                 break;
             }
@@ -672,10 +705,9 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     ///
     /// The returned boolean is true iff the capacity was reduced. An error is returned in case
     /// reallocation fails due to I/O etc.
-    pub fn shrink(&mut self) -> Result<bool> {
-        let target_capacity = Self::get_min_capacity_for(std::cmp::max(self.size(), 1));
-        if target_capacity < self.capacity() {
-            self.rehash(target_capacity)?;
+    pub fn shrink_to_fit(&mut self) -> Result<bool> {
+        if Self::get_min_capacity_for(self.size()) < self.capacity() {
+            self.shrink()?;
             return Ok(true);
         }
         Ok(false)
@@ -686,14 +718,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         if !self.erase(hash) {
             return Ok(false);
         }
-        self.shrink()?;
+        self.shrink_to_fit()?;
         Ok(true)
     }
 
     /// Removes an element and shrinks to the minimum required capacity if necessary.
     pub fn extract_and_shrink(&mut self, hash: Scalar) -> Result<Option<T>> {
         let value = self.extract(hash);
-        self.shrink()?;
+        self.shrink_to_fit()?;
         Ok(value)
     }
 }

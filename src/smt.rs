@@ -195,7 +195,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         if !self.unref_node_impl(hash, level) {
             return Ok(false);
         }
-        self.hash_set.shrink()?;
+        self.hash_set.shrink_to_fit()?;
         Ok(true)
     }
 
@@ -421,6 +421,12 @@ mod tests {
                 Some(node) => {
                     if node.hash() != hash {
                         return Err(anyhow!("wrong hash (got {}, want {})", hash, node.hash()));
+                    }
+                    if node.ref_count == 0.into() {
+                        return Err(anyhow!(
+                            "unreferenced node {} hasn't been removed",
+                            utils::format_scalar(node.hash())
+                        ));
                     }
                     node.children()
                         .iter()
