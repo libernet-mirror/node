@@ -587,6 +587,10 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 memmap2::RemapOptions::default().may_move(true),
             )
         }?;
+        let data = &mut self.mmap[..];
+        data[(Self::padded_header_size() + old_capacity * Self::padded_node_size())
+            ..(Self::padded_header_size() + new_capacity * Self::padded_node_size())]
+            .fill(0);
 
         // Step 1: extract wraparound elements.
         let wraparound_nodes = self.extract_wraparound_nodes();

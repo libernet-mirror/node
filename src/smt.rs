@@ -238,6 +238,9 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     }
 
     /// Returns the number of nodes in the underlying hash table.
+    ///
+    /// NOTE: this is only the number of physical nodes in the underlying hash set. The number of
+    /// logical nodes of an SMT is always W^H, (eg. 2^256 for a binary tree with height 256).
     pub fn size(&self) -> usize {
         self.hash_set.size()
     }
