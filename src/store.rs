@@ -8,6 +8,12 @@ use primitive_types::U256;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
+
+/// NOTE: there are several system architectures where the page size is very much not this one. This
+/// is merely the most common value as well as a very good one to use for alignment in binary file
+/// formats, so this is the memory alignment we optimize for.
+const PAGE_SIZE: usize = 0x1000;
 
 /// Indicates that a type is suitable for storage in a memory-mapped region.
 pub trait Stored: Sized + Debug + Default + Copy + Clone + 'static {}
@@ -92,14 +98,105 @@ impl PartialOrd for StoredScalar {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct StoredCircularBuffer<T: Stored, const N: usize> {
+    values: [T; N],
+    offset: StoredU64,
+}
+
+impl<T: Stored, const N: usize> StoredCircularBuffer<T, N> {
+    pub fn top(&self) -> &T {
+        let offset = (self.offset.to_u64() as usize + N - 1) % N;
+        &self.values[offset]
+    }
+
+    pub fn top_mut(&mut self) -> &mut T {
+        let offset = (self.offset.to_u64() as usize + N - 1) % N;
+        &mut self.values[offset]
+    }
+
+    pub fn get(&self, index: usize) -> &T {
+        assert!(index < N);
+        let offset = self.offset.to_u64() as usize;
+        &self.values[(offset + index) % N]
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> &mut T {
+        assert!(index < N);
+        let offset = self.offset.to_u64() as usize;
+        &mut self.values[(offset + index) % N]
+    }
+
+    pub fn push(&mut self, value: T) {
+        let mut offset = self.offset.to_u64() as usize;
+        self.values[offset] = value;
+        offset = (offset + 1) % N;
+        self.offset = (offset as u64).into();
+    }
+
+    pub fn pop(&mut self) -> T {
+        let offset = (self.offset.to_u64() as usize + N - 1) % N;
+        let mut result = T::default();
+        std::mem::swap(&mut self.values[offset], &mut result);
+        self.offset = (offset as u64).into();
+        result
+    }
+}
+
+impl<T: Stored, const N: usize> Default for StoredCircularBuffer<T, N> {
+    fn default() -> Self {
+        Self {
+            values: std::array::from_fn(|_| T::default()),
+            offset: StoredU64::default(),
+        }
+    }
+}
+
+impl<T: Stored, const N: usize> Stored for StoredCircularBuffer<T, N> {}
+
+impl<T: Stored, const N: usize> IntoIterator for StoredCircularBuffer<T, N> {
+    type Item = T;
+
+    type IntoIter =
+        std::iter::Take<std::iter::Skip<std::iter::Cycle<<[T; N] as IntoIterator>::IntoIter>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let offset = self.offset.to_u64() as usize;
+        self.values.into_iter().cycle().skip(offset).take(N)
+    }
+}
+
+impl<T: Stored, const N: usize> Index<usize> for StoredCircularBuffer<T, N> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index)
+    }
+}
+
+impl<T: Stored, const N: usize> IndexMut<usize> for StoredCircularBuffer<T, N> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index)
+    }
+}
+
 /// Trait for data that is stored in the header of a `MappedHashSet`.
 pub trait HeaderData: Stored {}
+
+#[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
+pub struct EmptyHeaderData {}
+
+impl Stored for EmptyHeaderData {}
+impl HeaderData for EmptyHeaderData {}
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct Header<T: HeaderData> {
     signature: [u8; 8],
     flags: [u8; 8],
+    node_size: StoredU64,
     capacity: StoredU64,
     size: StoredU64,
     data: T,
@@ -114,10 +211,11 @@ impl<T: HeaderData> Header<T> {
         (u32::from_le_bytes(lo), u32::from_le_bytes(hi))
     }
 
-    fn new(flags: u32, capacity: usize) -> Self {
+    fn new(flags: u32, node_size: usize, capacity: usize) -> Self {
         let mut header = Self {
             signature: *constants::DATA_FILE_SIGNATURE,
             flags: [0u8; 8],
+            node_size: StoredU64::from(node_size as u64),
             capacity: StoredU64::from(capacity as u64),
             size: 0.into(),
             data: T::default(),
@@ -135,6 +233,10 @@ impl<T: HeaderData> Header<T> {
     fn flags(&self) -> u32 {
         let (_, flags) = self.parse_flags();
         flags
+    }
+
+    fn node_size(&self) -> usize {
+        self.node_size.to_u64() as usize
     }
 
     fn capacity(&self) -> usize {
@@ -245,12 +347,16 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     const MAX_LOAD_FACTOR_NUMERATOR: usize = 6;
     const MAX_LOAD_FACTOR_DENOMINATOR: usize = 10;
 
-    /// Calculates the space allocated for the header.
-    pub const fn padded_header_size() -> usize {
-        std::mem::size_of::<Header<H>>().next_multiple_of(8)
-    }
+    /// The byte size allocated for the file header.
+    pub const PADDED_HEADER_SIZE: usize = PAGE_SIZE;
 
-    /// Calculates the space allocated for every node.
+    /// The maximum allowed size for `HeaderData` implementations.
+    ///
+    /// This is given by the fact that the total file header size must be 0x1000.
+    pub const MAX_HEADER_DATA_SIZE: usize =
+        PAGE_SIZE - std::mem::size_of::<Header<EmptyHeaderData>>();
+
+    /// Returns the byte size allocated for every node.
     pub const fn padded_node_size() -> usize {
         std::mem::size_of::<Node<T>>().next_multiple_of(8)
     }
@@ -344,7 +450,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// Returns an immutable reference to the node at the i-th slot.
     fn node(&self, i: usize) -> &Node<T> {
         let data = self.data();
-        let offset = Self::padded_header_size() + i * Self::padded_node_size();
+        let offset = Self::PADDED_HEADER_SIZE + i * Self::padded_node_size();
         unsafe {
             // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
             // for the node. The caller is assumed to provide a valid index `i`, in which case
@@ -356,7 +462,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// Returns a mutable reference to the node at the i-th slot.
     fn node_mut(&mut self, i: usize) -> &mut Node<T> {
         let data = self.data_mut();
-        let offset = Self::padded_header_size() + i * Self::padded_node_size();
+        let offset = Self::PADDED_HEADER_SIZE + i * Self::padded_node_size();
         unsafe {
             // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
             // for the node. The caller is assumed to provide a valid index `i`, in which case
@@ -379,13 +485,11 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
 
         let size = self.size();
-        if size * Self::MAX_LOAD_FACTOR_DENOMINATOR > capacity * Self::MAX_LOAD_FACTOR_NUMERATOR {
+        if capacity < Self::get_min_capacity_for(size) {
             return Err(anyhow!(
-                "the size exceeds the max load factor ({} > {} * {} / {})",
+                "the size exceeds the max load factor (size={}, capacity={})",
                 size,
                 capacity,
-                Self::MAX_LOAD_FACTOR_NUMERATOR,
-                Self::MAX_LOAD_FACTOR_DENOMINATOR,
             ));
         }
 
@@ -441,11 +545,11 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         let data = &mut mmap[..];
         {
             let address = data.as_ptr() as usize;
-            if address % 8 != 0 {
-                return Err(anyhow!("the memory-mapped address is not 8-byte aligned"));
+            if address % PAGE_SIZE != 0 {
+                return Err(anyhow!("the memory-mapped address is not page-aligned"));
             }
         }
-        let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
+        let min_size = Self::PADDED_HEADER_SIZE + Self::min_capacity() * Self::padded_node_size();
         if mmap.len() < min_size {
             return Err(anyhow!(
                 "the mmap is too small (was {} bytes, need at least {})",
@@ -472,6 +576,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         if flags & expected_flags != expected_flags {
             return Err(anyhow!("invalid flags for this file type"));
         }
+        let node_size = set.header().node_size();
+        if node_size != Self::padded_node_size() {
+            return Err(anyhow!(
+                "incorrect node size (got {}, want {})",
+                node_size,
+                Self::padded_node_size()
+            ));
+        }
         let capacity = set.capacity();
         if capacity != capacity.next_power_of_two() {
             return Err(anyhow!(
@@ -479,12 +591,20 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 capacity
             ));
         }
-        let expected_length = Self::padded_header_size() + capacity * Self::padded_node_size();
+        let expected_length = Self::PADDED_HEADER_SIZE + capacity * Self::padded_node_size();
         if set.mmap.len() != expected_length {
             return Err(anyhow!(
                 "incorrect mmap length (was {} bytes but this capacity requires {})",
                 set.mmap.len(),
                 expected_length
+            ));
+        }
+        let size = set.size();
+        if capacity < Self::get_min_capacity_for(size) {
+            return Err(anyhow!(
+                "the size exceeds the max load factor (size={}, capacity={})",
+                size,
+                capacity,
             ));
         }
         Ok(set)
@@ -497,9 +617,9 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     pub fn new(mut mmap: MmapMut, flags: u32) -> Result<Self> {
         let data = &mut mmap[..];
         data.fill(0);
-        let capacity = (data.len() - Self::padded_header_size()) / Self::padded_node_size();
+        let capacity = (data.len() - Self::PADDED_HEADER_SIZE) / Self::padded_node_size();
         *unsafe { &mut *(std::ptr::from_ref(data) as *mut Header<H>) } =
-            Header::<H>::new(flags, capacity);
+            Header::<H>::new(flags, Self::padded_node_size(), capacity);
         Self::load(mmap, flags)
     }
 
@@ -633,7 +753,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
         unsafe {
             self.mmap.remap(
-                Self::padded_header_size() + new_capacity * Self::padded_node_size(),
+                Self::PADDED_HEADER_SIZE + new_capacity * Self::padded_node_size(),
                 memmap2::RemapOptions::default().may_move(true),
             )
         }?;
@@ -647,13 +767,13 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
         unsafe {
             self.mmap.remap(
-                Self::padded_header_size() + new_capacity * Self::padded_node_size(),
+                Self::PADDED_HEADER_SIZE + new_capacity * Self::padded_node_size(),
                 memmap2::RemapOptions::default().may_move(true),
             )
         }?;
         let data = &mut self.mmap[..];
-        data[(Self::padded_header_size() + old_capacity * Self::padded_node_size())
-            ..(Self::padded_header_size() + new_capacity * Self::padded_node_size())]
+        data[(Self::PADDED_HEADER_SIZE + old_capacity * Self::padded_node_size())
+            ..(Self::PADDED_HEADER_SIZE + new_capacity * Self::padded_node_size())]
             .fill(0);
 
         // Step 1: extract wraparound elements.
@@ -882,7 +1002,7 @@ mod tests {
     fn make_test_hash_set() -> Result<TestMappedHashSet> {
         MappedHashSet::new(
             MmapMut::map_anon(
-                TestMappedHashSet::padded_header_size() + 2 * TestMappedHashSet::padded_node_size(),
+                TestMappedHashSet::PADDED_HEADER_SIZE + 2 * TestMappedHashSet::padded_node_size(),
             )?,
             TEST_FLAGS,
         )
@@ -916,6 +1036,299 @@ mod tests {
         let scalar: StoredScalar = Scalar::from(42).into();
         assert!(!scalar.is_zero());
         assert_eq!(scalar.to_scalar(), Scalar::from(42));
+    }
+
+    #[test]
+    fn test_empty_stored_circular_buffer_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default()]
+        );
+    }
+
+    #[test]
+    fn test_empty_stored_circular_buffer_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), StoredScalar::default()]
+        );
+    }
+
+    #[test]
+    fn test_empty_stored_circular_buffer_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![
+                StoredScalar::default(),
+                StoredScalar::default(),
+                StoredScalar::default(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_one_element_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(*buffer.top(), value);
+        assert_eq!(*buffer.top_mut(), value);
+        assert_eq!(*buffer.get(0), value);
+        assert_eq!(*buffer.get_mut(0), value);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_one_element_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(*buffer.top(), value);
+        assert_eq!(*buffer.top_mut(), value);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), value);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), value);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), value]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_one_element_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(*buffer.top(), value);
+        assert_eq!(*buffer.top_mut(), value);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), value);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), value);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), StoredScalar::default(), value]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_two_elements_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(*buffer.top(), value2);
+        assert_eq!(*buffer.top_mut(), value2);
+        assert_eq!(*buffer.get(0), value2);
+        assert_eq!(*buffer.get_mut(0), value2);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value2]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_two_elements_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(*buffer.top(), value2);
+        assert_eq!(*buffer.top_mut(), value2);
+        assert_eq!(*buffer.get(0), value1);
+        assert_eq!(*buffer.get(1), value2);
+        assert_eq!(*buffer.get_mut(0), value1);
+        assert_eq!(*buffer.get_mut(1), value2);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value1, value2]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_two_elements_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(*buffer.top(), value2);
+        assert_eq!(*buffer.top_mut(), value2);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), value1);
+        assert_eq!(*buffer.get(2), value2);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), value1);
+        assert_eq!(*buffer.get_mut(2), value2);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), value1, value2]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_three_elements_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        let value1 = Scalar::from(56).into();
+        let value2 = Scalar::from(78).into();
+        let value3 = Scalar::from(90).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        buffer.push(value3);
+        assert_eq!(*buffer.top(), value3);
+        assert_eq!(*buffer.top_mut(), value3);
+        assert_eq!(*buffer.get(0), value3);
+        assert_eq!(*buffer.get_mut(0), value3);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value3]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_three_elements_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        let value1 = Scalar::from(56).into();
+        let value2 = Scalar::from(78).into();
+        let value3 = Scalar::from(90).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        buffer.push(value3);
+        assert_eq!(*buffer.top(), value3);
+        assert_eq!(*buffer.top_mut(), value3);
+        assert_eq!(*buffer.get(0), value2);
+        assert_eq!(*buffer.get(1), value3);
+        assert_eq!(*buffer.get_mut(0), value2);
+        assert_eq!(*buffer.get_mut(1), value3);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value2, value3]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_three_elements_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(56).into();
+        let value2 = Scalar::from(78).into();
+        let value3 = Scalar::from(90).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        buffer.push(value3);
+        assert_eq!(*buffer.top(), value3);
+        assert_eq!(*buffer.top_mut(), value3);
+        assert_eq!(*buffer.get(0), value1);
+        assert_eq!(*buffer.get(1), value2);
+        assert_eq!(*buffer.get(2), value3);
+        assert_eq!(*buffer.get_mut(0), value1);
+        assert_eq!(*buffer.get_mut(1), value2);
+        assert_eq!(*buffer.get_mut(2), value3);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value1, value2, value3]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_pop_one_element() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(buffer.pop(), value);
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![
+                StoredScalar::default(),
+                StoredScalar::default(),
+                StoredScalar::default(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_pop_one_of_two_elements() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(buffer.pop(), value2);
+        assert_eq!(*buffer.top(), value1);
+        assert_eq!(*buffer.top_mut(), value1);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), value1);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), value1);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), StoredScalar::default(), value1]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_pop_two_elements() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(buffer.pop(), value2);
+        assert_eq!(buffer.pop(), value1);
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![
+                StoredScalar::default(),
+                StoredScalar::default(),
+                StoredScalar::default(),
+            ]
+        );
     }
 
     #[test]
@@ -1652,5 +2065,129 @@ mod tests {
         assert!(set.erase_and_shrink(elements[9].hash()).unwrap());
         assert_eq!(set.size(), 0);
         assert_eq!(set.capacity(), 4);
+    }
+
+    #[test]
+    fn test_reload_empty_set() {
+        let mmap = make_test_hash_set().unwrap().take();
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_reload_one_element() {
+        let mut set = make_test_hash_set().unwrap();
+        let element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        let mmap = set.take();
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.get(element.hash()).unwrap(), element);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_reload_two_elements() {
+        let mut set = make_test_hash_set().unwrap();
+        let element1 = TestNodeData::test_data1();
+        let element2 = TestNodeData::test_data2();
+        assert!(set.insert(element1).is_ok());
+        assert!(set.insert(element2).is_ok());
+        let mmap = set.take();
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.size(), 2);
+        assert_eq!(set.capacity(), 4);
+        assert_eq!(*set.get(element1.hash()).unwrap(), element1);
+        assert_eq!(*set.get(element2.hash()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_validate_header_signature() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.signature.copy_from_slice(b"loremips");
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_file_version() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.flags[0..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_flags() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.flags[4..8].fill(0);
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_ignore_extra_flags() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let flags = TEST_FLAGS | 0xff000000u32;
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.flags[4..8].copy_from_slice(&flags.to_le_bytes());
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.flags(), flags);
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_size() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.node_size = 42.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_capacity() {
+        let mut set = make_test_hash_set().unwrap();
+        assert!(set.insert(TestNodeData::test_data1()).is_ok());
+        assert!(set.insert(TestNodeData::test_data2()).is_ok());
+        let mut mmap = set.take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.capacity = 2.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_power_of_two_capacity() {
+        let mut set = make_test_hash_set().unwrap();
+        assert!(set.insert(TestNodeData::test_data1()).is_ok());
+        assert!(set.insert(TestNodeData::test_data2()).is_ok());
+        let mut mmap = set.take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.capacity = 46.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_size() {
+        let mut set = make_test_hash_set().unwrap();
+        assert!(set.insert(TestNodeData::test_data1()).is_ok());
+        assert!(set.insert(TestNodeData::test_data2()).is_ok());
+        let mut mmap = set.take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.size = 64.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
     }
 }

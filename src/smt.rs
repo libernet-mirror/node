@@ -1,4 +1,6 @@
-use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
+use crate::store::{
+    HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar, StoredU64,
+};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{merkle, poseidon, xits};
@@ -76,16 +78,20 @@ impl<const W: usize> NodeData for Node<W> {
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 struct TreeHeader {
-    root_hash: StoredScalar,
+    root_hashes: StoredCircularBuffer<StoredScalar, 126>,
 }
 
 impl TreeHeader {
     fn root_hash(&self) -> Scalar {
-        self.root_hash.to_scalar()
+        self.root_hashes.top().to_scalar()
     }
 
     fn set_root_hash(&mut self, hash: Scalar) {
-        self.root_hash = hash.into();
+        *self.root_hashes.top_mut() = hash.into();
+    }
+
+    fn add_root_hash(&mut self, hash: Scalar) {
+        self.root_hashes.push(hash.into());
     }
 }
 
@@ -111,12 +117,12 @@ pub struct Tree<const W: usize, const H: usize> {
 }
 
 impl<const W: usize, const H: usize> Tree<W, H> {
-    /// Calculates the space allocated for the header.
-    pub const fn padded_header_size() -> usize {
-        MappedHashSet::<TreeHeader, Node<W>>::padded_header_size()
-    }
+    /// The byte size allocated for the header.
+    pub const PADDED_HEADER_SIZE: usize = MappedHashSet::<TreeHeader, Node<W>>::PADDED_HEADER_SIZE;
 
-    /// Calculates the space allocated for every node.
+    const MAX_HEADER_DATA_SIZE: usize = MappedHashSet::<TreeHeader, Node<W>>::MAX_HEADER_DATA_SIZE;
+
+    /// Returns the byte size allocated for every node.
     pub const fn padded_node_size() -> usize {
         MappedHashSet::<TreeHeader, Node<W>>::padded_node_size()
     }
@@ -201,7 +207,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
 
     /// Constructs a `Tree` from the provided data slice.
     pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
-        let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
+        let min_size = Self::PADDED_HEADER_SIZE + Self::min_capacity() * Self::padded_node_size();
         if mmap.len() < min_size {
             return Err(anyhow!(
                 "the mmap is too small (was {} bytes, need at least {})",
@@ -222,13 +228,11 @@ impl<const W: usize, const H: usize> Tree<W, H> {
                 .hash();
         }
         self.ref_node(hash);
-        self.hash_set.header_data_mut().set_root_hash(hash);
+        self.hash_set.header_data_mut().add_root_hash(hash);
         Ok(())
     }
 
     /// Initializes a new empty tree over the provided byte slice.
-    ///
-    /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
         let mut tree = Self {
             hash_set: MappedHashSet::new(mmap, flags)?,
@@ -283,6 +287,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     pub fn commit(&mut self) -> Scalar {
         let root_hash = self.root_hash();
         self.ref_node(root_hash);
+        self.hash_set.header_data_mut().add_root_hash(root_hash);
         root_hash
     }
 }
@@ -489,21 +494,23 @@ mod tests {
     #[test]
     fn test_binary_tree_format() {
         type TestTree = Tree<2, 256>;
-        assert_eq!(TestTree::padded_header_size(), 64);
+        assert!(std::mem::size_of::<TreeHeader>() < TestTree::MAX_HEADER_DATA_SIZE);
+        assert_eq!(TestTree::PADDED_HEADER_SIZE, 0x1000);
         assert_eq!(TestTree::padded_node_size(), 104);
     }
 
     #[test]
     fn test_ternary_tree_format() {
         type TestTree = Tree<3, 161>;
-        assert_eq!(TestTree::padded_header_size(), 64);
+        assert!(std::mem::size_of::<TreeHeader>() < TestTree::MAX_HEADER_DATA_SIZE);
+        assert_eq!(TestTree::PADDED_HEADER_SIZE, 0x1000);
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
     fn make_test_tree<const W: usize, const H: usize>(capacity: usize) -> Result<Tree<W, H>> {
         Tree::new(
             MmapMut::map_anon(
-                Tree::<W, H>::padded_header_size() + capacity * Tree::<W, H>::padded_node_size(),
+                Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
         )
