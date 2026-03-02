@@ -568,11 +568,6 @@ mod tests {
         fn check(&mut self) -> Result<()> {
             self.check_impl(self.tree.root_hash(), H - 1)?;
             if self.ref_counts.len() != self.tree.size() {
-                println!(
-                    "incorrect size (got {}, want {})",
-                    self.tree.size(),
-                    self.ref_counts.len()
-                );
                 return Err(anyhow!(
                     "incorrect size (got {}, want {})",
                     self.tree.size(),
