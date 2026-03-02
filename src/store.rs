@@ -9,6 +9,11 @@ use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
+/// NOTE: there are several system architectures where the page size is very much not this one. This
+/// is merely the most common value as well as a very good one to use for alignment in binary file
+/// formats, so this is the memory alignment we optimize for.
+const PAGE_SIZE: usize = 0x1000;
+
 /// Indicates that a type is suitable for storage in a memory-mapped region.
 pub trait Stored: Sized + Debug + Default + Copy + Clone + 'static {}
 
@@ -100,6 +105,7 @@ pub trait HeaderData: Stored {}
 struct Header<T: HeaderData> {
     signature: [u8; 8],
     flags: [u8; 8],
+    node_size: StoredU64,
     capacity: StoredU64,
     size: StoredU64,
     data: T,
@@ -114,10 +120,11 @@ impl<T: HeaderData> Header<T> {
         (u32::from_le_bytes(lo), u32::from_le_bytes(hi))
     }
 
-    fn new(flags: u32, capacity: usize) -> Self {
+    fn new(flags: u32, node_size: usize, capacity: usize) -> Self {
         let mut header = Self {
             signature: *constants::DATA_FILE_SIGNATURE,
             flags: [0u8; 8],
+            node_size: StoredU64::from(node_size as u64),
             capacity: StoredU64::from(capacity as u64),
             size: 0.into(),
             data: T::default(),
@@ -135,6 +142,10 @@ impl<T: HeaderData> Header<T> {
     fn flags(&self) -> u32 {
         let (_, flags) = self.parse_flags();
         flags
+    }
+
+    fn node_size(&self) -> usize {
+        self.node_size.to_u64() as usize
     }
 
     fn capacity(&self) -> usize {
@@ -379,13 +390,11 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
 
         let size = self.size();
-        if size * Self::MAX_LOAD_FACTOR_DENOMINATOR > capacity * Self::MAX_LOAD_FACTOR_NUMERATOR {
+        if capacity < Self::get_min_capacity_for(size) {
             return Err(anyhow!(
-                "the size exceeds the max load factor ({} > {} * {} / {})",
+                "the size exceeds the max load factor (size={}, capacity={})",
                 size,
                 capacity,
-                Self::MAX_LOAD_FACTOR_NUMERATOR,
-                Self::MAX_LOAD_FACTOR_DENOMINATOR,
             ));
         }
 
@@ -441,8 +450,8 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         let data = &mut mmap[..];
         {
             let address = data.as_ptr() as usize;
-            if address % 8 != 0 {
-                return Err(anyhow!("the memory-mapped address is not 8-byte aligned"));
+            if address % PAGE_SIZE != 0 {
+                return Err(anyhow!("the memory-mapped address is not page-aligned"));
             }
         }
         let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
@@ -472,6 +481,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         if flags & expected_flags != expected_flags {
             return Err(anyhow!("invalid flags for this file type"));
         }
+        let node_size = set.header().node_size();
+        if node_size != Self::padded_node_size() {
+            return Err(anyhow!(
+                "incorrect node size (got {}, want {})",
+                node_size,
+                Self::padded_node_size()
+            ));
+        }
         let capacity = set.capacity();
         if capacity != capacity.next_power_of_two() {
             return Err(anyhow!(
@@ -487,6 +504,14 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 expected_length
             ));
         }
+        let size = set.size();
+        if capacity < Self::get_min_capacity_for(size) {
+            return Err(anyhow!(
+                "the size exceeds the max load factor (size={}, capacity={})",
+                size,
+                capacity,
+            ));
+        }
         Ok(set)
     }
 
@@ -499,7 +524,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         data.fill(0);
         let capacity = (data.len() - Self::padded_header_size()) / Self::padded_node_size();
         *unsafe { &mut *(std::ptr::from_ref(data) as *mut Header<H>) } =
-            Header::<H>::new(flags, capacity);
+            Header::<H>::new(flags, Self::padded_node_size(), capacity);
         Self::load(mmap, flags)
     }
 
@@ -1652,5 +1677,129 @@ mod tests {
         assert!(set.erase_and_shrink(elements[9].hash()).unwrap());
         assert_eq!(set.size(), 0);
         assert_eq!(set.capacity(), 4);
+    }
+
+    #[test]
+    fn test_reload_empty_set() {
+        let mmap = make_test_hash_set().unwrap().take();
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_reload_one_element() {
+        let mut set = make_test_hash_set().unwrap();
+        let element = TestNodeData::test_data1();
+        assert!(set.insert(element).is_ok());
+        let mmap = set.take();
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.get(element.hash()).unwrap(), element);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_reload_two_elements() {
+        let mut set = make_test_hash_set().unwrap();
+        let element1 = TestNodeData::test_data1();
+        let element2 = TestNodeData::test_data2();
+        assert!(set.insert(element1).is_ok());
+        assert!(set.insert(element2).is_ok());
+        let mmap = set.take();
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.size(), 2);
+        assert_eq!(set.capacity(), 4);
+        assert_eq!(*set.get(element1.hash()).unwrap(), element1);
+        assert_eq!(*set.get(element2.hash()).unwrap(), element2);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_validate_header_signature() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.signature.copy_from_slice(b"loremips");
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_file_version() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.flags[0..4].copy_from_slice(&2u32.to_le_bytes());
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_flags() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.flags[4..8].fill(0);
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_ignore_extra_flags() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let flags = TEST_FLAGS | 0xff000000u32;
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.flags[4..8].copy_from_slice(&flags.to_le_bytes());
+        let set = MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(set.flags(), flags);
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_validate_node_size() {
+        let mut mmap = make_test_hash_set().unwrap().take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.node_size = 42.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_capacity() {
+        let mut set = make_test_hash_set().unwrap();
+        assert!(set.insert(TestNodeData::test_data1()).is_ok());
+        assert!(set.insert(TestNodeData::test_data2()).is_ok());
+        let mut mmap = set.take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.capacity = 2.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_power_of_two_capacity() {
+        let mut set = make_test_hash_set().unwrap();
+        assert!(set.insert(TestNodeData::test_data1()).is_ok());
+        assert!(set.insert(TestNodeData::test_data2()).is_ok());
+        let mut mmap = set.take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.capacity = 46.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    #[test]
+    fn test_validate_size() {
+        let mut set = make_test_hash_set().unwrap();
+        assert!(set.insert(TestNodeData::test_data1()).is_ok());
+        assert!(set.insert(TestNodeData::test_data2()).is_ok());
+        let mut mmap = set.take();
+        let header =
+            unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
+        header.size = 64.into();
+        assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
     }
 }

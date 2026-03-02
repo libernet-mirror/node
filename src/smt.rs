@@ -227,8 +227,6 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     }
 
     /// Initializes a new empty tree over the provided byte slice.
-    ///
-    /// REQUIRES: `data` MUST be 8-byte aligned.
     pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
         let mut tree = Self {
             hash_set: MappedHashSet::new(mmap, flags)?,
@@ -489,14 +487,14 @@ mod tests {
     #[test]
     fn test_binary_tree_format() {
         type TestTree = Tree<2, 256>;
-        assert_eq!(TestTree::padded_header_size(), 64);
+        assert_eq!(TestTree::padded_header_size(), 72);
         assert_eq!(TestTree::padded_node_size(), 104);
     }
 
     #[test]
     fn test_ternary_tree_format() {
         type TestTree = Tree<3, 161>;
-        assert_eq!(TestTree::padded_header_size(), 64);
+        assert_eq!(TestTree::padded_header_size(), 72);
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
