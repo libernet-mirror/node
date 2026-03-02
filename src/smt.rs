@@ -89,8 +89,8 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
         MappedHashSet::<HD, Node<W>>::padded_node_size()
     }
 
-    const fn get_min_capacity_for(size: usize) -> usize {
-        MappedHashSet::<HD, Node<W>>::get_min_capacity_for(size)
+    const fn get_max_capacity_for(size: usize) -> usize {
+        MappedHashSet::<HD, Node<W>>::get_max_capacity_for(size)
     }
 
     /// Returns true if the underlying hash set contains the element identified by the specified
@@ -379,7 +379,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     /// The memory-mapped data slice provided at construction should be
     /// `PADDED_HEADER_SIZE + optimal_initial_capacity() * padded_node_size()` bytes long.
     pub const fn optimal_initial_capacity() -> usize {
-        Repr::<TreeHeader, W, H>::get_min_capacity_for(H)
+        Repr::<TreeHeader, W, H>::get_max_capacity_for(H)
     }
 
     fn init_empty(&mut self) -> Result<()> {
@@ -676,7 +676,7 @@ mod tests {
     fn test_new_binary_tree_h1() {
         let tree = make_default_test_tree::<2, 1>().unwrap();
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), 2);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x44fbea4934de59fe3dea4bb6ce5f053fe967f8c43a872b343a6d12fe40d75ca3")
@@ -690,7 +690,7 @@ mod tests {
     fn test_new_binary_tree_h2() {
         let tree = make_default_test_tree::<2, 2>().unwrap();
         assert_eq!(tree.size(), 2);
-        assert_eq!(tree.capacity(), 4);
+        assert_eq!(tree.capacity(), 8);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x1642477fce8a9cfc7fef8c1adac8bb6212a12603545af958b6fa28f0099cdf1e")
@@ -726,7 +726,7 @@ mod tests {
     fn test_new_ternary_tree_h1() {
         let tree = make_default_test_tree::<3, 1>().unwrap();
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), 2);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
@@ -741,7 +741,7 @@ mod tests {
     fn test_new_ternary_tree_h2() {
         let tree = make_default_test_tree::<3, 2>().unwrap();
         assert_eq!(tree.size(), 2);
-        assert_eq!(tree.capacity(), 4);
+        assert_eq!(tree.capacity(), 8);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x0813d9fa859ac9c7c3c147af1bf38a8d34a95d71dddb59cb362741af4a5ce374")
@@ -929,7 +929,7 @@ mod tests {
     fn test_new_tall_binary_tree() {
         let tree = make_default_test_tree::<2, 256>().unwrap();
         assert_eq!(tree.size(), 256);
-        assert_eq!(tree.capacity(), 512);
+        assert_eq!(tree.capacity(), 1024);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
