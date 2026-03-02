@@ -3,7 +3,7 @@ use crate::store::{
 };
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
-use crypto::{merkle, poseidon, xits};
+use crypto::{merkle, poseidon, utils, xits};
 use ff::{Field, PrimeField};
 use memmap2::MmapMut;
 use std::fmt::Debug;
@@ -75,71 +75,33 @@ impl<const W: usize> NodeData for Node<W> {
     }
 }
 
-#[derive(Debug, Default, Copy, Clone)]
-#[repr(C)]
-struct TreeHeader {
-    root_hashes: StoredCircularBuffer<StoredScalar, 126>,
-}
-
-impl TreeHeader {
-    fn root_hash(&self) -> Scalar {
-        self.root_hashes.top().to_scalar()
-    }
-
-    fn set_root_hash(&mut self, hash: Scalar) {
-        *self.root_hashes.top_mut() = hash.into();
-    }
-
-    fn add_root_hash(&mut self, hash: Scalar) {
-        self.root_hashes.push(hash.into());
-    }
-}
-
-impl Stored for TreeHeader {}
-impl HeaderData for TreeHeader {}
-
-/// A Sparse Merkle Tree backed by a `MappedHashSet`.
-///
-/// The nodes of the tree are immutable and are indexed in the underlying hash set by their actual
-/// Merkle hash.
-///
-/// The nodes are reference counted and are automatically removed when their reference count drops
-/// to zero. Cyclic references are not a concern because a tree is an acyclic graph by definition.
-///
-/// Note that a node may appear as the child of another node more than once. For example, if the two
-/// subtrees of a binary tree node are identical they won't be stored twice; instead they'll have
-/// node-by-node identical hashes, so they'll be stored as a single subtree referenced by the parent
-/// node twice. Case in point, an empty tree with height `H` only requires storing `H` nodes in our
-/// implementation.
+/// Internal implementation shared by `Tree` and `Forest`.
 #[derive(Debug)]
-pub struct Tree<const W: usize, const H: usize> {
-    hash_set: MappedHashSet<TreeHeader, Node<W>>,
+struct Repr<HD: HeaderData, const W: usize, const H: usize> {
+    hash_set: MappedHashSet<HD, Node<W>>,
 }
 
-impl<const W: usize, const H: usize> Tree<W, H> {
-    /// The byte size allocated for the header.
-    pub const PADDED_HEADER_SIZE: usize = MappedHashSet::<TreeHeader, Node<W>>::PADDED_HEADER_SIZE;
+impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
+    const PADDED_HEADER_SIZE: usize = MappedHashSet::<HD, Node<W>>::PADDED_HEADER_SIZE;
+    const MAX_HEADER_DATA_SIZE: usize = MappedHashSet::<HD, Node<W>>::MAX_HEADER_DATA_SIZE;
 
-    const MAX_HEADER_DATA_SIZE: usize = MappedHashSet::<TreeHeader, Node<W>>::MAX_HEADER_DATA_SIZE;
-
-    /// Returns the byte size allocated for every node.
-    pub const fn padded_node_size() -> usize {
-        MappedHashSet::<TreeHeader, Node<W>>::padded_node_size()
+    const fn padded_node_size() -> usize {
+        MappedHashSet::<HD, Node<W>>::padded_node_size()
     }
 
-    /// Returns the minimum capacity (in terms of number of nodes) required to host `size` nodes.
-    pub const fn get_min_capacity_for(size: usize) -> usize {
-        MappedHashSet::<TreeHeader, Node<W>>::get_min_capacity_for(size)
+    const fn get_min_capacity_for(size: usize) -> usize {
+        MappedHashSet::<HD, Node<W>>::get_min_capacity_for(size)
     }
 
-    /// Returns the minimum capacity (in terms of number of nodes) required for this type of tree.
+    /// Returns true if the underlying hash set contains the element identified by the specified
+    /// hash, false otheriwse.
+    fn has_node(&self, hash: Scalar) -> bool {
+        self.hash_set.has(hash)
+    }
+
+    /// Increments the reference count of a node.
     ///
-    /// The data slice provided upon construction must be at least
-    /// `padded_header_size() + min_capacity() * padded_node_size()` bytes long.
-    pub const fn min_capacity() -> usize {
-        Self::get_min_capacity_for(H)
-    }
-
+    /// REQUIRES: `hash` must refer to an existing node.
     fn ref_node(&mut self, hash: Scalar) {
         self.hash_set.get_mut(hash).unwrap().r#ref();
     }
@@ -205,97 +167,57 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         Ok(true)
     }
 
-    /// Constructs a `Tree` from the provided data slice.
-    pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
-        let min_size = Self::PADDED_HEADER_SIZE + Self::min_capacity() * Self::padded_node_size();
-        if mmap.len() < min_size {
-            return Err(anyhow!(
-                "the mmap is too small (was {} bytes, need at least {})",
-                mmap.len(),
-                min_size
-            ));
-        }
+    /// Constructs a new `Repr` over the provided memory-mapped region.
+    fn new(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+        Ok(Self {
+            hash_set: MappedHashSet::new(mmap, expected_flags)?,
+        })
+    }
+
+    /// Loads a `Repr` from the provided memory-mapped data.
+    fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
         Ok(Self {
             hash_set: MappedHashSet::load(mmap, expected_flags)?,
         })
     }
 
-    fn init_empty(&mut self) -> Result<()> {
-        let mut hash = Scalar::ZERO;
-        for _ in 0..H {
-            hash = self
-                .make_node(&std::array::from_fn(|_| hash), H == 0)?
-                .hash();
-        }
-        self.ref_node(hash);
-        self.hash_set.header_data_mut().add_root_hash(hash);
-        Ok(())
+    /// Returns a reference to the header.
+    fn header(&self) -> &HD {
+        self.hash_set.header_data()
     }
 
-    /// Initializes a new empty tree over the provided byte slice.
-    pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
-        let mut tree = Self {
-            hash_set: MappedHashSet::new(mmap, flags)?,
-        };
-        tree.init_empty()?;
-        Ok(tree)
+    /// Returns a mutable reference to the header.
+    fn header_mut(&mut self) -> &mut HD {
+        self.hash_set.header_data_mut()
     }
 
     /// Returns the number of nodes in the underlying hash table.
     ///
     /// NOTE: this is only the number of physical nodes in the underlying hash set. The number of
-    /// logical nodes of an SMT is always W^H, (eg. 2^256 for a binary tree with height 256).
-    pub fn size(&self) -> usize {
+    /// logical nodes of an SMT is always W^H, eg. 2^256 for a binary tree with height 256.
+    fn size(&self) -> usize {
         self.hash_set.size()
     }
 
     /// Returns the capacity (in terms of number of nodes) of the underlying hash table.
     ///
     /// NOTE: this will always return a power of 2.
-    pub fn capacity(&self) -> usize {
+    fn capacity(&self) -> usize {
         self.hash_set.capacity()
     }
 
-    /// Destroys the `Tree` and returns the wrapped memory map.
-    pub fn take(self) -> MmapMut {
+    /// Extracts the wrapped memory map.
+    fn take(self) -> MmapMut {
         self.hash_set.take()
-    }
-
-    /// Returns the current root hash.
-    pub fn root_hash(&self) -> Scalar {
-        self.hash_set.header_data().root_hash()
-    }
-
-    /// REQUIRES: `hash` must refer to an existing node at level H-1.
-    fn set_root(&mut self, hash: Scalar) -> Result<()> {
-        self.ref_node(hash);
-        self.unref_node(self.root_hash(), H - 1)?;
-        self.hash_set.header_data_mut().set_root_hash(hash);
-        Ok(())
-    }
-
-    /// Adds an extra ref to the current root so that it can no longer be discarded.
-    ///
-    /// The returned scalar is the reffed root hash.
-    ///
-    /// This method is useful for implementing block closure: at closure time the latest root can be
-    /// "sealed" by calling this method and the returned root hash can be used along with other
-    /// block data to compute the block hash.
-    ///
-    /// NOTE: if a tree doesn't change for K consecutive blocks, the same root node will end up
-    /// getting reffed K times. That is not a problem.
-    pub fn commit(&mut self) -> Scalar {
-        let root_hash = self.root_hash();
-        self.ref_node(root_hash);
-        self.hash_set.header_data_mut().add_root_hash(root_hash);
-        root_hash
     }
 }
 
-impl<const H: usize> Tree<2, H> {
+impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
     /// Returns the value associated with the specified key.
-    pub fn get(&self, key: Scalar) -> Scalar {
-        let mut node = self.hash_set.get(self.root_hash()).unwrap();
+    ///
+    /// REQUIRES: `root_hash` must refer to an existing node.
+    fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+        let mut node = self.hash_set.get(root_hash).unwrap();
         for i in (1..H).rev() {
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
             let child_hash = node.child(bit as usize);
@@ -308,9 +230,11 @@ impl<const H: usize> Tree<2, H> {
     /// Looks up an element and returns it along with a Merkle proof for it.
     ///
     /// Returns `None` if the element is not found.
-    pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+    ///
+    /// REQUIRES: `root_hash` must refer to an existing node.
+    fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
         let mut path = [[Scalar::ZERO; 2]; H];
-        let mut node = self.hash_set.get(self.root_hash()).unwrap();
+        let mut node = self.hash_set.get(root_hash).unwrap();
         for i in (1..H).rev() {
             path[i] = node.children();
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
@@ -320,7 +244,7 @@ impl<const H: usize> Tree<2, H> {
         path[0] = node.children();
         let bit = xits::and1(key).to_repr()[0];
         let value = node.child(bit as usize);
-        merkle::Proof::new(key, value, path, self.root_hash())
+        merkle::Proof::new(key, value, path, root_hash)
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -336,17 +260,19 @@ impl<const H: usize> Tree<2, H> {
     }
 
     /// Updates the value associated with the specified key.
-    pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
-        let new_root = self.update(self.root_hash(), H - 1, key, value)?;
-        self.set_root(new_root)?;
-        Ok(())
+    ///
+    /// REQUIRES: `root_hash` must refer to an existing node.
+    fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
+        self.update(root_hash, H - 1, key, value)
     }
 }
 
-impl<const H: usize> Tree<3, H> {
+impl<HD: HeaderData, const H: usize> Repr<HD, 3, H> {
     /// Returns the value associated with the specified key.
-    pub fn get(&self, key: Scalar) -> Scalar {
-        let mut node = self.hash_set.get(self.root_hash()).unwrap();
+    ///
+    /// REQUIRES: `root_hash` must refer to an existing node.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+        let mut node = self.hash_set.get(root_hash).unwrap();
         for i in (1..H).rev() {
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
             let child_hash = node.child(trit as usize);
@@ -359,9 +285,11 @@ impl<const H: usize> Tree<3, H> {
     /// Looks up an element and returns it along with a Merkle proof for it.
     ///
     /// Returns `None` if the element is not found.
-    pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+    ///
+    /// REQUIRES: `root_hash` must refer to an existing node.
+    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
         let mut path = [[Scalar::ZERO; 3]; H];
-        let mut node = self.hash_set.get(self.root_hash()).unwrap();
+        let mut node = self.hash_set.get(root_hash).unwrap();
         for i in (1..H).rev() {
             path[i] = node.children();
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
@@ -371,7 +299,7 @@ impl<const H: usize> Tree<3, H> {
         path[0] = node.children();
         let trit = xits::mod3(key).to_repr()[0];
         let value = node.child(trit as usize);
-        merkle::Proof::new(key, value, path, self.root_hash())
+        merkle::Proof::new(key, value, path, root_hash)
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -387,8 +315,198 @@ impl<const H: usize> Tree<3, H> {
     }
 
     /// Updates the value associated with the specified key.
+    ///
+    /// REQUIRES: `root_hash` must refer to an existing node.
+    pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
+        self.update(root_hash, H - 1, key, value)
+    }
+}
+
+#[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
+struct TreeHeader {
+    root_hashes: StoredCircularBuffer<StoredScalar, 126>,
+}
+
+impl TreeHeader {
+    fn root_hash(&self) -> Scalar {
+        self.root_hashes.top().to_scalar()
+    }
+
+    fn set_root_hash(&mut self, hash: Scalar) {
+        *self.root_hashes.top_mut() = hash.into();
+    }
+
+    fn add_root_hash(&mut self, hash: Scalar) {
+        self.root_hashes.push(hash.into());
+    }
+}
+
+impl Stored for TreeHeader {}
+impl HeaderData for TreeHeader {}
+
+/// A Sparse Merkle Tree backed by a `MappedHashSet`.
+///
+/// The nodes of the tree are immutable and are indexed in the underlying hash set by their actual
+/// Merkle hash.
+///
+/// The nodes are reference counted and are automatically removed when their reference count drops
+/// to zero. Cyclic references are not possible because a tree is an acyclic graph by definition.
+///
+/// Note that a node may appear as the child of another node more than once. For example, if the two
+/// subtrees of a binary tree node are identical they won't be stored twice; instead they'll have
+/// node-by-node identical hashes, so they'll be stored as a single subtree referenced by the parent
+/// node twice. Case in point, an empty tree with height `H` only requires storing `H` nodes in our
+/// implementation.
+#[derive(Debug)]
+pub struct Tree<const W: usize, const H: usize> {
+    repr: Repr<TreeHeader, W, H>,
+}
+
+impl<const W: usize, const H: usize> Tree<W, H> {
+    /// The byte size allocated for the header.
+    pub const PADDED_HEADER_SIZE: usize = Repr::<TreeHeader, W, H>::PADDED_HEADER_SIZE;
+
+    const MAX_HEADER_DATA_SIZE: usize = Repr::<TreeHeader, W, H>::MAX_HEADER_DATA_SIZE;
+
+    /// Returns the byte size allocated for every node.
+    pub const fn padded_node_size() -> usize {
+        Repr::<TreeHeader, W, H>::padded_node_size()
+    }
+
+    /// Returns the optimal initial capacity (in terms of number of nodes) for this type of tree.
+    ///
+    /// The memory-mapped data slice provided at construction should be
+    /// `PADDED_HEADER_SIZE + optimal_initial_capacity() * padded_node_size()` bytes long.
+    pub const fn optimal_initial_capacity() -> usize {
+        Repr::<TreeHeader, W, H>::get_min_capacity_for(H)
+    }
+
+    fn init_empty(&mut self) -> Result<()> {
+        let mut hash = Scalar::ZERO;
+        for i in 0..H {
+            hash = self
+                .repr
+                .make_node(&std::array::from_fn(|_| hash), i == 0)?
+                .hash();
+        }
+        self.repr.ref_node(hash);
+        self.repr.header_mut().add_root_hash(hash);
+        Ok(())
+    }
+
+    /// Initializes a new empty tree over the provided memory-mapped region.
+    pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
+        let mut tree = Self {
+            repr: Repr::new(mmap, flags)?,
+        };
+        tree.init_empty()?;
+        Ok(tree)
+    }
+
+    /// Constructs a `Tree` from the provided memory-mapped data.
+    pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+        let tree = Self {
+            repr: Repr::load(mmap, expected_flags)?,
+        };
+        let root_hash = tree.root_hash();
+        if !tree.repr.has_node(root_hash) {
+            return Err(anyhow!(
+                "invalid root hash {}",
+                utils::format_scalar(root_hash)
+            ));
+        }
+        Ok(tree)
+    }
+
+    /// Returns the number of nodes in the underlying hash table.
+    ///
+    /// NOTE: this is only the number of physical nodes in the underlying hash set. The number of
+    /// logical nodes of an SMT is always W^H, eg. 2^256 for a binary tree with height 256.
+    pub fn size(&self) -> usize {
+        self.repr.size()
+    }
+
+    /// Returns the capacity (in terms of number of nodes) of the underlying hash table.
+    ///
+    /// NOTE: this will always return a power of 2.
+    pub fn capacity(&self) -> usize {
+        self.repr.capacity()
+    }
+
+    /// Extracts the wrapped memory map.
+    pub fn take(self) -> MmapMut {
+        self.repr.take()
+    }
+
+    /// Returns the current root hash.
+    pub fn root_hash(&self) -> Scalar {
+        self.repr.header().root_hash()
+    }
+
+    /// REQUIRES: `hash` must refer to an existing node at level H-1.
+    fn set_root(&mut self, hash: Scalar) -> Result<()> {
+        self.repr.ref_node(hash);
+        self.repr.unref_node(self.root_hash(), H - 1)?;
+        self.repr.header_mut().set_root_hash(hash);
+        Ok(())
+    }
+
+    /// Adds an extra ref to the current root so that it can no longer be discarded.
+    ///
+    /// The returned scalar is the reffed root hash.
+    ///
+    /// This method is useful for implementing block closure: at closure time the latest root can be
+    /// "sealed" by calling this method and the returned root hash can be used along with other
+    /// block data to compute the block hash.
+    ///
+    /// NOTE: if a tree doesn't change for K consecutive blocks, the same root node will end up
+    /// getting reffed K times. That is not a problem.
+    pub fn commit(&mut self) -> Scalar {
+        let root_hash = self.root_hash();
+        self.repr.ref_node(root_hash);
+        self.repr.header_mut().add_root_hash(root_hash);
+        root_hash
+    }
+}
+
+impl<const H: usize> Tree<2, H> {
+    /// Returns the value associated with the specified key.
+    pub fn get(&self, key: Scalar) -> Scalar {
+        self.repr.get(self.root_hash(), key)
+    }
+
+    /// Looks up an element and returns it along with a Merkle proof for it.
+    ///
+    /// Returns `None` if the element is not found.
+    pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+        self.repr.get_proof(self.root_hash(), key)
+    }
+
+    /// Updates the value associated with the specified key.
     pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
-        let new_root = self.update(self.root_hash(), H - 1, key, value)?;
+        let new_root = self.repr.put(self.root_hash(), key, value)?;
+        self.set_root(new_root)?;
+        Ok(())
+    }
+}
+
+impl<const H: usize> Tree<3, H> {
+    /// Returns the value associated with the specified key.
+    pub fn get(&self, key: Scalar) -> Scalar {
+        self.repr.get(self.root_hash(), key)
+    }
+
+    /// Looks up an element and returns it along with a Merkle proof for it.
+    ///
+    /// Returns `None` if the element is not found.
+    pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+        self.repr.get_proof(self.root_hash(), key)
+    }
+
+    /// Updates the value associated with the specified key.
+    pub fn put(&mut self, key: Scalar, value: Scalar) -> Result<()> {
+        let new_root = self.repr.put(self.root_hash(), key, value)?;
         self.set_root(new_root)?;
         Ok(())
     }
@@ -398,44 +516,46 @@ impl<const H: usize> Tree<3, H> {
 mod tests {
     use super::*;
     use crate::{constants, testing::parse_scalar};
-    use crypto::utils;
     use primitive_types::U256;
-    use std::collections::BTreeSet;
+    use std::collections::BTreeMap;
 
     const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_TREE;
 
     #[derive(Debug)]
     struct ConsistencyChecker<'a, const W: usize, const H: usize> {
         tree: &'a Tree<W, H>,
-        visited: BTreeSet<Scalar>,
+        ref_counts: BTreeMap<Scalar, u64>,
     }
 
     impl<'a, const W: usize, const H: usize> ConsistencyChecker<'a, W, H> {
         fn new(tree: &'a Tree<W, H>) -> Self {
             Self {
                 tree,
-                visited: BTreeSet::default(),
+                ref_counts: BTreeMap::default(),
             }
         }
 
         fn check_impl(&mut self, hash: Scalar, level: usize) -> Result<()> {
-            if !self.visited.insert(hash) {
-                return Ok(());
-            }
             if level == 0 {
                 return Ok(());
             }
-            match self.tree.hash_set.get(hash) {
+            if let Some(ref_count) = self.ref_counts.get_mut(&hash) {
+                *ref_count -= 1;
+                return Ok(());
+            }
+            match self.tree.repr.hash_set.get(hash) {
                 Some(node) => {
                     if node.hash() != hash {
                         return Err(anyhow!("wrong hash (got {}, want {})", hash, node.hash()));
                     }
-                    if node.ref_count == 0.into() {
+                    let ref_count = node.ref_count.to_u64();
+                    if ref_count == 0 {
                         return Err(anyhow!(
                             "unreferenced node {} hasn't been removed",
                             utils::format_scalar(node.hash())
                         ));
                     }
+                    self.ref_counts.insert(hash, ref_count);
                     node.children()
                         .iter()
                         .map(|child_hash| self.check_impl(*child_hash, level - 1))
@@ -452,7 +572,7 @@ mod tests {
     }
 
     fn check_consistency<const W: usize, const H: usize>(tree: &Tree<W, H>) -> Result<()> {
-        tree.hash_set.check_consistency()?;
+        tree.repr.hash_set.check_consistency()?;
         ConsistencyChecker::new(tree).check()
     }
 
@@ -517,7 +637,7 @@ mod tests {
     }
 
     fn make_default_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
-        make_test_tree(Tree::<W, H>::min_capacity())
+        make_test_tree(Tree::<W, H>::optimal_initial_capacity())
     }
 
     fn lookup2<const H: usize>(tree: &Tree<2, H>, key: Scalar) -> Scalar {
