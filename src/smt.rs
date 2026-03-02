@@ -1,4 +1,6 @@
-use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
+use crate::store::{
+    HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar, StoredU64,
+};
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
 use crypto::{merkle, poseidon, xits};
@@ -76,16 +78,16 @@ impl<const W: usize> NodeData for Node<W> {
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 struct TreeHeader {
-    root_hash: StoredScalar,
+    root_hashes: StoredCircularBuffer<StoredScalar, 126>,
 }
 
 impl TreeHeader {
     fn root_hash(&self) -> Scalar {
-        self.root_hash.to_scalar()
+        self.root_hashes.top().to_scalar()
     }
 
     fn set_root_hash(&mut self, hash: Scalar) {
-        self.root_hash = hash.into();
+        self.root_hashes.push(hash.into());
     }
 }
 

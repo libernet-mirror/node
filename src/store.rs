@@ -8,6 +8,7 @@ use primitive_types::U256;
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::ops::{Index, IndexMut};
 
 /// NOTE: there are several system architectures where the page size is very much not this one. This
 /// is merely the most common value as well as a very good one to use for alignment in binary file
@@ -97,6 +98,89 @@ impl PartialOrd for StoredScalar {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct StoredCircularBuffer<T: Stored, const N: usize> {
+    values: [T; N],
+    offset: StoredU64,
+}
+
+impl<T: Stored, const N: usize> StoredCircularBuffer<T, N> {
+    pub fn top(&self) -> &T {
+        let offset = (self.offset.to_u64() as usize + N - 1) % N;
+        &self.values[offset]
+    }
+
+    pub fn top_mut(&mut self) -> &mut T {
+        let offset = (self.offset.to_u64() as usize + N - 1) % N;
+        &mut self.values[offset]
+    }
+
+    pub fn get(&self, index: usize) -> &T {
+        assert!(index < N);
+        let offset = self.offset.to_u64() as usize;
+        &self.values[(offset + index) % N]
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> &mut T {
+        assert!(index < N);
+        let offset = self.offset.to_u64() as usize;
+        &mut self.values[(offset + index) % N]
+    }
+
+    pub fn push(&mut self, value: T) {
+        let mut offset = self.offset.to_u64() as usize;
+        self.values[offset] = value;
+        offset = (offset + 1) % N;
+        self.offset = (offset as u64).into();
+    }
+
+    pub fn pop(&mut self) -> T {
+        let offset = (self.offset.to_u64() as usize + N - 1) % N;
+        let mut result = T::default();
+        std::mem::swap(&mut self.values[offset], &mut result);
+        self.offset = (offset as u64).into();
+        result
+    }
+}
+
+impl<T: Stored, const N: usize> Default for StoredCircularBuffer<T, N> {
+    fn default() -> Self {
+        Self {
+            values: std::array::from_fn(|_| T::default()),
+            offset: StoredU64::default(),
+        }
+    }
+}
+
+impl<T: Stored, const N: usize> Stored for StoredCircularBuffer<T, N> {}
+
+impl<T: Stored, const N: usize> IntoIterator for StoredCircularBuffer<T, N> {
+    type Item = T;
+
+    type IntoIter =
+        std::iter::Take<std::iter::Skip<std::iter::Cycle<<[T; N] as IntoIterator>::IntoIter>>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let offset = self.offset.to_u64() as usize;
+        self.values.into_iter().cycle().skip(offset).take(N)
+    }
+}
+
+impl<T: Stored, const N: usize> Index<usize> for StoredCircularBuffer<T, N> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index)
+    }
+}
+
+impl<T: Stored, const N: usize> IndexMut<usize> for StoredCircularBuffer<T, N> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index)
+    }
+}
+
 /// Trait for data that is stored in the header of a `MappedHashSet`.
 pub trait HeaderData: Stored {}
 
@@ -106,8 +190,6 @@ pub struct EmptyHeaderData {}
 
 impl Stored for EmptyHeaderData {}
 impl HeaderData for EmptyHeaderData {}
-
-pub type EmptyHeader = Header<EmptyHeaderData>;
 
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
@@ -271,7 +353,8 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// The maximum allowed size for `HeaderData` implementations.
     ///
     /// This is given by the fact that the total file header size must be 0x1000.
-    pub const MAX_HEADER_DATA_SIZE: usize = PAGE_SIZE - std::mem::size_of::<EmptyHeader>();
+    pub const MAX_HEADER_DATA_SIZE: usize =
+        PAGE_SIZE - std::mem::size_of::<Header<EmptyHeaderData>>();
 
     /// Returns the byte size allocated for every node.
     pub const fn padded_node_size() -> usize {
@@ -953,6 +1036,226 @@ mod tests {
         let scalar: StoredScalar = Scalar::from(42).into();
         assert!(!scalar.is_zero());
         assert_eq!(scalar.to_scalar(), Scalar::from(42));
+    }
+
+    #[test]
+    fn test_empty_stored_circular_buffer_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default()]
+        );
+    }
+
+    #[test]
+    fn test_empty_stored_circular_buffer_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), StoredScalar::default()]
+        );
+    }
+
+    #[test]
+    fn test_empty_stored_circular_buffer_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![
+                StoredScalar::default(),
+                StoredScalar::default(),
+                StoredScalar::default(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_one_element_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(*buffer.top(), value);
+        assert_eq!(*buffer.top_mut(), value);
+        assert_eq!(*buffer.get(0), value);
+        assert_eq!(*buffer.get_mut(0), value);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_one_element_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(*buffer.top(), value);
+        assert_eq!(*buffer.top_mut(), value);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), value);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), value);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), value]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_one_element_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(*buffer.top(), value);
+        assert_eq!(*buffer.top_mut(), value);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), value);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), value);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), StoredScalar::default(), value]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_two_elements_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(*buffer.top(), value2);
+        assert_eq!(*buffer.top_mut(), value2);
+        assert_eq!(*buffer.get(0), value2);
+        assert_eq!(*buffer.get_mut(0), value2);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value2]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_two_elements_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(*buffer.top(), value2);
+        assert_eq!(*buffer.top_mut(), value2);
+        assert_eq!(*buffer.get(0), value1);
+        assert_eq!(*buffer.get(1), value2);
+        assert_eq!(*buffer.get_mut(0), value1);
+        assert_eq!(*buffer.get_mut(1), value2);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value1, value2]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_two_elements_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(*buffer.top(), value2);
+        assert_eq!(*buffer.top_mut(), value2);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), value1);
+        assert_eq!(*buffer.get(2), value2);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), value1);
+        assert_eq!(*buffer.get_mut(2), value2);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), value1, value2]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_three_elements_1() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
+        let value1 = Scalar::from(56).into();
+        let value2 = Scalar::from(78).into();
+        let value3 = Scalar::from(90).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        buffer.push(value3);
+        assert_eq!(*buffer.top(), value3);
+        assert_eq!(*buffer.top_mut(), value3);
+        assert_eq!(*buffer.get(0), value3);
+        assert_eq!(*buffer.get_mut(0), value3);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value3]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_three_elements_2() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
+        let value1 = Scalar::from(56).into();
+        let value2 = Scalar::from(78).into();
+        let value3 = Scalar::from(90).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        buffer.push(value3);
+        assert_eq!(*buffer.top(), value3);
+        assert_eq!(*buffer.top_mut(), value3);
+        assert_eq!(*buffer.get(0), value2);
+        assert_eq!(*buffer.get(1), value3);
+        assert_eq!(*buffer.get_mut(0), value2);
+        assert_eq!(*buffer.get_mut(1), value3);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value2, value3]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_push_three_elements_3() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(56).into();
+        let value2 = Scalar::from(78).into();
+        let value3 = Scalar::from(90).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        buffer.push(value3);
+        assert_eq!(*buffer.top(), value3);
+        assert_eq!(*buffer.top_mut(), value3);
+        assert_eq!(*buffer.get(0), value1);
+        assert_eq!(*buffer.get(1), value2);
+        assert_eq!(*buffer.get(2), value3);
+        assert_eq!(*buffer.get_mut(0), value1);
+        assert_eq!(*buffer.get_mut(1), value2);
+        assert_eq!(*buffer.get_mut(2), value3);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![value1, value2, value3]
+        );
     }
 
     #[test]
