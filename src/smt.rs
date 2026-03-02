@@ -536,9 +536,6 @@ mod tests {
         }
 
         fn check_impl(&mut self, hash: Scalar, level: usize) -> Result<()> {
-            if level == 0 {
-                return Ok(());
-            }
             if let Some(ref_count) = self.ref_counts.get_mut(&hash) {
                 *ref_count -= 1;
                 return Ok(());
@@ -556,10 +553,12 @@ mod tests {
                         ));
                     }
                     self.ref_counts.insert(hash, ref_count);
-                    node.children()
-                        .iter()
-                        .map(|child_hash| self.check_impl(*child_hash, level - 1))
-                        .collect::<Result<()>>()?;
+                    if level > 0 {
+                        node.children()
+                            .iter()
+                            .map(|child_hash| self.check_impl(*child_hash, level - 1))
+                            .collect::<Result<()>>()?;
+                    }
                     Ok(())
                 }
                 None => Err(anyhow!("node {} not found", utils::format_scalar(hash))),
@@ -567,7 +566,20 @@ mod tests {
         }
 
         fn check(&mut self) -> Result<()> {
-            self.check_impl(self.tree.root_hash(), H - 1)
+            self.check_impl(self.tree.root_hash(), H - 1)?;
+            if self.ref_counts.len() != self.tree.size() {
+                println!(
+                    "incorrect size (got {}, want {})",
+                    self.tree.size(),
+                    self.ref_counts.len()
+                );
+                return Err(anyhow!(
+                    "incorrect size (got {}, want {})",
+                    self.tree.size(),
+                    self.ref_counts.len()
+                ));
+            }
+            Ok(())
         }
     }
 
