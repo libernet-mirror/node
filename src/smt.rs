@@ -87,6 +87,10 @@ impl TreeHeader {
     }
 
     fn set_root_hash(&mut self, hash: Scalar) {
+        *self.root_hashes.top_mut() = hash.into();
+    }
+
+    fn add_root_hash(&mut self, hash: Scalar) {
         self.root_hashes.push(hash.into());
     }
 }
@@ -224,7 +228,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
                 .hash();
         }
         self.ref_node(hash);
-        self.hash_set.header_data_mut().set_root_hash(hash);
+        self.hash_set.header_data_mut().add_root_hash(hash);
         Ok(())
     }
 
@@ -283,6 +287,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     pub fn commit(&mut self) -> Scalar {
         let root_hash = self.root_hash();
         self.ref_node(root_hash);
+        self.hash_set.header_data_mut().add_root_hash(root_hash);
         root_hash
     }
 }
