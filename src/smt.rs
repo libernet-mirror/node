@@ -531,10 +531,9 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h1() {
-        const CAPACITY: usize = Tree::<2, 1>::min_capacity();
-        let tree = make_test_tree::<2, 1>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<2, 1>().unwrap();
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 2);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x44fbea4934de59fe3dea4bb6ce5f053fe967f8c43a872b343a6d12fe40d75ca3")
@@ -546,10 +545,9 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h2() {
-        const CAPACITY: usize = Tree::<2, 2>::min_capacity();
-        let tree = make_test_tree::<2, 2>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<2, 2>().unwrap();
         assert_eq!(tree.size(), 2);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x1642477fce8a9cfc7fef8c1adac8bb6212a12603545af958b6fa28f0099cdf1e")
@@ -563,10 +561,9 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h3() {
-        const CAPACITY: usize = Tree::<2, 3>::min_capacity();
-        let tree = make_test_tree::<2, 3>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<2, 3>().unwrap();
         assert_eq!(tree.size(), 3);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 8);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x30ac7c720131f3ab706f3c8542a0ecdd6ca65b0f690cbea695b699fb2a6a0a6b")
@@ -584,10 +581,9 @@ mod tests {
 
     #[test]
     fn test_new_ternary_tree_h1() {
-        const CAPACITY: usize = Tree::<3, 1>::min_capacity();
-        let tree = make_test_tree::<3, 1>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<3, 1>().unwrap();
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 2);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
@@ -600,10 +596,9 @@ mod tests {
 
     #[test]
     fn test_new_ternary_tree_h2() {
-        const CAPACITY: usize = Tree::<3, 2>::min_capacity();
-        let tree = make_test_tree::<3, 2>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<3, 2>().unwrap();
         assert_eq!(tree.size(), 2);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x0813d9fa859ac9c7c3c147af1bf38a8d34a95d71dddb59cb362741af4a5ce374")
@@ -622,10 +617,9 @@ mod tests {
 
     #[test]
     fn test_new_ternary_tree_h3() {
-        const CAPACITY: usize = Tree::<3, 3>::min_capacity();
-        let tree = make_test_tree::<3, 3>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<3, 3>().unwrap();
         assert_eq!(tree.size(), 3);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 8);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x0d59114550233029c2dd76cb35aed5d87d0c11af9dcc16d59aea354cdf7b1904")
@@ -662,11 +656,10 @@ mod tests {
 
     #[test]
     fn test_update_binary_tree_h1_0() {
-        const CAPACITY: usize = Tree::<2, 1>::min_capacity();
-        let mut tree = make_test_tree::<2, 1>(CAPACITY).unwrap();
+        let mut tree = make_default_test_tree::<2, 1>().unwrap();
         assert!(tree.put(0.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x3096077a3d12ab01b506e6aceda3c0dda9fe86c329ce2996ee63e1517b729e29")
@@ -678,11 +671,10 @@ mod tests {
 
     #[test]
     fn test_update_binary_tree_h1_1() {
-        const CAPACITY: usize = Tree::<2, 1>::min_capacity();
-        let mut tree = make_test_tree::<2, 1>(CAPACITY).unwrap();
+        let mut tree = make_default_test_tree::<2, 1>().unwrap();
         assert!(tree.put(1.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x6efc51a0910e467104e12e8667bed7d2f15928ec6f33608bb2432face70aed53")
@@ -694,7 +686,7 @@ mod tests {
 
     #[test]
     fn test_update_binary_tree_h2() {
-        let mut tree = make_test_tree::<2, 2>(4).unwrap();
+        let mut tree = make_default_test_tree::<2, 2>().unwrap();
         assert!(tree.put(0.into(), 12.into()).is_ok());
         assert!(tree.put(1.into(), 34.into()).is_ok());
         assert!(tree.put(2.into(), 56.into()).is_ok());
@@ -714,11 +706,10 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h1_0() {
-        const CAPACITY: usize = Tree::<3, 1>::min_capacity();
-        let mut tree = make_test_tree::<3, 1>(CAPACITY).unwrap();
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
         assert!(tree.put(0.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x371862e4591023f4be2dd1b86827e2ef6dac40c430beab9d12344ddeef2a5802")
@@ -731,11 +722,10 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h1_1() {
-        const CAPACITY: usize = Tree::<3, 1>::min_capacity();
-        let mut tree = make_test_tree::<3, 1>(CAPACITY).unwrap();
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
         assert!(tree.put(1.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x438559edc8c31ac7792ecd45400af39cc7f4bef768b0ab368e9dc156590c712d")
@@ -748,11 +738,10 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h1_2() {
-        const CAPACITY: usize = Tree::<3, 1>::min_capacity();
-        let mut tree = make_test_tree::<3, 1>(CAPACITY).unwrap();
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
         assert!(tree.put(2.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 4);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x1b4a382ee991eaadbf46b52b4806a2871b2a79a5486468aa74eea1025214cb80")
@@ -765,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h2() {
-        let mut tree = make_test_tree::<3, 2>(4).unwrap();
+        let mut tree = make_default_test_tree::<3, 2>().unwrap();
         assert!(tree.put(0.into(), 123.into()).is_ok());
         assert!(tree.put(1.into(), 456.into()).is_ok());
         assert!(tree.put(2.into(), 789.into()).is_ok());
@@ -776,7 +765,7 @@ mod tests {
         assert!(tree.put(7.into(), 645.into()).is_ok());
         assert!(tree.put(8.into(), 978.into()).is_ok());
         assert_eq!(tree.size(), 4);
-        assert_eq!(tree.capacity(), 8);
+        assert_eq!(tree.capacity(), 16);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x48342267b9354cf2846a25aa333559c0123d339c81cef6cd385c14bc44232d34")
@@ -795,10 +784,9 @@ mod tests {
 
     #[test]
     fn test_new_tall_binary_tree() {
-        const CAPACITY: usize = Tree::<2, 256>::min_capacity();
-        let tree = make_test_tree::<2, 256>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<2, 256>().unwrap();
         assert_eq!(tree.size(), 256);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 512);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
@@ -810,10 +798,9 @@ mod tests {
 
     #[test]
     fn test_new_tall_ternary_tree() {
-        const CAPACITY: usize = Tree::<3, 161>::min_capacity();
-        let tree = make_test_tree::<3, 161>(CAPACITY).unwrap();
+        let tree = make_default_test_tree::<3, 161>().unwrap();
         assert_eq!(tree.size(), 161);
-        assert_eq!(tree.capacity(), CAPACITY);
+        assert_eq!(tree.capacity(), 512);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
@@ -875,7 +862,7 @@ mod tests {
         assert!(tree.put(test_key1(), 123.into()).is_ok());
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
-        assert_eq!(tree.capacity(), 1024);
+        assert_eq!(tree.capacity(), 2048);
         assert_eq!(
             tree.root_hash(),
             parse_scalar("0x41888c7fcb9ae568fd2d8f06451c53cd4e9a4467b43cddf99dd85c0ebe2a9eba")
@@ -970,6 +957,30 @@ mod tests {
         };
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
+        assert!(check_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_new_random_binary_tree() {
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        for _ in 0..100 {
+            assert!(
+                tree.put(utils::get_random_scalar(), utils::get_random_scalar())
+                    .is_ok()
+            );
+        }
+        assert!(check_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_new_random_ternary_tree() {
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        for _ in 0..100 {
+            assert!(
+                tree.put(utils::get_random_scalar(), utils::get_random_scalar())
+                    .is_ok()
+            );
+        }
         assert!(check_consistency(&tree).is_ok());
     }
 
