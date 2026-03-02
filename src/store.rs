@@ -824,6 +824,14 @@ mod tests {
     struct TestNodeData(StoredScalar, StoredScalar, StoredScalar);
 
     impl TestNodeData {
+        fn new(i: usize) -> Self {
+            Self(
+                Scalar::from(i as u64).into(),
+                Scalar::ZERO.into(),
+                Scalar::ZERO.into(),
+            )
+        }
+
         fn test_data1() -> Self {
             Self(
                 Scalar::from(12).into(),
@@ -1564,5 +1572,85 @@ mod tests {
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash3()).is_none());
         assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_max_load_factor() {
+        let mut set = make_test_hash_set().unwrap();
+        let elements: [TestNodeData; 10] = std::array::from_fn(|i| TestNodeData::new(i));
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert!(set.insert(elements[0]).is_ok());
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 2);
+        assert!(set.insert(elements[1]).is_ok());
+        assert_eq!(set.size(), 2);
+        assert_eq!(set.capacity(), 4);
+        assert!(set.insert(elements[2]).is_ok());
+        assert_eq!(set.size(), 3);
+        assert_eq!(set.capacity(), 8);
+        assert!(set.insert(elements[3]).is_ok());
+        assert_eq!(set.size(), 4);
+        assert_eq!(set.capacity(), 8);
+        assert!(set.insert(elements[4]).is_ok());
+        assert_eq!(set.size(), 5);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.insert(elements[5]).is_ok());
+        assert_eq!(set.size(), 6);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.insert(elements[6]).is_ok());
+        assert_eq!(set.size(), 7);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.insert(elements[7]).is_ok());
+        assert_eq!(set.size(), 8);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.insert(elements[8]).is_ok());
+        assert_eq!(set.size(), 9);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.insert(elements[9]).is_ok());
+        assert_eq!(set.size(), 10);
+        assert_eq!(set.capacity(), 32);
+    }
+
+    #[test]
+    fn test_min_load_factor() {
+        let mut set = make_test_hash_set().unwrap();
+        let elements: [TestNodeData; 10] = std::array::from_fn(|i| {
+            let element = TestNodeData::new(i);
+            assert!(set.insert(element).is_ok());
+            element
+        });
+        assert_eq!(set.size(), 10);
+        assert_eq!(set.capacity(), 32);
+        assert!(set.erase_and_shrink(elements[0].hash()).unwrap());
+        assert_eq!(set.size(), 9);
+        assert_eq!(set.capacity(), 32);
+        assert!(set.erase_and_shrink(elements[1].hash()).unwrap());
+        assert_eq!(set.size(), 8);
+        assert_eq!(set.capacity(), 32);
+        assert!(set.erase_and_shrink(elements[2].hash()).unwrap());
+        assert_eq!(set.size(), 7);
+        assert_eq!(set.capacity(), 32);
+        assert!(set.erase_and_shrink(elements[3].hash()).unwrap());
+        assert_eq!(set.size(), 6);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.erase_and_shrink(elements[4].hash()).unwrap());
+        assert_eq!(set.size(), 5);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.erase_and_shrink(elements[5].hash()).unwrap());
+        assert_eq!(set.size(), 4);
+        assert_eq!(set.capacity(), 16);
+        assert!(set.erase_and_shrink(elements[6].hash()).unwrap());
+        assert_eq!(set.size(), 3);
+        assert_eq!(set.capacity(), 8);
+        assert!(set.erase_and_shrink(elements[7].hash()).unwrap());
+        assert_eq!(set.size(), 2);
+        assert_eq!(set.capacity(), 8);
+        assert!(set.erase_and_shrink(elements[8].hash()).unwrap());
+        assert_eq!(set.size(), 1);
+        assert_eq!(set.capacity(), 4);
+        assert!(set.erase_and_shrink(elements[9].hash()).unwrap());
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 4);
     }
 }
