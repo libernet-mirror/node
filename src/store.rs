@@ -1259,6 +1259,79 @@ mod tests {
     }
 
     #[test]
+    fn test_stored_circular_buffer_pop_one_element() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value = Scalar::from(42).into();
+        buffer.push(value);
+        assert_eq!(buffer.pop(), value);
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![
+                StoredScalar::default(),
+                StoredScalar::default(),
+                StoredScalar::default(),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_pop_one_of_two_elements() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(buffer.pop(), value2);
+        assert_eq!(*buffer.top(), value1);
+        assert_eq!(*buffer.top_mut(), value1);
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), value1);
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), value1);
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![StoredScalar::default(), StoredScalar::default(), value1]
+        );
+    }
+
+    #[test]
+    fn test_stored_circular_buffer_pop_two_elements() {
+        let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
+        let value1 = Scalar::from(12).into();
+        let value2 = Scalar::from(34).into();
+        buffer.push(value1);
+        buffer.push(value2);
+        assert_eq!(buffer.pop(), value2);
+        assert_eq!(buffer.pop(), value1);
+        assert_eq!(*buffer.top(), StoredScalar::default());
+        assert_eq!(*buffer.top_mut(), StoredScalar::default());
+        assert_eq!(*buffer.get(0), StoredScalar::default());
+        assert_eq!(*buffer.get(1), StoredScalar::default());
+        assert_eq!(*buffer.get(2), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(0), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(1), StoredScalar::default());
+        assert_eq!(*buffer.get_mut(2), StoredScalar::default());
+        assert_eq!(
+            buffer.into_iter().collect::<Vec<StoredScalar>>(),
+            vec![
+                StoredScalar::default(),
+                StoredScalar::default(),
+                StoredScalar::default(),
+            ]
+        );
+    }
+
+    #[test]
     fn test_initial_state() {
         let mut set = make_test_hash_set().unwrap();
         assert_eq!(set.file_version(), constants::DATA_FILE_VERSION);
