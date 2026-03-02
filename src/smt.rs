@@ -552,7 +552,7 @@ mod tests {
                             utils::format_scalar(node.hash())
                         ));
                     }
-                    self.ref_counts.insert(hash, ref_count);
+                    self.ref_counts.insert(hash, ref_count - 1);
                     if level > 0 {
                         node.children()
                             .iter()
@@ -573,6 +573,15 @@ mod tests {
                     self.tree.size(),
                     self.ref_counts.len()
                 ));
+            }
+            for (hash, ref_count) in &self.ref_counts {
+                if *ref_count != 0 {
+                    return Err(anyhow!(
+                        "node {} has {} stray references",
+                        utils::format_scalar(*hash),
+                        *ref_count
+                    ));
+                }
             }
             Ok(())
         }
