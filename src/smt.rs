@@ -111,12 +111,12 @@ pub struct Tree<const W: usize, const H: usize> {
 }
 
 impl<const W: usize, const H: usize> Tree<W, H> {
-    /// Calculates the space allocated for the header.
-    pub const fn padded_header_size() -> usize {
-        MappedHashSet::<TreeHeader, Node<W>>::padded_header_size()
-    }
+    /// The byte size allocated for the header.
+    pub const PADDED_HEADER_SIZE: usize = MappedHashSet::<TreeHeader, Node<W>>::PADDED_HEADER_SIZE;
 
-    /// Calculates the space allocated for every node.
+    const MAX_HEADER_DATA_SIZE: usize = MappedHashSet::<TreeHeader, Node<W>>::MAX_HEADER_DATA_SIZE;
+
+    /// Returns the byte size allocated for every node.
     pub const fn padded_node_size() -> usize {
         MappedHashSet::<TreeHeader, Node<W>>::padded_node_size()
     }
@@ -201,7 +201,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
 
     /// Constructs a `Tree` from the provided data slice.
     pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
-        let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
+        let min_size = Self::PADDED_HEADER_SIZE + Self::min_capacity() * Self::padded_node_size();
         if mmap.len() < min_size {
             return Err(anyhow!(
                 "the mmap is too small (was {} bytes, need at least {})",
@@ -487,21 +487,23 @@ mod tests {
     #[test]
     fn test_binary_tree_format() {
         type TestTree = Tree<2, 256>;
-        assert_eq!(TestTree::padded_header_size(), 72);
+        assert!(std::mem::size_of::<TreeHeader>() < TestTree::MAX_HEADER_DATA_SIZE);
+        assert_eq!(TestTree::PADDED_HEADER_SIZE, 0x1000);
         assert_eq!(TestTree::padded_node_size(), 104);
     }
 
     #[test]
     fn test_ternary_tree_format() {
         type TestTree = Tree<3, 161>;
-        assert_eq!(TestTree::padded_header_size(), 72);
+        assert!(std::mem::size_of::<TreeHeader>() < TestTree::MAX_HEADER_DATA_SIZE);
+        assert_eq!(TestTree::PADDED_HEADER_SIZE, 0x1000);
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
     fn make_test_tree<const W: usize, const H: usize>(capacity: usize) -> Result<Tree<W, H>> {
         Tree::new(
             MmapMut::map_anon(
-                Tree::<W, H>::padded_header_size() + capacity * Tree::<W, H>::padded_node_size(),
+                Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
         )

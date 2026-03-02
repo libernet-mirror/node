@@ -100,6 +100,15 @@ impl PartialOrd for StoredScalar {
 /// Trait for data that is stored in the header of a `MappedHashSet`.
 pub trait HeaderData: Stored {}
 
+#[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
+pub struct EmptyHeaderData {}
+
+impl Stored for EmptyHeaderData {}
+impl HeaderData for EmptyHeaderData {}
+
+pub type EmptyHeader = Header<EmptyHeaderData>;
+
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct Header<T: HeaderData> {
@@ -256,12 +265,15 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     const MAX_LOAD_FACTOR_NUMERATOR: usize = 6;
     const MAX_LOAD_FACTOR_DENOMINATOR: usize = 10;
 
-    /// Calculates the space allocated for the header.
-    pub const fn padded_header_size() -> usize {
-        std::mem::size_of::<Header<H>>().next_multiple_of(8)
-    }
+    /// The byte size allocated for the file header.
+    pub const PADDED_HEADER_SIZE: usize = PAGE_SIZE;
 
-    /// Calculates the space allocated for every node.
+    /// The maximum allowed size for `HeaderData` implementations.
+    ///
+    /// This is given by the fact that the total file header size must be 0x1000.
+    pub const MAX_HEADER_DATA_SIZE: usize = PAGE_SIZE - std::mem::size_of::<EmptyHeader>();
+
+    /// Returns the byte size allocated for every node.
     pub const fn padded_node_size() -> usize {
         std::mem::size_of::<Node<T>>().next_multiple_of(8)
     }
@@ -355,7 +367,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// Returns an immutable reference to the node at the i-th slot.
     fn node(&self, i: usize) -> &Node<T> {
         let data = self.data();
-        let offset = Self::padded_header_size() + i * Self::padded_node_size();
+        let offset = Self::PADDED_HEADER_SIZE + i * Self::padded_node_size();
         unsafe {
             // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
             // for the node. The caller is assumed to provide a valid index `i`, in which case
@@ -367,7 +379,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// Returns a mutable reference to the node at the i-th slot.
     fn node_mut(&mut self, i: usize) -> &mut Node<T> {
         let data = self.data_mut();
-        let offset = Self::padded_header_size() + i * Self::padded_node_size();
+        let offset = Self::PADDED_HEADER_SIZE + i * Self::padded_node_size();
         unsafe {
             // SAFETY: we're changing neither mutability nor lifetime, just reinterpreting the bytes
             // for the node. The caller is assumed to provide a valid index `i`, in which case
@@ -454,7 +466,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 return Err(anyhow!("the memory-mapped address is not page-aligned"));
             }
         }
-        let min_size = Self::padded_header_size() + Self::min_capacity() * Self::padded_node_size();
+        let min_size = Self::PADDED_HEADER_SIZE + Self::min_capacity() * Self::padded_node_size();
         if mmap.len() < min_size {
             return Err(anyhow!(
                 "the mmap is too small (was {} bytes, need at least {})",
@@ -496,7 +508,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
                 capacity
             ));
         }
-        let expected_length = Self::padded_header_size() + capacity * Self::padded_node_size();
+        let expected_length = Self::PADDED_HEADER_SIZE + capacity * Self::padded_node_size();
         if set.mmap.len() != expected_length {
             return Err(anyhow!(
                 "incorrect mmap length (was {} bytes but this capacity requires {})",
@@ -522,7 +534,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     pub fn new(mut mmap: MmapMut, flags: u32) -> Result<Self> {
         let data = &mut mmap[..];
         data.fill(0);
-        let capacity = (data.len() - Self::padded_header_size()) / Self::padded_node_size();
+        let capacity = (data.len() - Self::PADDED_HEADER_SIZE) / Self::padded_node_size();
         *unsafe { &mut *(std::ptr::from_ref(data) as *mut Header<H>) } =
             Header::<H>::new(flags, Self::padded_node_size(), capacity);
         Self::load(mmap, flags)
@@ -658,7 +670,7 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
         unsafe {
             self.mmap.remap(
-                Self::padded_header_size() + new_capacity * Self::padded_node_size(),
+                Self::PADDED_HEADER_SIZE + new_capacity * Self::padded_node_size(),
                 memmap2::RemapOptions::default().may_move(true),
             )
         }?;
@@ -672,13 +684,13 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
         unsafe {
             self.mmap.remap(
-                Self::padded_header_size() + new_capacity * Self::padded_node_size(),
+                Self::PADDED_HEADER_SIZE + new_capacity * Self::padded_node_size(),
                 memmap2::RemapOptions::default().may_move(true),
             )
         }?;
         let data = &mut self.mmap[..];
-        data[(Self::padded_header_size() + old_capacity * Self::padded_node_size())
-            ..(Self::padded_header_size() + new_capacity * Self::padded_node_size())]
+        data[(Self::PADDED_HEADER_SIZE + old_capacity * Self::padded_node_size())
+            ..(Self::PADDED_HEADER_SIZE + new_capacity * Self::padded_node_size())]
             .fill(0);
 
         // Step 1: extract wraparound elements.
@@ -907,7 +919,7 @@ mod tests {
     fn make_test_hash_set() -> Result<TestMappedHashSet> {
         MappedHashSet::new(
             MmapMut::map_anon(
-                TestMappedHashSet::padded_header_size() + 2 * TestMappedHashSet::padded_node_size(),
+                TestMappedHashSet::PADDED_HEADER_SIZE + 2 * TestMappedHashSet::padded_node_size(),
             )?,
             TEST_FLAGS,
         )
