@@ -1,5 +1,6 @@
 use crate::store::{
-    HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar, StoredU64,
+    EmptyHeaderData, HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer,
+    StoredScalar, StoredU64,
 };
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
@@ -512,6 +513,74 @@ impl<const H: usize> Tree<3, H> {
     }
 }
 
+/// A forest of Sparse Merkle Trees.
+///
+/// This data structure is used to store nested merkle trees, such as the ones used for
+/// smartcontract storage. We can't store a separate tree file for every smartcontract, so we store
+/// all smartcontract storage trees in a single file instead. As an added benefit, the trees will
+/// share identical subtree portions and save some disk space.
+///
+/// NOTE: this data structure does not keep track of all the roots. That is up to the user. For
+/// smartcontract storage, the root hashes are stored in the leaves of the singleton parent tree.
+#[derive(Debug)]
+pub struct Forest<const W: usize, const H: usize> {
+    repr: Repr<EmptyHeaderData, W, H>,
+}
+
+impl<const H: usize> Forest<2, H> {
+    /// Looks up an element in the tree rooted at `root_hash` and returns its value.
+    ///
+    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+        self.repr.get(root_hash, key)
+    }
+
+    /// Looks up an element in the tree rooted at `root_hash` and returns its value along with a
+    /// Merkle proof for it.
+    ///
+    /// Returns `None` if the element is not found.
+    ///
+    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+        self.repr.get_proof(root_hash, key)
+    }
+
+    /// Updates the value associated with the specified `key` in the tree rooted at `root_hash` and
+    /// returns the new root hash of that tree.
+    ///
+    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
+        self.repr.put(root_hash, key, value)
+    }
+}
+
+impl<const H: usize> Forest<3, H> {
+    /// Looks up an element in the tree rooted at `root_hash` and returns its value.
+    ///
+    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+        self.repr.get(root_hash, key)
+    }
+
+    /// Looks up an element in the tree rooted at `root_hash` and returns its value along with a
+    /// Merkle proof for it.
+    ///
+    /// Returns `None` if the element is not found.
+    ///
+    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+        self.repr.get_proof(root_hash, key)
+    }
+
+    /// Updates the value associated with the specified `key` in the tree rooted at `root_hash` and
+    /// returns the new root hash of that tree.
+    ///
+    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
+        self.repr.put(root_hash, key, value)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -522,15 +591,15 @@ mod tests {
     const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_TREE;
 
     #[derive(Debug)]
-    struct ConsistencyChecker<'a, const W: usize, const H: usize> {
-        tree: &'a Tree<W, H>,
+    struct ConsistencyChecker<'a, HD: HeaderData, const W: usize, const H: usize> {
+        repr: &'a Repr<HD, W, H>,
         ref_counts: BTreeMap<Scalar, u64>,
     }
 
-    impl<'a, const W: usize, const H: usize> ConsistencyChecker<'a, W, H> {
-        fn new(tree: &'a Tree<W, H>) -> Self {
+    impl<'a, HD: HeaderData, const W: usize, const H: usize> ConsistencyChecker<'a, HD, W, H> {
+        fn new(repr: &'a Repr<HD, W, H>) -> Self {
             Self {
-                tree,
+                repr,
                 ref_counts: BTreeMap::default(),
             }
         }
@@ -540,7 +609,7 @@ mod tests {
                 *ref_count -= 1;
                 return Ok(());
             }
-            match self.tree.repr.hash_set.get(hash) {
+            match self.repr.hash_set.get(hash) {
                 Some(node) => {
                     if node.hash() != hash {
                         return Err(anyhow!("wrong hash (got {}, want {})", hash, node.hash()));
@@ -565,12 +634,14 @@ mod tests {
             }
         }
 
-        fn check(&mut self) -> Result<()> {
-            self.check_impl(self.tree.root_hash(), H - 1)?;
-            if self.ref_counts.len() != self.tree.size() {
+        fn check(&mut self, root_hashes: &[Scalar]) -> Result<()> {
+            for root_hash in root_hashes {
+                self.check_impl(*root_hash, H - 1)?;
+            }
+            if self.ref_counts.len() != self.repr.size() {
                 return Err(anyhow!(
                     "incorrect size (got {}, want {})",
-                    self.tree.size(),
+                    self.repr.size(),
                     self.ref_counts.len()
                 ));
             }
@@ -587,9 +658,17 @@ mod tests {
         }
     }
 
-    fn check_consistency<const W: usize, const H: usize>(tree: &Tree<W, H>) -> Result<()> {
+    fn check_tree_consistency<const W: usize, const H: usize>(tree: &Tree<W, H>) -> Result<()> {
         tree.repr.hash_set.check_consistency()?;
-        ConsistencyChecker::new(tree).check()
+        ConsistencyChecker::new(&tree.repr).check(&[tree.root_hash()])
+    }
+
+    fn check_forest_consistency<const W: usize, const H: usize>(
+        forest: &Forest<W, H>,
+        root_hashes: &[Scalar],
+    ) -> Result<()> {
+        forest.repr.hash_set.check_consistency()?;
+        ConsistencyChecker::new(&forest.repr).check(root_hashes)
     }
 
     fn test_key1() -> Scalar {
@@ -643,17 +722,14 @@ mod tests {
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
-    fn make_test_tree<const W: usize, const H: usize>(capacity: usize) -> Result<Tree<W, H>> {
+    fn make_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
+        let capacity = Tree::<W, H>::optimal_initial_capacity();
         Tree::new(
             MmapMut::map_anon(
                 Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
         )
-    }
-
-    fn make_default_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
-        make_test_tree(Tree::<W, H>::optimal_initial_capacity())
     }
 
     fn lookup2<const H: usize>(tree: &Tree<2, H>, key: Scalar) -> Scalar {
@@ -674,7 +750,7 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h1() {
-        let tree = make_default_test_tree::<2, 1>().unwrap();
+        let tree = make_test_tree::<2, 1>().unwrap();
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
         assert_eq!(
@@ -683,12 +759,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_binary_tree_h2() {
-        let tree = make_default_test_tree::<2, 2>().unwrap();
+        let tree = make_test_tree::<2, 2>().unwrap();
         assert_eq!(tree.size(), 2);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -699,12 +775,12 @@ mod tests {
         assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 2.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 3.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_binary_tree_h3() {
-        let tree = make_default_test_tree::<2, 3>().unwrap();
+        let tree = make_test_tree::<2, 3>().unwrap();
         assert_eq!(tree.size(), 3);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -719,12 +795,12 @@ mod tests {
         assert_eq!(lookup2(&tree, 5.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 6.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 7.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_ternary_tree_h1() {
-        let tree = make_default_test_tree::<3, 1>().unwrap();
+        let tree = make_test_tree::<3, 1>().unwrap();
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
         assert_eq!(
@@ -734,12 +810,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_ternary_tree_h2() {
-        let tree = make_default_test_tree::<3, 2>().unwrap();
+        let tree = make_test_tree::<3, 2>().unwrap();
         assert_eq!(tree.size(), 2);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -755,12 +831,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 6.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 7.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 8.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_ternary_tree_h3() {
-        let tree = make_default_test_tree::<3, 3>().unwrap();
+        let tree = make_test_tree::<3, 3>().unwrap();
         assert_eq!(tree.size(), 3);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -794,12 +870,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 24.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 25.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 26.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_binary_tree_h1_0() {
-        let mut tree = make_default_test_tree::<2, 1>().unwrap();
+        let mut tree = make_test_tree::<2, 1>().unwrap();
         assert!(tree.put(0.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -809,12 +885,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, 0.into()), 42.into());
         assert_eq!(lookup2(&tree, 1.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_binary_tree_h1_1() {
-        let mut tree = make_default_test_tree::<2, 1>().unwrap();
+        let mut tree = make_test_tree::<2, 1>().unwrap();
         assert!(tree.put(1.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -824,12 +900,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, 1.into()), 42.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_binary_tree_h2() {
-        let mut tree = make_default_test_tree::<2, 2>().unwrap();
+        let mut tree = make_test_tree::<2, 2>().unwrap();
         assert!(tree.put(0.into(), 12.into()).is_ok());
         assert!(tree.put(1.into(), 34.into()).is_ok());
         assert!(tree.put(2.into(), 56.into()).is_ok());
@@ -844,12 +920,12 @@ mod tests {
         assert_eq!(lookup2(&tree, 1.into()), 34.into());
         assert_eq!(lookup2(&tree, 2.into()), 56.into());
         assert_eq!(lookup2(&tree, 3.into()), 78.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_ternary_tree_h1_0() {
-        let mut tree = make_default_test_tree::<3, 1>().unwrap();
+        let mut tree = make_test_tree::<3, 1>().unwrap();
         assert!(tree.put(0.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -860,12 +936,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), 42.into());
         assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_ternary_tree_h1_1() {
-        let mut tree = make_default_test_tree::<3, 1>().unwrap();
+        let mut tree = make_test_tree::<3, 1>().unwrap();
         assert!(tree.put(1.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -876,12 +952,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 1.into()), 42.into());
         assert_eq!(lookup3(&tree, 2.into()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_ternary_tree_h1_2() {
-        let mut tree = make_default_test_tree::<3, 1>().unwrap();
+        let mut tree = make_test_tree::<3, 1>().unwrap();
         assert!(tree.put(2.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -892,12 +968,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 0.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 1.into()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, 2.into()), 42.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_ternary_tree_h2() {
-        let mut tree = make_default_test_tree::<3, 2>().unwrap();
+        let mut tree = make_test_tree::<3, 2>().unwrap();
         assert!(tree.put(0.into(), 123.into()).is_ok());
         assert!(tree.put(1.into(), 456.into()).is_ok());
         assert!(tree.put(2.into(), 789.into()).is_ok());
@@ -922,12 +998,12 @@ mod tests {
         assert_eq!(lookup3(&tree, 6.into()), 312.into());
         assert_eq!(lookup3(&tree, 7.into()), 645.into());
         assert_eq!(lookup3(&tree, 8.into()), 978.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_tall_binary_tree() {
-        let tree = make_default_test_tree::<2, 256>().unwrap();
+        let tree = make_test_tree::<2, 256>().unwrap();
         assert_eq!(tree.size(), 256);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
@@ -936,12 +1012,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_tall_ternary_tree() {
-        let tree = make_default_test_tree::<3, 161>().unwrap();
+        let tree = make_test_tree::<3, 161>().unwrap();
         assert_eq!(tree.size(), 161);
         assert_eq!(tree.capacity(), 512);
         assert_eq!(
@@ -950,12 +1026,12 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_binary_tree1() {
-        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        let mut tree = make_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
@@ -965,12 +1041,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), 42.into());
         assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_binary_tree2() {
-        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        let mut tree = make_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key2(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
@@ -980,12 +1056,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup2(&tree, test_key2()), 42.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_binary_tree3() {
-        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        let mut tree = make_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 12.into()).is_ok());
         assert!(tree.put(test_key2(), 34.into()).is_ok());
         assert_eq!(tree.size(), 764);
@@ -996,12 +1072,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), 12.into());
         assert_eq!(lookup2(&tree, test_key2()), 34.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_binary_tree_twice() {
-        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        let mut tree = make_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 123.into()).is_ok());
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
@@ -1012,12 +1088,12 @@ mod tests {
         );
         assert_eq!(lookup2(&tree, test_key1()), 42.into());
         assert_eq!(lookup2(&tree, test_key2()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_ternary_tree1() {
-        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        let mut tree = make_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
@@ -1027,12 +1103,12 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), 42.into());
         assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_ternary_tree2() {
-        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        let mut tree = make_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key2(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
@@ -1042,12 +1118,12 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), Scalar::ZERO);
         assert_eq!(lookup3(&tree, test_key2()), 42.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_ternary_tree3() {
-        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        let mut tree = make_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 12.into()).is_ok());
         assert!(tree.put(test_key2(), 34.into()).is_ok());
         assert_eq!(tree.size(), 481);
@@ -1058,12 +1134,12 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), 12.into());
         assert_eq!(lookup3(&tree, test_key2()), 34.into());
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_update_tall_ternary_tree_twice() {
-        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        let mut tree = make_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 123.into()).is_ok());
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
@@ -1074,63 +1150,63 @@ mod tests {
         );
         assert_eq!(lookup3(&tree, test_key1()), 42.into());
         assert_eq!(lookup3(&tree, test_key2()), Scalar::ZERO);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_reload_binary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_default_test_tree::<2, 256>().unwrap();
+            let mut tree = make_test_tree::<2, 256>().unwrap();
             assert!(tree.put(test_key1(), 42.into()).is_ok());
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
         let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_reload_ternary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_default_test_tree::<3, 161>().unwrap();
+            let mut tree = make_test_tree::<3, 161>().unwrap();
             assert!(tree.put(test_key1(), 42.into()).is_ok());
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_random_binary_tree() {
-        let mut tree = make_default_test_tree::<2, 256>().unwrap();
+        let mut tree = make_test_tree::<2, 256>().unwrap();
         for _ in 0..100 {
             assert!(
                 tree.put(utils::get_random_scalar(), utils::get_random_scalar())
                     .is_ok()
             );
         }
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_random_ternary_tree() {
-        let mut tree = make_default_test_tree::<3, 161>().unwrap();
+        let mut tree = make_test_tree::<3, 161>().unwrap();
         for _ in 0..100 {
             assert!(
                 tree.put(utils::get_random_scalar(), utils::get_random_scalar())
                     .is_ok()
             );
         }
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_reload_random_binary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_default_test_tree::<2, 256>().unwrap();
+            let mut tree = make_test_tree::<2, 256>().unwrap();
             for _ in 0..100 {
                 assert!(
                     tree.put(utils::get_random_scalar(), utils::get_random_scalar())
@@ -1142,13 +1218,13 @@ mod tests {
         };
         let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_reload_random_ternary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_default_test_tree::<3, 161>().unwrap();
+            let mut tree = make_test_tree::<3, 161>().unwrap();
             for _ in 0..100 {
                 assert!(
                     tree.put(utils::get_random_scalar(), utils::get_random_scalar())
@@ -1160,6 +1236,6 @@ mod tests {
         };
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
-        assert!(check_consistency(&tree).is_ok());
+        assert!(check_tree_consistency(&tree).is_ok());
     }
 }
