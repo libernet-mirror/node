@@ -1,5 +1,6 @@
 use crate::store::{
-    HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar, StoredU64,
+    self, HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar,
+    StoredU64,
 };
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
@@ -226,6 +227,14 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
         }
         self.ref_node(hash);
         Ok(hash)
+    }
+
+    /// Iterates over the nodes.
+    ///
+    /// NOTE: the iteration order is undefined because this iterator comes straight from the
+    /// underlying hash table.
+    fn iter<'a>(&'a self) -> store::Iter<'a, HD, Node<W>> {
+        self.hash_set.iter()
     }
 }
 
@@ -768,6 +777,23 @@ mod tests {
             }
         }
 
+        fn check_no_stray_nodes(&self) -> Result<()> {
+            let got = self
+                .repr
+                .iter()
+                .map(|(hash, _)| hash)
+                .collect::<BTreeSet<Scalar>>();
+            let want = self
+                .ref_counts
+                .iter()
+                .map(|(hash, _)| *hash)
+                .collect::<BTreeSet<Scalar>>();
+            if got != want {
+                return Err(anyhow!("stray nodes found"));
+            }
+            Ok(())
+        }
+
         fn check(&mut self, root_hashes: &[Scalar]) -> Result<()> {
             for root_hash in root_hashes {
                 self.check_impl(*root_hash, H - 1)?;
@@ -788,6 +814,7 @@ mod tests {
                     ));
                 }
             }
+            self.check_no_stray_nodes()?;
             Ok(())
         }
     }
