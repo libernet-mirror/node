@@ -1568,4 +1568,165 @@ mod tests {
         assert_eq!(lookup_ternary_forest(&forest, erh, 26.into()), Scalar::ZERO);
         assert!(check_forest_consistency(&forest, &[erh]).is_ok());
     }
+
+    #[test]
+    fn test_update_binary_forest_h1_0() {
+        let mut forest = make_test_forest::<2, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 0.into(), 42.into()).unwrap();
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 4);
+        assert_eq!(
+            rh,
+            parse_scalar("0x3096077a3d12ab01b506e6aceda3c0dda9fe86c329ce2996ee63e1517b729e29")
+        );
+        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, rh, 0.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, rh, 1.into()), Scalar::ZERO);
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
+
+    #[test]
+    fn test_update_binary_forest_h1_1() {
+        let mut forest = make_test_forest::<2, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 1.into(), 42.into()).unwrap();
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 4);
+        assert_eq!(
+            rh,
+            parse_scalar("0x6efc51a0910e467104e12e8667bed7d2f15928ec6f33608bb2432face70aed53")
+        );
+        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, rh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, rh, 1.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
+
+    #[test]
+    fn test_update_binary_forest_h2() {
+        let mut forest = make_test_forest::<2, 2>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 0.into(), 12.into()).unwrap();
+        let rh = forest.put(rh, 1.into(), 34.into()).unwrap();
+        let rh = forest.put(rh, 2.into(), 56.into()).unwrap();
+        let rh = forest.put(rh, 3.into(), 78.into()).unwrap();
+        assert_eq!(forest.size(), 5);
+        assert_eq!(forest.capacity(), 16);
+        assert_eq!(
+            rh,
+            parse_scalar("0x23531e38b11a44fa07a42dd66cd777dc0b57c1bab00b8b3ceae7915790fcc544")
+        );
+        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, erh, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, erh, 3.into()), Scalar::ZERO);
+        assert_eq!(lookup_binary_forest(&forest, rh, 0.into()), 12.into());
+        assert_eq!(lookup_binary_forest(&forest, rh, 1.into()), 34.into());
+        assert_eq!(lookup_binary_forest(&forest, rh, 2.into()), 56.into());
+        assert_eq!(lookup_binary_forest(&forest, rh, 3.into()), 78.into());
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
+
+    #[test]
+    fn test_update_ternary_forest_h1_0() {
+        let mut forest = make_test_forest::<3, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 0.into(), 42.into()).unwrap();
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 4);
+        assert_eq!(
+            rh,
+            parse_scalar("0x371862e4591023f4be2dd1b86827e2ef6dac40c430beab9d12344ddeef2a5802")
+        );
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 2.into()), Scalar::ZERO);
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
+
+    #[test]
+    fn test_update_ternary_forest_h1_1() {
+        let mut forest = make_test_forest::<3, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 1.into(), 42.into()).unwrap();
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 4);
+        assert_eq!(
+            rh,
+            parse_scalar("0x438559edc8c31ac7792ecd45400af39cc7f4bef768b0ab368e9dc156590c712d")
+        );
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 2.into()), Scalar::ZERO);
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
+
+    #[test]
+    fn test_update_ternary_forest_h1_2() {
+        let mut forest = make_test_forest::<3, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 2.into(), 42.into()).unwrap();
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 4);
+        assert_eq!(
+            rh,
+            parse_scalar("0x1b4a382ee991eaadbf46b52b4806a2871b2a79a5486468aa74eea1025214cb80")
+        );
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 2.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
+
+    #[test]
+    fn test_update_ternary_forest_h2() {
+        let mut forest = make_test_forest::<3, 2>().unwrap();
+        let erh = forest.empty_root_hash();
+        let rh = forest.put(erh, 0.into(), 123.into()).unwrap();
+        let rh = forest.put(rh, 1.into(), 456.into()).unwrap();
+        let rh = forest.put(rh, 2.into(), 789.into()).unwrap();
+        let rh = forest.put(rh, 3.into(), 231.into()).unwrap();
+        let rh = forest.put(rh, 4.into(), 564.into()).unwrap();
+        let rh = forest.put(rh, 5.into(), 897.into()).unwrap();
+        let rh = forest.put(rh, 6.into(), 312.into()).unwrap();
+        let rh = forest.put(rh, 7.into(), 645.into()).unwrap();
+        let rh = forest.put(rh, 8.into(), 978.into()).unwrap();
+        assert_eq!(forest.size(), 6);
+        assert_eq!(forest.capacity(), 16);
+        assert_eq!(
+            rh,
+            parse_scalar("0x48342267b9354cf2846a25aa333559c0123d339c81cef6cd385c14bc44232d34")
+        );
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 3.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 4.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 5.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 6.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 7.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, erh, 8.into()), Scalar::ZERO);
+        assert_eq!(lookup_ternary_forest(&forest, rh, 0.into()), 123.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 1.into()), 456.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 2.into()), 789.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 3.into()), 231.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 4.into()), 564.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 5.into()), 897.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 6.into()), 312.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 7.into()), 645.into());
+        assert_eq!(lookup_ternary_forest(&forest, rh, 8.into()), 978.into());
+        assert!(check_forest_consistency(&forest, &[rh]).is_ok());
+    }
 }
