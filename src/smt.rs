@@ -556,12 +556,22 @@ pub struct Forest<const W: usize, const H: usize> {
 }
 
 impl<const W: usize, const H: usize> Forest<W, H> {
+    /// The byte size allocated for the header.
+    pub const PADDED_HEADER_SIZE: usize = Repr::<ForestHeader, W, H>::PADDED_HEADER_SIZE;
+
+    const MAX_HEADER_DATA_SIZE: usize = Repr::<ForestHeader, W, H>::MAX_HEADER_DATA_SIZE;
+
+    /// Returns the byte size allocated for every node.
+    pub const fn padded_node_size() -> usize {
+        Repr::<ForestHeader, W, H>::padded_node_size()
+    }
+
     /// Returns the optimal initial capacity (in terms of number of nodes) for this type of tree.
     ///
     /// The memory-mapped data slice provided at construction should be
     /// `PADDED_HEADER_SIZE + optimal_initial_capacity() * padded_node_size()` bytes long.
     pub const fn optimal_initial_capacity() -> usize {
-        Repr::<TreeHeader, W, H>::get_max_capacity_for(H)
+        Repr::<ForestHeader, W, H>::get_max_capacity_for(H)
     }
 
     /// Returns the root hash of the empty tree, which can always be assumed to be in the forest and
@@ -710,7 +720,7 @@ mod tests {
     use super::*;
     use crate::{constants, testing::parse_scalar};
     use primitive_types::U256;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
 
     const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_TREE;
 
@@ -792,7 +802,22 @@ mod tests {
         root_hashes: &[Scalar],
     ) -> Result<()> {
         forest.repr.hash_set.check_consistency()?;
-        ConsistencyChecker::new(&forest.repr).check(root_hashes)
+        let empty_root_hash = forest.empty_root_hash();
+        let expected_empty_root_hash = Forest::<W, H>::calculate_empty_root_hash();
+        if empty_root_hash != expected_empty_root_hash {
+            return Err(anyhow!(
+                "incorrect empty root hash (got {}, want {})",
+                empty_root_hash,
+                expected_empty_root_hash
+            ));
+        }
+        let mut root_hashes = root_hashes
+            .iter()
+            .map(|hash| *hash)
+            .collect::<BTreeSet<Scalar>>();
+        root_hashes.insert(empty_root_hash);
+        ConsistencyChecker::new(&forest.repr)
+            .check(root_hashes.into_iter().collect::<Vec<Scalar>>().as_slice())
     }
 
     fn test_key1() -> Scalar {
@@ -1361,6 +1386,22 @@ mod tests {
         let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_binary_forest_format() {
+        type TestForest = Forest<2, 256>;
+        assert!(std::mem::size_of::<ForestHeader>() < TestForest::MAX_HEADER_DATA_SIZE);
+        assert_eq!(TestForest::PADDED_HEADER_SIZE, 0x1000);
+        assert_eq!(TestForest::padded_node_size(), 104);
+    }
+
+    #[test]
+    fn test_ternary_forest_format() {
+        type TestForest = Forest<3, 161>;
+        assert!(std::mem::size_of::<ForestHeader>() < TestForest::MAX_HEADER_DATA_SIZE);
+        assert_eq!(TestForest::PADDED_HEADER_SIZE, 0x1000);
+        assert_eq!(TestForest::padded_node_size(), 136);
     }
 
     fn make_test_forest<const W: usize, const H: usize>() -> Result<Forest<W, H>> {
