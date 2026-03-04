@@ -313,6 +313,28 @@ impl<T: NodeData> Node<T> {
     }
 }
 
+/// `MappedHashSet` node iterator.
+#[derive(Debug)]
+pub struct Iter<'a, H: HeaderData, T: NodeData> {
+    parent: &'a MappedHashSet<H, T>,
+    index: usize,
+}
+
+impl<'a, H: HeaderData, T: NodeData> Iterator for Iter<'a, H, T> {
+    type Item = (Scalar, &'a T);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.index < self.parent.capacity() {
+            let node = self.parent.node(self.index);
+            self.index += 1;
+            if !node.is_empty() {
+                return Some((node.hash(), &node.value));
+            }
+        }
+        None
+    }
+}
+
 /// A generic hash table that works on a memory-mapped file.
 ///
 /// Our implementation uses open addressing (https://en.wikipedia.org/wiki/Open_addressing) with
@@ -681,10 +703,15 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         }
     }
 
+    /// Returns true if the element identified by the specified hash is present, false otherwise.
+    pub fn has(&self, hash: Scalar) -> bool {
+        !self.node(self.probe(hash)).is_empty()
+    }
+
     /// Looks up an element by hash, returning `None` if it's not found.
     pub fn get(&self, hash: Scalar) -> Option<&T> {
         let node = self.node(self.probe(hash));
-        if node.hash() != hash {
+        if node.is_empty() {
             None
         } else {
             Some(&node.value)
@@ -694,10 +721,17 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     /// Mutably looks up an element by hash, returning `None` if it's not found.
     pub fn get_mut(&mut self, hash: Scalar) -> Option<&mut T> {
         let node = self.node_mut(self.probe(hash));
-        if node.hash() != hash {
+        if node.is_empty() {
             None
         } else {
             Some(&mut node.value)
+        }
+    }
+
+    pub fn iter<'a>(&'a self) -> Iter<'a, H, T> {
+        Iter {
+            parent: self,
+            index: 0,
         }
     }
 
@@ -920,6 +954,8 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crypto::poseidon;
 
@@ -1006,6 +1042,18 @@ mod tests {
             )?,
             TEST_FLAGS,
         )
+    }
+
+    fn check_iterated_elements(
+        set: &MappedHashSet<TestHeaderData, TestNodeData>,
+        expected: &[TestNodeData],
+    ) -> Result<()> {
+        let got = BTreeMap::from_iter(set.iter().map(|(hash, value)| (hash, *value)));
+        let want = BTreeMap::from_iter(expected.iter().map(|value| (value.hash(), *value)));
+        if got != want {
+            return Err(anyhow!("unexpected element(s) from iterator"));
+        }
+        Ok(())
     }
 
     #[test]
@@ -1340,10 +1388,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1366,10 +1417,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1382,10 +1436,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element);
+        assert!(check_iterated_elements(&set, &[element]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1400,10 +1457,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element1, element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1420,12 +1480,16 @@ mod tests {
         assert_eq!(set.capacity(), 8);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
+        assert!(set.has(TestNodeData::test_hash3()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get(TestNodeData::test_hash3()).unwrap(), element3);
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
         assert_eq!(*set.get_mut(TestNodeData::test_hash3()).unwrap(), element3);
+        assert!(check_iterated_elements(&set, &[element1, element2, element3]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1439,10 +1503,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1458,10 +1525,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1473,10 +1543,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1488,10 +1561,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1505,10 +1581,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1522,10 +1601,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1539,10 +1621,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1557,10 +1642,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1574,10 +1662,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1592,10 +1683,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1610,10 +1704,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1628,10 +1725,13 @@ mod tests {
         assert_eq!(set.capacity(), 2);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1647,10 +1747,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1666,10 +1769,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element1]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1686,10 +1792,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1706,10 +1815,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert_eq!(*set.get(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash1()).unwrap(), element1);
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[element1]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1725,10 +1837,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1745,10 +1860,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1765,10 +1883,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1785,10 +1906,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get(TestNodeData::test_hash2()).unwrap(), element2);
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert_eq!(*set.get_mut(TestNodeData::test_hash2()).unwrap(), element2);
+        assert!(check_iterated_elements(&set, &[element2]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1805,10 +1929,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1825,10 +1952,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1845,10 +1975,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1871,10 +2004,13 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1894,12 +2030,16 @@ mod tests {
         assert_eq!(set.capacity(), 8);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
+        assert!(!set.has(TestNodeData::test_hash3()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get(TestNodeData::test_hash3()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash3()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1919,12 +2059,16 @@ mod tests {
         assert_eq!(set.capacity(), 8);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
+        assert!(!set.has(TestNodeData::test_hash3()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get(TestNodeData::test_hash3()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash3()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1944,12 +2088,16 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
+        assert!(!set.has(TestNodeData::test_hash3()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get(TestNodeData::test_hash3()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash3()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
@@ -1978,12 +2126,16 @@ mod tests {
         assert_eq!(set.capacity(), 4);
         assert_eq!(*set.header_data(), TestHeaderData::default());
         assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
+        assert!(!set.has(TestNodeData::test_hash3()));
         assert!(set.get(TestNodeData::test_hash1()).is_none());
         assert!(set.get(TestNodeData::test_hash2()).is_none());
         assert!(set.get(TestNodeData::test_hash3()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
         assert!(set.get_mut(TestNodeData::test_hash3()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
         assert!(set.check_consistency().is_ok());
     }
 
