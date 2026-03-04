@@ -7,12 +7,17 @@ use crate::libernet::wasm::{
     TableType, TagSection, TagType, TypeRefFunc, TypeSection, Version,
 };
 use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
-use anyhow::{Context, Result, anyhow, bail};
-use blstrs::Scalar;
-use crypto::merkle::AsScalar;
-use crypto::utils::h512_to_scalar;
-use primitive_types::H512;
+use anyhow::{Context, Result, bail};
 use sha3::Digest;
+
+const OPTION_TAG: [u8; 1] = [1];
+const BLOCK_TYPE_EMPTY_TAG: [u8; 1] = [2];
+const BLOCK_TYPE_VALUE_TYPE_TAG: [u8; 1] = [3];
+const BLOCK_TYPE_TYPE_INDEX_TAG: [u8; 1] = [4];
+const CATCH_ELEMENT_ONE_TAG: [u8; 1] = [5];
+const CATCH_ELEMENT_ONE_REF_TAG: [u8; 1] = [6];
+const CATCH_ELEMENT_ALL_TAG: [u8; 1] = [7];
+const CATCH_ELEMENT_ALL_REF_TAG: [u8; 1] = [8];
 
 macro_rules! some {
     ($expr:expr, $pat:pat => $body:block, $msg:expr $(,)?) => {{
@@ -23,7 +28,7 @@ macro_rules! some {
     }};
 }
 
-trait Sha3Hash {
+pub trait Sha3Hash {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()>;
 }
 
@@ -82,10 +87,10 @@ impl<T: Sha3Hash> Sha3Hash for Option<T> {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match self {
             Some(v) => {
-                hasher.update([1, 1]);
+                hasher.update(OPTION_TAG);
                 v.sha3_hash(hasher)?;
             }
-            None => hasher.update([1, 0]),
+            None => hasher.update([0]),
         }
         Ok(())
     }
@@ -104,9 +109,8 @@ impl<T: Sha3Hash> Sha3Hash for Vec<T> {
 impl Sha3Hash for wasm::ValueType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         let value_code = self.value_type.context("Value type is required")?;
-        let plain_type = PlainType::try_from(value_code)?;
         value_code.sha3_hash(hasher)?;
-        match plain_type {
+        match PlainType::try_from(value_code)? {
             PlainType::ValueTypeI32
             | PlainType::ValueTypeI64
             | PlainType::ValueTypeF32
@@ -132,9 +136,15 @@ impl Sha3Hash for wasm::ValueType {
 impl Sha3Hash for wasm::block_type::BlockType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match self {
-            wasm::block_type::BlockType::Empty(_) => hasher.update([0]),
-            wasm::block_type::BlockType::ValueType(vt) => vt.sha3_hash(hasher)?,
-            wasm::block_type::BlockType::TypeIndex(v) => v.sha3_hash(hasher)?,
+            wasm::block_type::BlockType::Empty(_) => hasher.update(BLOCK_TYPE_EMPTY_TAG),
+            wasm::block_type::BlockType::ValueType(vt) => {
+                hasher.update(BLOCK_TYPE_VALUE_TYPE_TAG);
+                vt.sha3_hash(hasher)?;
+            }
+            wasm::block_type::BlockType::TypeIndex(v) => {
+                hasher.update(BLOCK_TYPE_TYPE_INDEX_TAG);
+                v.sha3_hash(hasher)?;
+            }
         };
         Ok(())
     }
@@ -142,41 +152,37 @@ impl Sha3Hash for wasm::block_type::BlockType {
 
 impl Sha3Hash for CatchElement {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
-        let catch_element = self
-            .catch_element
-            .ok_or(anyhow!("Catch element is required"))?;
+        let catch_element = self.catch_element.context("Catch element is required")?;
         match catch_element {
             wasm::catch_element::CatchElement::One(one) => {
-                hasher.update([0]);
-                one.tag
-                    .ok_or(anyhow!("One: Tag is required"))?
-                    .sha3_hash(hasher)?;
+                hasher.update(CATCH_ELEMENT_ONE_TAG);
+                one.tag.context("One: Tag is required")?.sha3_hash(hasher)?;
                 one.label
-                    .ok_or(anyhow!("One: Label is required"))?
+                    .context("One: Label is required")?
                     .sha3_hash(hasher)?;
             }
             wasm::catch_element::CatchElement::OneRef(one_ref) => {
-                hasher.update([1]);
+                hasher.update(CATCH_ELEMENT_ONE_REF_TAG);
                 one_ref
                     .tag
-                    .ok_or(anyhow!("OneRef: Tag is required"))?
+                    .context("OneRef: Tag is required")?
                     .sha3_hash(hasher)?;
                 one_ref
                     .label
-                    .ok_or(anyhow!("OneRef: Label is required"))?
+                    .context("OneRef: Label is required")?
                     .sha3_hash(hasher)?;
             }
             wasm::catch_element::CatchElement::All(all) => {
-                hasher.update([2]);
+                hasher.update(CATCH_ELEMENT_ALL_TAG);
                 all.label
-                    .ok_or(anyhow!("All: Label is required"))?
+                    .context("All: Label is required")?
                     .sha3_hash(hasher)?;
             }
             wasm::catch_element::CatchElement::AllRef(all_ref) => {
-                hasher.update([3]);
+                hasher.update(CATCH_ELEMENT_ALL_REF_TAG);
                 all_ref
                     .label
-                    .ok_or(anyhow!("AllRef: Label is required"))?
+                    .context("AllRef: Label is required")?
                     .sha3_hash(hasher)?;
             }
         };
@@ -833,17 +839,10 @@ impl Sha3Hash for ProgramModule {
     }
 }
 
-impl AsScalar for ProgramModule {
-    fn as_scalar(&self) -> Scalar {
-        let mut hasher = sha3::Sha3_512::new();
-        self.sha3_hash(&mut hasher).unwrap();
-        let hash = hasher.finalize();
-        h512_to_scalar(H512::from_slice(hash.as_slice()))
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use primitive_types::H512;
+
     use super::*;
     use crate::libernet::wasm::operator::Operator as OperatorVariant;
     use crate::libernet::wasm::{
@@ -852,25 +851,25 @@ mod tests {
         block_type, catch_element,
     };
 
-    fn sha512<I: IntoIterator<Item = T>, T: AsRef<[u8]>>(parts: I) -> String {
+    fn sha3_512<I: IntoIterator<Item = T>, T: AsRef<[u8]>>(parts: I) -> H512 {
         let mut hasher = sha3::Sha3_512::new();
         for p in parts {
             hasher.update(p.as_ref());
         }
-        hex::encode(hasher.finalize())
+        H512::from_slice(hasher.finalize().as_slice())
     }
 
-    fn hash<I: IntoIterator<Item = T>, T: Sha3Hash>(parts: I) -> String {
+    fn hash<I: IntoIterator<Item = T>, T: Sha3Hash>(parts: I) -> H512 {
         let mut hasher = sha3::Sha3_512::new();
         for p in parts {
             p.sha3_hash(&mut hasher).unwrap();
         }
-        hex::encode(hasher.finalize())
+        H512::from_slice(hasher.finalize().as_slice())
     }
 
     macro_rules! hash_eq {
         ($left:expr, $right:expr) => {
-            assert_eq!(hash($left), sha512($right));
+            assert_eq!(hash($left), sha3_512($right));
         };
     }
 
@@ -969,8 +968,8 @@ mod tests {
 
     #[test]
     fn test_option_to_hash() {
-        hash_eq!([Some(42u32)], [&[1, 1], &42u32.to_le_bytes()[..]]);
-        hash_eq!([None::<u32>], [&[1, 0]]);
+        hash_eq!([Some(42u32)], [&OPTION_TAG, &42u32.to_le_bytes()[..]]);
+        hash_eq!([None::<u32>], [&[0]]);
     }
 
     #[test]
@@ -1062,7 +1061,11 @@ mod tests {
         };
         hash_eq!(
             [ce],
-            [&[0], &1u32.to_le_bytes()[..], &2u32.to_le_bytes()[..]]
+            [
+                &CATCH_ELEMENT_ONE_TAG,
+                &1u32.to_le_bytes()[..],
+                &2u32.to_le_bytes()[..]
+            ]
         );
     }
 
@@ -1076,7 +1079,11 @@ mod tests {
         };
         hash_eq!(
             [ce],
-            [&[1], &1u32.to_le_bytes()[..], &2u32.to_le_bytes()[..]]
+            [
+                &CATCH_ELEMENT_ONE_REF_TAG,
+                &1u32.to_le_bytes()[..],
+                &2u32.to_le_bytes()[..]
+            ]
         );
     }
 
@@ -1087,7 +1094,7 @@ mod tests {
                 label: Some(5),
             })),
         };
-        hash_eq!([ce], [&[2], &5u32.to_le_bytes()[..]]);
+        hash_eq!([ce], [&CATCH_ELEMENT_ALL_TAG, &5u32.to_le_bytes()[..]]);
     }
 
     #[test]
@@ -1097,7 +1104,7 @@ mod tests {
                 label: Some(5),
             })),
         };
-        hash_eq!([ce], [&[3], &5u32.to_le_bytes()[..]]);
+        hash_eq!([ce], [&CATCH_ELEMENT_ALL_REF_TAG, &5u32.to_le_bytes()[..]]);
     }
 
     #[test]
@@ -1172,7 +1179,13 @@ mod tests {
                 block_type: Some(block_type::BlockType::Empty(110)),
             })),
         };
-        hash_eq!([op], [&(OpCode::Block as i32).to_le_bytes()[..], &[0]]);
+        hash_eq!(
+            [op],
+            [
+                &(OpCode::Block as i32).to_le_bytes()[..],
+                &BLOCK_TYPE_EMPTY_TAG
+            ]
+        );
     }
 
     #[test]
@@ -1187,6 +1200,7 @@ mod tests {
             [op],
             [
                 &(OpCode::Block as i32).to_le_bytes()[..],
+                &BLOCK_TYPE_VALUE_TYPE_TAG,
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
                 &[0]
             ]
@@ -1205,6 +1219,7 @@ mod tests {
             [op],
             [
                 &(OpCode::Block as i32).to_le_bytes()[..],
+                &BLOCK_TYPE_TYPE_INDEX_TAG,
                 &110u32.to_le_bytes()[..]
             ]
         );
@@ -1412,7 +1427,7 @@ mod tests {
 
     #[test]
     fn test_empty_sections_to_hash() {
-        let empty_vec_hash = sha512([0u64.to_le_bytes()]);
+        let empty_vec_hash = sha3_512([0u64.to_le_bytes()]);
         assert_eq!(hash([TypeSection { types: vec![] }]), empty_vec_hash);
         assert_eq!(hash([ImportSection { imports: vec![] }]), empty_vec_hash);
         assert_eq!(
@@ -1495,7 +1510,7 @@ mod tests {
                 &(RefType::RefFunc as i32).to_le_bytes()[..],
                 &[1],
                 &100u64.to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &200u64.to_le_bytes()[..],
                 &[0]
             ]
@@ -1519,9 +1534,9 @@ mod tests {
                 &[1],
                 &[0],
                 &1u64.to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &256u64.to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &16u32.to_le_bytes()[..]
             ]
         );
@@ -1538,9 +1553,9 @@ mod tests {
         hash_eq!(
             [tag],
             [
-                &[1, 1],
+                &OPTION_TAG,
                 &(TagKind::Exception as i32).to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &42u32.to_le_bytes()[..]
             ]
         );
@@ -1634,7 +1649,7 @@ mod tests {
                 &[0],
                 &[0],
                 &[0],
-                &[1, 1],
+                &OPTION_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1708,9 +1723,9 @@ mod tests {
             [ek],
             [
                 &(ElementKindType::ElActive as i32).to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &0u32.to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1727,8 +1742,8 @@ mod tests {
             [ek],
             [
                 &(ElementKindType::ElPassive as i32).to_le_bytes()[..],
-                &[1, 0],
-                &[1, 0]
+                &[0],
+                &[0]
             ]
         );
     }
@@ -1821,9 +1836,9 @@ mod tests {
             [el],
             [
                 &(ElementKindType::ElPassive as i32).to_le_bytes()[..],
-                &[1, 0],
-                &[1, 0],
-                &[1, 1],
+                &[0],
+                &[0],
+                &OPTION_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1844,9 +1859,9 @@ mod tests {
             [el],
             [
                 &(ElementKindType::ElPassive as i32).to_le_bytes()[..],
-                &[1, 0],
-                &[1, 0],
-                &[1, 0]
+                &[0],
+                &[0],
+                &[0]
             ]
         );
     }
@@ -1915,8 +1930,8 @@ mod tests {
             [dk],
             [
                 &(DataKindType::Passive as i32).to_le_bytes()[..],
-                &[1, 0],
-                &[1, 0]
+                &[0],
+                &[0]
             ]
         );
     }
@@ -1932,9 +1947,9 @@ mod tests {
             [dk],
             [
                 &(DataKindType::Active as i32).to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &0u32.to_le_bytes()[..],
-                &[1, 1],
+                &OPTION_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1964,8 +1979,8 @@ mod tests {
             [d],
             [
                 &(DataKindType::Passive as i32).to_le_bytes()[..],
-                &[1, 0],
-                &[1, 0],
+                &[0],
+                &[0],
                 &2u64.to_le_bytes()[..],
                 b"hi"
             ]

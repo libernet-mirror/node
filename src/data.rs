@@ -2,6 +2,8 @@ use crate::account;
 use crate::constants;
 use crate::libernet;
 use crate::proto::{self, DecodeFromAny, DecodeMerkleProof, EncodeToAny};
+use crate::program::Sha3Hash;
+use crate::proto;
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
@@ -11,6 +13,8 @@ use crypto::{
     poseidon, utils,
 };
 use ff::Field;
+use primitive_types::H512;
+use sha3::Digest;
 use std::time::{Duration, SystemTime};
 
 /// Computes the block reward for the given stake.
@@ -448,12 +452,13 @@ pub struct Program {
 }
 
 impl Program {
-    pub fn new(module: libernet::wasm::ProgramModule) -> Self {
-        let hash = module.as_scalar();
-        Self {
+    pub fn new(module: libernet::wasm::ProgramModule) -> Result<Self> {
+        let mut hasher = sha3::Sha3_512::new();
+        module.sha3_hash(&mut hasher)?;
+        Ok(Self {
             module: Some(module),
-            hash,
-        }
+            hash: h512_to_scalar(H512::from_slice(hasher.finalize().as_slice())),
+        })
     }
 }
 
@@ -473,11 +478,7 @@ impl proto::EncodeToAny for Program {
 impl proto::DecodeFromAny for Program {
     fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
         let proto = proto.to_msg::<libernet::wasm::ProgramModule>()?;
-        let hash = proto.as_scalar();
-        Ok(Self {
-            module: Some(proto),
-            hash,
-        })
+        Self::new(proto)
     }
 }
 
@@ -1324,11 +1325,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let hash = module.as_scalar();
-        let program = Program {
-            module: Some(module),
-            hash,
-        };
+        let program = Program::new(module).unwrap();
         let proto = program.encode_to_any().unwrap();
         let decoded = Program::decode_from_any(&proto).unwrap();
         assert_eq!(program, decoded);

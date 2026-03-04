@@ -1352,7 +1352,6 @@ dependencies = [
  "ff",
  "futures",
  "group",
- "hex",
  "hyper",
  "memmap2",
  "oid-registry",
