@@ -1906,6 +1906,40 @@ mod tests {
     }
 
     #[test]
+    fn test_reload_binary_forest() {
+        let (mmap, root_hash) = {
+            let mut forest = make_test_forest::<2, 256>().unwrap();
+            let root_hash = forest
+                .put(forest.empty_root_hash(), test_key1(), 42.into())
+                .unwrap();
+            (forest.take(), root_hash)
+        };
+        let forest = Forest::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(
+            forest.empty_root_hash(),
+            Forest::<2, 256>::calculate_empty_root_hash()
+        );
+        assert!(check_forest_consistency(&forest, &[root_hash]).is_ok());
+    }
+
+    #[test]
+    fn test_reload_ternary_forest() {
+        let (mmap, root_hash) = {
+            let mut forest = make_test_forest::<3, 161>().unwrap();
+            let root_hash = forest
+                .put(forest.empty_root_hash(), test_key1(), 42.into())
+                .unwrap();
+            (forest.take(), root_hash)
+        };
+        let forest = Forest::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(
+            forest.empty_root_hash(),
+            Forest::<3, 161>::calculate_empty_root_hash()
+        );
+        assert!(check_forest_consistency(&forest, &[root_hash]).is_ok());
+    }
+
+    #[test]
     fn test_new_random_binary_forest() {
         let mut forest = make_test_forest::<2, 256>().unwrap();
         let roots: [Scalar; 10] = std::array::from_fn(|_| {
@@ -1932,6 +1966,52 @@ mod tests {
             }
             rh
         });
+        assert!(check_forest_consistency(&forest, &roots).is_ok());
+    }
+
+    #[test]
+    fn test_reload_random_binary_forest() {
+        let (mmap, roots) = {
+            let mut forest = make_test_forest::<2, 256>().unwrap();
+            let roots: [Scalar; 10] = std::array::from_fn(|_| {
+                let mut rh = forest.empty_root_hash();
+                for _ in 0..10 {
+                    rh = forest
+                        .put(rh, utils::get_random_scalar(), utils::get_random_scalar())
+                        .unwrap()
+                }
+                rh
+            });
+            (forest.take(), roots)
+        };
+        let forest = Forest::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(
+            forest.empty_root_hash(),
+            Forest::<2, 256>::calculate_empty_root_hash()
+        );
+        assert!(check_forest_consistency(&forest, &roots).is_ok());
+    }
+
+    #[test]
+    fn test_reload_random_ternary_forest() {
+        let (mmap, roots) = {
+            let mut forest = make_test_forest::<3, 161>().unwrap();
+            let roots: [Scalar; 10] = std::array::from_fn(|_| {
+                let mut rh = forest.empty_root_hash();
+                for _ in 0..10 {
+                    rh = forest
+                        .put(rh, utils::get_random_scalar(), utils::get_random_scalar())
+                        .unwrap()
+                }
+                rh
+            });
+            (forest.take(), roots)
+        };
+        let forest = Forest::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
+        assert_eq!(
+            forest.empty_root_hash(),
+            Forest::<3, 161>::calculate_empty_root_hash()
+        );
         assert!(check_forest_consistency(&forest, &roots).is_ok());
     }
 }
