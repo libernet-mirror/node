@@ -1904,4 +1904,34 @@ mod tests {
         assert_eq!(lookup_ternary_forest(&forest, rh, test_key2()), 0.into());
         assert!(check_forest_consistency(&forest, &[rh]).is_ok());
     }
+
+    #[test]
+    fn test_new_random_binary_forest() {
+        let mut forest = make_test_forest::<2, 256>().unwrap();
+        let roots: [Scalar; 10] = std::array::from_fn(|_| {
+            let mut rh = forest.empty_root_hash();
+            for _ in 0..10 {
+                rh = forest
+                    .put(rh, utils::get_random_scalar(), utils::get_random_scalar())
+                    .unwrap()
+            }
+            rh
+        });
+        assert!(check_forest_consistency(&forest, &roots).is_ok());
+    }
+
+    #[test]
+    fn test_new_random_ternary_forest() {
+        let mut forest = make_test_forest::<3, 161>().unwrap();
+        let roots: [Scalar; 10] = std::array::from_fn(|_| {
+            let mut rh = forest.empty_root_hash();
+            for _ in 0..10 {
+                rh = forest
+                    .put(rh, utils::get_random_scalar(), utils::get_random_scalar())
+                    .unwrap()
+            }
+            rh
+        });
+        assert!(check_forest_consistency(&forest, &roots).is_ok());
+    }
 }
