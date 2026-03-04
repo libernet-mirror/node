@@ -1,12 +1,11 @@
-use crate::libernet::wasm::element::Items;
 use crate::libernet::wasm::{
-    self, CatchElement, CodeSection, CodeSectionEntry, Data, DataKind, DataSection, Element,
+    CatchElement, CodeSection, CodeSectionEntry, Data, DataKind, DataSection, Element,
     ElementExpressions, ElementFunctions, ElementKind, ElementSection, Export, ExportSection,
     Expression, FuncType, FunctionSection, Global, GlobalSection, GlobalType, ImportSection,
-    Locals, MemorySection, MemoryType, PlainType, ProgramModule, RefType, SubType, TableSection,
-    TableType, TagSection, TagType, TypeRefFunc, TypeSection, Version,
+    Locals, MemorySection, MemoryType, OpCode, Operator, PlainType, ProgramModule, RefType,
+    SubType, TableSection, TableType, TagSection, TagType, TypeRefFunc, TypeSection, ValueType,
+    Version, block_type, catch_element, element::Items, operator::Operator::*, sub_type,
 };
-use crate::libernet::wasm::{OpCode, Operator, operator::Operator::*};
 use anyhow::{Context, Result, bail};
 use sha3::Digest;
 
@@ -106,7 +105,7 @@ impl<T: Sha3Hash> Sha3Hash for Vec<T> {
     }
 }
 
-impl Sha3Hash for wasm::ValueType {
+impl Sha3Hash for ValueType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         let value_code = self.value_type.context("Value type is required")?;
         value_code.sha3_hash(hasher)?;
@@ -133,15 +132,15 @@ impl Sha3Hash for wasm::ValueType {
     }
 }
 
-impl Sha3Hash for wasm::block_type::BlockType {
+impl Sha3Hash for block_type::BlockType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match self {
-            wasm::block_type::BlockType::Empty(_) => hasher.update(BLOCK_TYPE_EMPTY_TAG),
-            wasm::block_type::BlockType::ValueType(vt) => {
+            block_type::BlockType::Empty(_) => hasher.update(BLOCK_TYPE_EMPTY_TAG),
+            block_type::BlockType::ValueType(vt) => {
                 hasher.update(BLOCK_TYPE_VALUE_TYPE_TAG);
                 vt.sha3_hash(hasher)?;
             }
-            wasm::block_type::BlockType::TypeIndex(v) => {
+            block_type::BlockType::TypeIndex(v) => {
                 hasher.update(BLOCK_TYPE_TYPE_INDEX_TAG);
                 v.sha3_hash(hasher)?;
             }
@@ -154,14 +153,14 @@ impl Sha3Hash for CatchElement {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         let catch_element = self.catch_element.context("Catch element is required")?;
         match catch_element {
-            wasm::catch_element::CatchElement::One(one) => {
+            catch_element::CatchElement::One(one) => {
                 hasher.update(CATCH_ELEMENT_ONE_TAG);
                 one.tag.context("One: Tag is required")?.sha3_hash(hasher)?;
                 one.label
                     .context("One: Label is required")?
                     .sha3_hash(hasher)?;
             }
-            wasm::catch_element::CatchElement::OneRef(one_ref) => {
+            catch_element::CatchElement::OneRef(one_ref) => {
                 hasher.update(CATCH_ELEMENT_ONE_REF_TAG);
                 one_ref
                     .tag
@@ -172,13 +171,13 @@ impl Sha3Hash for CatchElement {
                     .context("OneRef: Label is required")?
                     .sha3_hash(hasher)?;
             }
-            wasm::catch_element::CatchElement::All(all) => {
+            catch_element::CatchElement::All(all) => {
                 hasher.update(CATCH_ELEMENT_ALL_TAG);
                 all.label
                     .context("All: Label is required")?
                     .sha3_hash(hasher)?;
             }
-            wasm::catch_element::CatchElement::AllRef(all_ref) => {
+            catch_element::CatchElement::AllRef(all_ref) => {
                 hasher.update(CATCH_ELEMENT_ALL_REF_TAG);
                 all_ref
                     .label
@@ -526,7 +525,7 @@ impl Sha3Hash for FuncType {
 impl Sha3Hash for SubType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match &self.kind {
-            Some(wasm::sub_type::Kind::Func(func_type)) => {
+            Some(sub_type::Kind::Func(func_type)) => {
                 hasher.update([1]);
                 func_type.sha3_hash(hasher)?;
             }
@@ -844,11 +843,10 @@ mod tests {
     use primitive_types::H512;
 
     use super::*;
-    use crate::libernet::wasm::operator::Operator as OperatorVariant;
     use crate::libernet::wasm::{
-        BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchOne, CatchOneRef,
-        DataKindType, ElementKindType, Encoding, ExternalKind, MemArg, TagKind, ValueType,
-        block_type, catch_element,
+        BlockType, BreakTargets, CallIndirectOp, CatchAllElements, CatchAllRef, CatchOne,
+        CatchOneRef, DataKindType, ElementKindType, Encoding, ExternalKind, MemArg, TagKind,
+        operator::Operator as OperatorVariant,
     };
 
     fn sha3_512<I: IntoIterator<Item = T>, T: AsRef<[u8]>>(parts: I) -> H512 {
@@ -1175,7 +1173,7 @@ mod tests {
     fn test_operator_block_empty_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
-            operator: Some(OperatorVariant::BlockType(wasm::BlockType {
+            operator: Some(OperatorVariant::BlockType(BlockType {
                 block_type: Some(block_type::BlockType::Empty(110)),
             })),
         };
@@ -1192,7 +1190,7 @@ mod tests {
     fn test_operator_block_value_type_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
-            operator: Some(OperatorVariant::BlockType(wasm::BlockType {
+            operator: Some(OperatorVariant::BlockType(BlockType {
                 block_type: Some(block_type::BlockType::ValueType(i32_vt())),
             })),
         };
@@ -1211,7 +1209,7 @@ mod tests {
     fn test_operator_block_function_type_to_hash() {
         let op = Operator {
             opcode: Some(OpCode::Block as i32),
-            operator: Some(OperatorVariant::BlockType(wasm::BlockType {
+            operator: Some(OperatorVariant::BlockType(BlockType {
                 block_type: Some(block_type::BlockType::TypeIndex(110)),
             })),
         };
@@ -1359,7 +1357,7 @@ mod tests {
     #[test]
     fn test_sub_type_func_to_hash() {
         let st = SubType {
-            kind: Some(wasm::sub_type::Kind::Func(FuncType {
+            kind: Some(sub_type::Kind::Func(FuncType {
                 params: vec![],
                 results: vec![],
             })),
@@ -1459,7 +1457,7 @@ mod tests {
     #[test]
     fn test_type_section_with_types_to_hash() {
         let st = SubType {
-            kind: Some(wasm::sub_type::Kind::Func(FuncType {
+            kind: Some(sub_type::Kind::Func(FuncType {
                 params: vec![],
                 results: vec![],
             })),
