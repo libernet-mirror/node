@@ -127,6 +127,15 @@ pub struct BlockInfo {
 }
 
 impl BlockInfo {
+    pub fn from_parts(hash: Scalar, header: BlockHeader) -> Self {
+        Self { hash, header }
+    }
+
+    pub fn from_header(header: BlockHeader) -> Self {
+        let hash = header.hash();
+        Self::from_parts(hash, header)
+    }
+
     pub fn new(
         chain_id: u64,
         block_number: u64,
@@ -137,7 +146,7 @@ impl BlockInfo {
         accounts_root_hash: Scalar,
         program_storage_root_hash: Scalar,
     ) -> Self {
-        let header = BlockHeader::new(
+        Self::from_header(BlockHeader::new(
             chain_id,
             block_number,
             previous_block_hash,
@@ -146,9 +155,7 @@ impl BlockInfo {
             transactions_root_hash,
             accounts_root_hash,
             program_storage_root_hash,
-        );
-        let hash = header.hash();
-        Self { hash, header }
+        ))
     }
 
     pub fn hash(&self) -> Scalar {
@@ -650,7 +657,7 @@ mod tests {
 
     #[test]
     fn test_block_header2() {
-        let header = BlockInfo::new(
+        let header = BlockHeader::new(
             456,
             34,
             parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b"),

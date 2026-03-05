@@ -246,7 +246,7 @@ impl NodeServiceImpl {
                 self.add_block_rewards().await;
                 tokio::select! {
                     _ = sleep(Duration::from_millis(BLOCK_TIME_MS)) => {
-                        let block = self.db.close_block().await;
+                        let block = self.db.close_block().await.unwrap();
                         println!("added block {}: {}", block.number(), utils::format_scalar(block.hash()));
                     },
                     _ = self.cancel.cancelled() => {
