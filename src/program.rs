@@ -119,7 +119,6 @@ impl Sha3Hash for ValueType {
                 if self.reference_type.is_some() {
                     bail!("Reference type is set for primitive value type");
                 }
-                hasher.update([0]);
             }
             PlainType::ValueTypeRef => {
                 let ref_code = self.reference_type.context("Reference type is required")?;
@@ -997,7 +996,7 @@ mod tests {
     fn test_value_type_i32_to_hash() {
         hash_eq!(
             [i32_vt()],
-            [&(PlainType::ValueTypeI32 as i32).to_le_bytes()[..], &[0]]
+            [&(PlainType::ValueTypeI32 as i32).to_le_bytes()[..]]
         );
     }
 
@@ -1192,7 +1191,6 @@ mod tests {
                 &(OpCode::Block as i32).to_le_bytes()[..],
                 &BLOCK_TYPE_VALUE_TYPE_TAG,
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0]
             ]
         );
     }
@@ -1336,10 +1334,8 @@ mod tests {
             [
                 &1u64.to_le_bytes()[..],
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0],
                 &1u64.to_le_bytes()[..],
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0]
             ]
         );
     }
@@ -1564,7 +1560,6 @@ mod tests {
             [gt],
             [
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0],
                 &[1],
                 &[0]
             ]
@@ -1636,7 +1631,6 @@ mod tests {
             [g],
             [
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0],
                 &[0],
                 &[0],
                 &OPTION_SOME_TAG,
@@ -1886,7 +1880,6 @@ mod tests {
             [
                 &3u32.to_le_bytes()[..],
                 &(PlainType::ValueTypeI32 as i32).to_le_bytes()[..],
-                &[0]
             ]
         );
     }
