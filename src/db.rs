@@ -723,11 +723,6 @@ impl Repr {
         start_block: Option<BlockFilter>,
         end_block: Option<BlockFilter>,
     ) -> Result<RangeInclusive<usize>> {
-        {
-            for (a, b) in &self.block_numbers_by_hash {
-                println!("{}: {}", *b, utils::format_scalar(*a));
-            }
-        }
         let start_index = match start_block {
             Some(BlockFilter::BlockHash(block_hash)) => *self
                 .block_numbers_by_hash
