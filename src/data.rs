@@ -472,27 +472,51 @@ impl TransactionInclusionProof {
 
 #[derive(Debug, Default, Clone)]
 pub struct ProgramStorage {
-    tree: tree::MerkleTreeVersion<u32, u128, 2, 28>,
+    tree: tree::MerkleTreeVersion<u32, u32, 2, 30>,
 }
 
 impl ProgramStorage {
-    pub fn get_u8(&self, address: u32) -> u8 {
-        let bytes = self.tree.get(address >> 4).to_le_bytes();
-        bytes[(address & 0xF) as usize]
+    /// Reads the byte at the specified address.
+    pub fn read_byte(&self, address: u32) -> u8 {
+        let bytes = self.tree.get(address >> 2).to_le_bytes();
+        bytes[(address & 3) as usize]
     }
 
-    pub fn set_u8(&self, address: u32, value: u8) -> Self {
-        let mut bytes = self.tree.get(address >> 4).to_le_bytes();
-        bytes[(address & 0xF) as usize] = value;
-        Self {
-            tree: self.tree.put(address >> 4, u128::from_le_bytes(bytes)),
-        }
+    /// Reads an aligned 32-bit word.
+    ///
+    /// REQUIRES: the `address` must be a multiple of 4.
+    pub fn read_aligned(&self, address: u32) -> u32 {
+        assert_eq!(address % 4, 0);
+        *self.tree.get(address >> 2)
+    }
+
+    /// Reads an aligned 32-bit word and returns a Merkle proof for it.
+    ///
+    /// REQUIRES: the `address` must be a multiple of 4.
+    pub fn read_aligned_with_proof(&self, address: u32) -> ProgramStorageProof {
+        assert_eq!(address % 4, 0);
+        self.tree.get_proof(address >> 2)
+    }
+
+    /// Writes a byte at the specified address.
+    pub fn write_byte(&mut self, address: u32, byte: u8) {
+        let mut bytes = self.tree.get(address >> 2).to_le_bytes();
+        bytes[(address & 3) as usize] = byte;
+        self.tree = self.tree.put(address >> 2, u32::from_le_bytes(bytes));
+    }
+
+    /// Writes an aligned 32-bit word at the specified address.
+    ///
+    /// REQUIRES: the `address` must be a multiple of 4.
+    pub fn write_aligned(&mut self, address: u32, value: u32) {
+        assert_eq!(address % 4, 0);
+        self.tree = self.tree.put(address >> 2, value);
     }
 }
 
 pub type ProgramStorageTree =
-    tree::MerkleTree<Scalar, tree::MerkleTreeVersion<u32, u128, 2, 28>, 3, 161>;
-pub type ProgramStorageProof = tree::MerkleProof<u32, u128, 2, 28>;
+    tree::MerkleTree<Scalar, tree::MerkleTreeVersion<u32, u32, 2, 30>, 3, 161>;
+pub type ProgramStorageProof = tree::MerkleProof<u32, u32, 2, 30>;
 
 #[cfg(test)]
 mod tests {
@@ -830,47 +854,47 @@ mod tests {
         assert_eq!(decoded_proof.take_value(), transaction);
     }
 
-    #[test]
-    fn test_program_storage_initial_state() {
-        let storage = ProgramStorage::default();
-        assert_eq!(storage.get_u8(0x12345670u32), 0);
-        assert_eq!(storage.get_u8(0x12345671u32), 0);
-        assert_eq!(storage.get_u8(0x12345672u32), 0);
-        assert_eq!(storage.get_u8(0x12345673u32), 0);
-        assert_eq!(storage.get_u8(0x12345674u32), 0);
-        assert_eq!(storage.get_u8(0x12345675u32), 0);
-        assert_eq!(storage.get_u8(0x12345676u32), 0);
-        assert_eq!(storage.get_u8(0x12345677u32), 0);
-        assert_eq!(storage.get_u8(0x12345678u32), 0);
-        assert_eq!(storage.get_u8(0x12345679u32), 0);
-        assert_eq!(storage.get_u8(0x1234567au32), 0);
-        assert_eq!(storage.get_u8(0x1234567bu32), 0);
-        assert_eq!(storage.get_u8(0x1234567cu32), 0);
-        assert_eq!(storage.get_u8(0x1234567du32), 0);
-        assert_eq!(storage.get_u8(0x1234567eu32), 0);
-        assert_eq!(storage.get_u8(0x1234567fu32), 0);
+    fn check_storage(storage: &ProgramStorage, address: u32, expected_value: u32) {
+        let bytes = expected_value.to_le_bytes();
+        assert_eq!(storage.read_byte(address + 0), bytes[0]);
+        assert_eq!(storage.read_byte(address + 1), bytes[1]);
+        assert_eq!(storage.read_byte(address + 2), bytes[2]);
+        assert_eq!(storage.read_byte(address + 3), bytes[3]);
+        assert_eq!(storage.read_aligned(address), expected_value);
+        let proof = storage.read_aligned_with_proof(address);
+        assert_eq!(proof.key(), address >> 2);
+        assert_eq!(*proof.value(), expected_value);
+        assert!(proof.verify().is_ok());
     }
 
     #[test]
-    fn test_program_storage_update() {
+    fn test_program_storage_initial_state() {
+        let storage = ProgramStorage::default();
+        check_storage(&storage, 0x12345670u32, 0);
+        check_storage(&storage, 0x12345674u32, 0);
+        check_storage(&storage, 0x12345678u32, 0);
+        check_storage(&storage, 0x1234567cu32, 0);
+    }
+
+    #[test]
+    fn test_program_storage_write_bytes() {
         let mut storage = ProgramStorage::default();
-        storage = storage.set_u8(0x12345674u32, 12u8);
-        storage = storage.set_u8(0x12345672u32, 34u8);
-        assert_eq!(storage.get_u8(0x12345670u32), 0);
-        assert_eq!(storage.get_u8(0x12345671u32), 0);
-        assert_eq!(storage.get_u8(0x12345672u32), 34);
-        assert_eq!(storage.get_u8(0x12345673u32), 0);
-        assert_eq!(storage.get_u8(0x12345674u32), 12);
-        assert_eq!(storage.get_u8(0x12345675u32), 0);
-        assert_eq!(storage.get_u8(0x12345676u32), 0);
-        assert_eq!(storage.get_u8(0x12345677u32), 0);
-        assert_eq!(storage.get_u8(0x12345678u32), 0);
-        assert_eq!(storage.get_u8(0x12345679u32), 0);
-        assert_eq!(storage.get_u8(0x1234567au32), 0);
-        assert_eq!(storage.get_u8(0x1234567bu32), 0);
-        assert_eq!(storage.get_u8(0x1234567cu32), 0);
-        assert_eq!(storage.get_u8(0x1234567du32), 0);
-        assert_eq!(storage.get_u8(0x1234567eu32), 0);
-        assert_eq!(storage.get_u8(0x1234567fu32), 0);
+        storage.write_byte(0x12345674u32, 0x12u8);
+        storage.write_byte(0x12345672u32, 0x34u8);
+        check_storage(&storage, 0x12345670u32, 0x00340000);
+        check_storage(&storage, 0x12345674u32, 0x00000012);
+        check_storage(&storage, 0x12345678u32, 0);
+        check_storage(&storage, 0x1234567cu32, 0);
+    }
+
+    #[test]
+    fn test_program_storage_write_aligned() {
+        let mut storage = ProgramStorage::default();
+        storage.write_aligned(0x12345674u32, 0xDEADBEEFu32);
+        storage.write_aligned(0x12345678u32, 0xCAFEBABEu32);
+        check_storage(&storage, 0x12345670u32, 0);
+        check_storage(&storage, 0x12345674u32, 0xDEADBEEF);
+        check_storage(&storage, 0x12345678u32, 0xCAFEBABE);
+        check_storage(&storage, 0x1234567cu32, 0);
     }
 }
