@@ -723,6 +723,11 @@ impl Repr {
         start_block: Option<BlockFilter>,
         end_block: Option<BlockFilter>,
     ) -> Result<RangeInclusive<usize>> {
+        {
+            for (a, b) in &self.block_numbers_by_hash {
+                println!("{}: {}", *b, utils::format_scalar(*a));
+            }
+        }
         let start_index = match start_block {
             Some(BlockFilter::BlockHash(block_hash)) => *self
                 .block_numbers_by_hash
@@ -3310,7 +3315,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x442fcb4ebdc4143ae1357a2c2d11bfe6e0b5238dac2e1894efb4b5e844321c02"
+                        "0x3d8b2999b142583263541dfa42fcfe57d7b2e5c1e069d31da870024725c65008"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3383,7 +3388,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x442fcb4ebdc4143ae1357a2c2d11bfe6e0b5238dac2e1894efb4b5e844321c02"
+                        "0x3d8b2999b142583263541dfa42fcfe57d7b2e5c1e069d31da870024725c65008"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3418,10 +3423,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x442fcb4ebdc4143ae1357a2c2d11bfe6e0b5238dac2e1894efb4b5e844321c02"
+                        "0x3d8b2999b142583263541dfa42fcfe57d7b2e5c1e069d31da870024725c65008"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x442fcb4ebdc4143ae1357a2c2d11bfe6e0b5238dac2e1894efb4b5e844321c02"
+                        "0x3d8b2999b142583263541dfa42fcfe57d7b2e5c1e069d31da870024725c65008"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3459,7 +3464,7 @@ mod tests {
                         "0x638f6cb70d73032c0d6510faff8db4a7047b9e4e98a943898abb6cd6f900f869"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x442fcb4ebdc4143ae1357a2c2d11bfe6e0b5238dac2e1894efb4b5e844321c02"
+                        "0x3d8b2999b142583263541dfa42fcfe57d7b2e5c1e069d31da870024725c65008"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3746,7 +3751,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x04f9d1afbc03c55ff4f1a2c79dfa9be2843b109998b37a23b6315b6f898866a5"
+                        "0x733cb8a024f38a3099ee032d75c005df79f99b335bab2b84883d2fdcc6e4da31"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3782,7 +3787,7 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6b48e35411feb0a105870022098046de65043096c68b2e962790b956108f5442"
+                        "0x0ee1b5501b46e177d2466855934aba224d4f0fba3652c241e49cc0fa8b14dfbc"
                     ))),
                     None,
                     SortOrder::Ascending,
@@ -3855,7 +3860,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x04f9d1afbc03c55ff4f1a2c79dfa9be2843b109998b37a23b6315b6f898866a5"
+                        "0x733cb8a024f38a3099ee032d75c005df79f99b335bab2b84883d2fdcc6e4da31"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3891,7 +3896,7 @@ mod tests {
                 .query_transactions(
                     None,
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6b48e35411feb0a105870022098046de65043096c68b2e962790b956108f5442"
+                        "0x0ee1b5501b46e177d2466855934aba224d4f0fba3652c241e49cc0fa8b14dfbc"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -3967,7 +3972,7 @@ mod tests {
                         "0x638f6cb70d73032c0d6510faff8db4a7047b9e4e98a943898abb6cd6f900f869"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x04f9d1afbc03c55ff4f1a2c79dfa9be2843b109998b37a23b6315b6f898866a5"
+                        "0x733cb8a024f38a3099ee032d75c005df79f99b335bab2b84883d2fdcc6e4da31"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4005,7 +4010,7 @@ mod tests {
                         "0x638f6cb70d73032c0d6510faff8db4a7047b9e4e98a943898abb6cd6f900f869"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6b48e35411feb0a105870022098046de65043096c68b2e962790b956108f5442"
+                        "0x0ee1b5501b46e177d2466855934aba224d4f0fba3652c241e49cc0fa8b14dfbc"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4040,10 +4045,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x04f9d1afbc03c55ff4f1a2c79dfa9be2843b109998b37a23b6315b6f898866a5"
+                        "0x733cb8a024f38a3099ee032d75c005df79f99b335bab2b84883d2fdcc6e4da31"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x04f9d1afbc03c55ff4f1a2c79dfa9be2843b109998b37a23b6315b6f898866a5"
+                        "0x733cb8a024f38a3099ee032d75c005df79f99b335bab2b84883d2fdcc6e4da31"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4078,10 +4083,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x04f9d1afbc03c55ff4f1a2c79dfa9be2843b109998b37a23b6315b6f898866a5"
+                        "0x733cb8a024f38a3099ee032d75c005df79f99b335bab2b84883d2fdcc6e4da31"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6b48e35411feb0a105870022098046de65043096c68b2e962790b956108f5442"
+                        "0x0ee1b5501b46e177d2466855934aba224d4f0fba3652c241e49cc0fa8b14dfbc"
                     ))),
                     SortOrder::Ascending,
                     None
@@ -4116,10 +4121,10 @@ mod tests {
             fixture
                 .query_transactions(
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6b48e35411feb0a105870022098046de65043096c68b2e962790b956108f5442"
+                        "0x0ee1b5501b46e177d2466855934aba224d4f0fba3652c241e49cc0fa8b14dfbc"
                     ))),
                     Some(BlockFilter::BlockHash(parse_scalar(
-                        "0x6b48e35411feb0a105870022098046de65043096c68b2e962790b956108f5442"
+                        "0x0ee1b5501b46e177d2466855934aba224d4f0fba3652c241e49cc0fa8b14dfbc"
                     ))),
                     SortOrder::Ascending,
                     None
