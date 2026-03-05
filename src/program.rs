@@ -9,14 +9,15 @@ use crate::libernet::wasm::{
 use anyhow::{Context, Result, bail};
 use sha3::Digest;
 
-const OPTION_TAG: [u8; 1] = [1];
-const BLOCK_TYPE_EMPTY_TAG: [u8; 1] = [2];
-const BLOCK_TYPE_VALUE_TYPE_TAG: [u8; 1] = [3];
-const BLOCK_TYPE_TYPE_INDEX_TAG: [u8; 1] = [4];
-const CATCH_ELEMENT_ONE_TAG: [u8; 1] = [5];
-const CATCH_ELEMENT_ONE_REF_TAG: [u8; 1] = [6];
-const CATCH_ELEMENT_ALL_TAG: [u8; 1] = [7];
-const CATCH_ELEMENT_ALL_REF_TAG: [u8; 1] = [8];
+const OPTION_NONE_TAG: [u8; 1] = [0];
+const OPTION_SOME_TAG: [u8; 1] = [1];
+const BLOCK_TYPE_EMPTY_TAG: [u8; 1] = [0];
+const BLOCK_TYPE_VALUE_TYPE_TAG: [u8; 1] = [1];
+const BLOCK_TYPE_TYPE_INDEX_TAG: [u8; 1] = [2];
+const CATCH_ELEMENT_ONE_TAG: [u8; 1] = [0];
+const CATCH_ELEMENT_ONE_REF_TAG: [u8; 1] = [1];
+const CATCH_ELEMENT_ALL_TAG: [u8; 1] = [2];
+const CATCH_ELEMENT_ALL_REF_TAG: [u8; 1] = [3];
 
 macro_rules! some {
     ($expr:expr, $pat:pat => $body:block, $msg:expr $(,)?) => {{
@@ -86,10 +87,10 @@ impl<T: Sha3Hash> Sha3Hash for Option<T> {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match self {
             Some(v) => {
-                hasher.update(OPTION_TAG);
+                hasher.update(OPTION_SOME_TAG);
                 v.sha3_hash(hasher)?;
             }
-            None => hasher.update([0]),
+            None => hasher.update(OPTION_NONE_TAG),
         }
         Ok(())
     }
@@ -98,8 +99,8 @@ impl<T: Sha3Hash> Sha3Hash for Option<T> {
 impl<T: Sha3Hash> Sha3Hash for Vec<T> {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         (self.len() as u64).sha3_hash(hasher)?;
-        for elem in self {
-            elem.sha3_hash(hasher)?;
+        for element in self {
+            element.sha3_hash(hasher)?;
         }
         Ok(())
     }
@@ -814,26 +815,17 @@ impl Sha3Hash for ProgramModule {
             .context("Version is required")?
             .sha3_hash(hasher)?;
 
-        macro_rules! hash_section {
-            ($opt:expr $(,)?) => {{
-                match &$opt {
-                    Some(v) => v.sha3_hash(hasher)?,
-                    None => hasher.update([0]),
-                }
-            }};
-        }
-
-        hash_section!(self.type_section);
-        hash_section!(self.import_section);
-        hash_section!(self.function_section);
-        hash_section!(self.table_section);
-        hash_section!(self.memory_section);
-        hash_section!(self.tag_section);
-        hash_section!(self.global_section);
-        hash_section!(self.export_section);
-        hash_section!(self.element_section);
-        hash_section!(self.code_section);
-        hash_section!(self.data_section);
+        self.type_section.sha3_hash(hasher)?;
+        self.import_section.sha3_hash(hasher)?;
+        self.function_section.sha3_hash(hasher)?;
+        self.table_section.sha3_hash(hasher)?;
+        self.memory_section.sha3_hash(hasher)?;
+        self.tag_section.sha3_hash(hasher)?;
+        self.global_section.sha3_hash(hasher)?;
+        self.export_section.sha3_hash(hasher)?;
+        self.element_section.sha3_hash(hasher)?;
+        self.code_section.sha3_hash(hasher)?;
+        self.data_section.sha3_hash(hasher)?;
         Ok(())
     }
 }
@@ -966,8 +958,8 @@ mod tests {
 
     #[test]
     fn test_option_to_hash() {
-        hash_eq!([Some(42u32)], [&OPTION_TAG, &42u32.to_le_bytes()[..]]);
-        hash_eq!([None::<u32>], [&[0]]);
+        hash_eq!([Some(42u32)], [&OPTION_SOME_TAG, &42u32.to_le_bytes()[..]]);
+        hash_eq!([None::<u32>], [&OPTION_NONE_TAG]);
     }
 
     #[test]
@@ -1508,7 +1500,7 @@ mod tests {
                 &(RefType::RefFunc as i32).to_le_bytes()[..],
                 &[1],
                 &100u64.to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &200u64.to_le_bytes()[..],
                 &[0]
             ]
@@ -1532,9 +1524,9 @@ mod tests {
                 &[1],
                 &[0],
                 &1u64.to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &256u64.to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &16u32.to_le_bytes()[..]
             ]
         );
@@ -1551,9 +1543,9 @@ mod tests {
         hash_eq!(
             [tag],
             [
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &(TagKind::Exception as i32).to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &42u32.to_le_bytes()[..]
             ]
         );
@@ -1647,7 +1639,7 @@ mod tests {
                 &[0],
                 &[0],
                 &[0],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1721,9 +1713,9 @@ mod tests {
             [ek],
             [
                 &(ElementKindType::ElActive as i32).to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &0u32.to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1836,7 +1828,7 @@ mod tests {
                 &(ElementKindType::ElPassive as i32).to_le_bytes()[..],
                 &[0],
                 &[0],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -1945,9 +1937,9 @@ mod tests {
             [dk],
             [
                 &(DataKindType::Active as i32).to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &0u32.to_le_bytes()[..],
-                &OPTION_TAG,
+                &OPTION_SOME_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
@@ -2051,8 +2043,11 @@ mod tests {
                 &1u32.to_le_bytes()[..],
                 &1u32.to_le_bytes()[..],
                 &(Encoding::Module as i32).to_le_bytes()[..],
+                &[1],
                 &0u64.to_le_bytes()[..],
+                &[1],
                 &0u64.to_le_bytes()[..],
+                &[1],
                 &0u64.to_le_bytes()[..],
                 &[0u8; 8][..]
             ]
