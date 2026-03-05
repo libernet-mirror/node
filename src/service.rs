@@ -246,6 +246,9 @@ impl NodeServiceImpl {
                 self.add_block_rewards().await;
                 tokio::select! {
                     _ = sleep(Duration::from_millis(BLOCK_TIME_MS)) => {
+                        // NOTE: failure to close the block means we can no longer add data to our
+                        // memory-mapped files due to I/O errors. In that case we want to exit
+                        // immediately, so `unwrap` is okay.
                         let block = self.db.close_block().await.unwrap();
                         println!("added block {}: {}", block.number(), utils::format_scalar(block.hash()));
                     },
