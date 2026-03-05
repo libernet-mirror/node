@@ -1,10 +1,12 @@
 use crate::clock::Clock;
+use crate::constants;
 use crate::data::{
-    AccountInfo, AccountProof, AccountTree, BlockInfo, ProgramStorageTree, Transaction,
-    TransactionInclusionProof, TransactionTree,
+    AccountInfo, AccountProof, AccountTree, BlockHeader, BlockInfo, BlockList, ProgramStorageTree,
+    Transaction, TransactionInclusionProof, TransactionTree,
 };
 use crate::libernet;
 use crate::proto;
+use crate::store::NodeData;
 use crate::topology;
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
@@ -14,6 +16,7 @@ use crypto::{
     utils,
 };
 use ff::Field;
+use memmap2::MmapMut;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -388,8 +391,8 @@ impl Borrow<u64> for AccountListener {
 struct Repr {
     chain_id: u64,
 
-    blocks: Vec<BlockInfo>,
-    block_numbers_by_hash: BTreeMap<Scalar, usize>,
+    blocks: BlockList,
+    block_hashes_by_number: Vec<Scalar>,
 
     network_topologies: BTreeMap<u64, topology::Network>,
 
@@ -421,10 +424,18 @@ impl Repr {
             network.root_hash(),
             accounts.root_hash(0),
         );
+        let mut blocks = BlockList::new(
+            MmapMut::map_anon(
+                BlockList::PADDED_HEADER_SIZE
+                    + BlockList::min_capacity() * BlockList::padded_node_size(),
+            )?,
+            constants::DATA_FILE_TYPE_BLOCK_DESCRIPTORS,
+        )?;
+        blocks.insert_hashed(*genesis_block.header(), genesis_block.hash())?;
         Ok(Self {
             chain_id,
-            blocks: vec![genesis_block],
-            block_numbers_by_hash: BTreeMap::from([(genesis_block.hash(), 0)]),
+            blocks,
+            block_hashes_by_number: vec![genesis_block.hash()],
             network_topologies: BTreeMap::from([(0, network)]),
             transactions_per_block: vec![
                 BlockTransactions::default(), // transactions of the genesis block (always empty)
@@ -442,27 +453,30 @@ impl Repr {
     }
 
     fn current_version(&self) -> u64 {
-        self.blocks.len() as u64
+        self.block_hashes_by_number.len() as u64
     }
 
     fn get_block_by_number(&self, block_number: usize) -> Option<BlockInfo> {
-        if block_number < self.blocks.len() {
-            Some(self.blocks[block_number])
-        } else {
-            None
+        if block_number >= self.block_hashes_by_number.len() {
+            return None;
         }
+        let block_hash = self.block_hashes_by_number[block_number];
+        let header = self.blocks.get(block_hash).unwrap();
+        Some(BlockInfo::from_parts(block_hash, *header))
     }
 
     fn get_block_by_hash(&self, block_hash: Scalar) -> Option<BlockInfo> {
-        if let Some(block_number) = self.block_numbers_by_hash.get(&block_hash) {
-            self.get_block_by_number(*block_number)
+        if let Some(header) = self.blocks.get(block_hash) {
+            Some(BlockInfo::from_parts(block_hash, *header))
         } else {
             None
         }
     }
 
     fn get_latest_block(&self) -> BlockInfo {
-        self.blocks[self.blocks.len() - 1]
+        let block_hash = *self.block_hashes_by_number.last().unwrap();
+        let header = *self.blocks.get(block_hash).unwrap();
+        BlockInfo::from_parts(block_hash, header)
     }
 
     fn listen_to_blocks(&mut self) -> Receiver<BlockInfo> {
@@ -533,7 +547,7 @@ impl Repr {
         //
         // TODO: maybe store pending transactions in a separate data structure that works as the
         // mempool and merge the `self.blocks` and `self.transactions_per_block` vectors into one.
-        if block_number < self.blocks.len() {
+        if block_number < self.block_hashes_by_number.len() {
             Some(block_number)
         } else {
             None
@@ -543,7 +557,7 @@ impl Repr {
     fn get_transaction(&self, hash: Scalar) -> Option<(BlockInfo, TransactionInclusionProof)> {
         let locator = *(self.transaction_locators_by_hash.get(&hash)?);
         let block_number = self.check_block_number(locator.block_number)?;
-        let block_info = self.blocks[block_number].clone();
+        let block_info = self.get_block_by_number(block_number).unwrap();
         let transactions = &self.transactions_per_block[block_number];
         let proof = transactions
             .get_inclusion_proof(locator.transaction_number)
@@ -724,19 +738,19 @@ impl Repr {
         end_block: Option<BlockFilter>,
     ) -> Result<RangeInclusive<usize>> {
         let start_index = match start_block {
-            Some(BlockFilter::BlockHash(block_hash)) => *self
-                .block_numbers_by_hash
-                .get(&block_hash)
-                .context(format!("invalid block hash {}", block_hash))?,
+            Some(BlockFilter::BlockHash(block_hash)) => self
+                .get_block_by_hash(block_hash)
+                .context(format!("invalid block hash {}", block_hash))?
+                .number() as usize,
             Some(BlockFilter::BlockNumber(block_number)) => block_number,
             None => 0,
         };
-        let last_block = self.blocks.len() - 1;
+        let last_block = self.block_hashes_by_number.len() - 1;
         let end_index = match end_block {
-            Some(BlockFilter::BlockHash(block_hash)) => *self
-                .block_numbers_by_hash
-                .get(&block_hash)
-                .context(format!("invalid block hash {}", block_hash))?,
+            Some(BlockFilter::BlockHash(block_hash)) => self
+                .get_block_by_hash(block_hash)
+                .context(format!("invalid block hash {}", block_hash))?
+                .number() as usize,
             Some(BlockFilter::BlockNumber(block_number)) => block_number,
             None => last_block,
         };
@@ -783,7 +797,8 @@ impl Repr {
                         block_results.push(proof);
                     }
                     if !block_results.is_empty() {
-                        results.add_block(self.blocks[block_number], block_results);
+                        let block_info = self.get_block_by_number(block_number).unwrap();
+                        results.add_block(block_info, block_results);
                     }
                 }
             }
@@ -803,7 +818,8 @@ impl Repr {
                         block_results.push(proof);
                     }
                     if !block_results.is_empty() {
-                        results.add_block(self.blocks[block_number], block_results);
+                        let block_info = self.get_block_by_number(block_number).unwrap();
+                        results.add_block(block_info, block_results);
                     }
                 }
             }
@@ -874,7 +890,8 @@ impl Repr {
             if let Some((block_number, proof)) = self.get_transaction_inclusion_proof(&hash) {
                 if block_number != last_block_number {
                     if !block_results.is_empty() {
-                        results.add_block(self.blocks[last_block_number], block_results);
+                        let block_info = self.get_block_by_number(block_number).unwrap();
+                        results.add_block(block_info, block_results);
                     }
                     last_block_number = block_number;
                     block_results = vec![proof];
@@ -884,7 +901,8 @@ impl Repr {
             }
         }
         if !block_results.is_empty() {
-            results.add_block(self.blocks[last_block_number], block_results);
+            let block_info = self.get_block_by_number(last_block_number).unwrap();
+            results.add_block(block_info, block_results);
         }
         Ok(results)
     }
@@ -968,7 +986,8 @@ impl Repr {
                 if let Some((block_number, proof)) = self.get_transaction_inclusion_proof(lhs) {
                     if block_number != last_block_number {
                         if !block_results.is_empty() {
-                            results.add_block(self.blocks[last_block_number], block_results);
+                            let block_info = self.get_block_by_number(last_block_number).unwrap();
+                            results.add_block(block_info, block_results);
                         }
                         last_block_number = block_number;
                         block_results = vec![proof];
@@ -982,7 +1001,8 @@ impl Repr {
             }
         }
         if !block_results.is_empty() {
-            results.add_block(self.blocks[last_block_number], block_results);
+            let block_info = self.get_block_by_number(last_block_number).unwrap();
+            results.add_block(block_info, block_results);
         }
         Ok(results)
     }
@@ -1026,7 +1046,8 @@ impl Repr {
                 if let Some((block_number, proof)) = self.get_transaction_inclusion_proof(lhs) {
                     if block_number != last_block_number {
                         if !block_results.is_empty() {
-                            results.add_block(self.blocks[last_block_number], block_results);
+                            let block_info = self.get_block_by_number(last_block_number).unwrap();
+                            results.add_block(block_info, block_results);
                         }
                         last_block_number = block_number;
                         block_results = vec![proof];
@@ -1040,7 +1061,8 @@ impl Repr {
             }
         }
         if !block_results.is_empty() {
-            results.add_block(self.blocks[last_block_number], block_results);
+            let block_info = self.get_block_by_number(last_block_number).unwrap();
+            results.add_block(block_info, block_results);
         }
         Ok(results)
     }
@@ -1078,9 +1100,9 @@ impl Repr {
         }
     }
 
-    fn close_block(&mut self, timestamp: SystemTime) -> BlockInfo {
+    fn close_block(&mut self, timestamp: SystemTime) -> Result<BlockInfo> {
         let block_number = self.current_version();
-        let previous_block_hash = self.blocks.last().unwrap().hash();
+        let previous_block_hash = *self.block_hashes_by_number.last().unwrap();
         let (_, network_topology) = self
             .network_topologies
             .range(0..=block_number)
@@ -1089,7 +1111,7 @@ impl Repr {
         let transactions_root_hash = self.transactions_per_block.last().unwrap().root_hash();
         let accounts_root_hash = self.accounts.root_hash(block_number);
         let program_storage_root_hash = self.program_storage.root_hash(block_number);
-        let block = BlockInfo::new(
+        let block_header = BlockHeader::new(
             self.chain_id,
             block_number,
             previous_block_hash,
@@ -1099,13 +1121,12 @@ impl Repr {
             accounts_root_hash,
             program_storage_root_hash,
         );
-        let block_hash = block.hash();
-        self.blocks.push(block);
-        self.block_numbers_by_hash
-            .insert(block_hash, block_number as usize);
+        let block_hash = block_header.hash();
+        self.blocks.insert_hashed(block_header, block_hash)?;
+        self.block_hashes_by_number.push(block_hash);
         self.transactions_per_block
             .push(BlockTransactions::default());
-        block
+        Ok(BlockInfo::from_parts(block_hash, block_header))
     }
 
     fn notify_block(&mut self, block_info: &BlockInfo) {
@@ -1121,7 +1142,7 @@ impl Repr {
     }
 
     fn notify_accounts(&mut self, block_info: &BlockInfo) {
-        let current_version = self.accounts.get_version((self.blocks.len() - 1) as u64);
+        let current_version = self.accounts.get_version(self.current_version() - 1);
         let mut empty_accounts = vec![];
         for (account_address, listeners) in &mut self.account_watchers {
             let message = AccountState {
@@ -1147,8 +1168,9 @@ impl Repr {
     }
 
     fn notify_account_changes(&mut self, block_info: &BlockInfo) {
-        let previous_version = self.accounts.get_version((self.blocks.len() - 2) as u64);
-        let current_version = self.accounts.get_version((self.blocks.len() - 1) as u64);
+        let last_version = self.current_version() - 1;
+        let previous_version = self.accounts.get_version(last_version - 1);
+        let current_version = self.accounts.get_version(last_version);
         let mut empty_accounts = vec![];
         for (account_address, listeners) in &mut self.account_listeners {
             let previous_hash = previous_version.get(*account_address).as_scalar();
@@ -1352,13 +1374,13 @@ impl Db {
         )
     }
 
-    pub async fn close_block(&self) -> BlockInfo {
+    pub async fn close_block(&self) -> Result<BlockInfo> {
         let mut repr = self.repr.lock().await;
-        let block_info = repr.close_block(self.clock.now());
+        let block_info = repr.close_block(self.clock.now())?;
         repr.notify_block(&block_info);
         repr.notify_accounts(&block_info);
         repr.notify_account_changes(&block_info);
-        block_info
+        Ok(block_info)
     }
 }
 
@@ -1665,7 +1687,7 @@ mod tests {
             self.clock
                 .advance(Duration::from_millis(constants::BLOCK_TIME_MS))
                 .await;
-            self.db.close_block().await
+            self.db.close_block().await.unwrap()
         }
 
         async fn get_account_info(
