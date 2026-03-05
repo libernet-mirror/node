@@ -1,54 +1,28 @@
 use crate::account;
 use crate::libernet;
 use crate::proto;
+use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
 use crypto::{merkle::AsScalar, poseidon};
 use ff::Field;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct BlockInfo {
-    hash: Scalar,
-    chain_id: u64,
-    number: u64,
-    previous_block_hash: Scalar,
-    timestamp: SystemTime,
-    network_topology_root_hash: Scalar,
-    transactions_root_hash: Scalar,
-    accounts_root_hash: Scalar,
-    program_storage_root_hash: Scalar,
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[repr(C)]
+pub struct BlockHeader {
+    chain_id: StoredU64,
+    number: StoredU64,
+    previous_block_hash: StoredScalar,
+    timestamp: StoredU64,
+    network_topology_root_hash: StoredScalar,
+    transactions_root_hash: StoredScalar,
+    accounts_root_hash: StoredScalar,
+    program_storage_root_hash: StoredScalar,
 }
 
-impl BlockInfo {
-    fn hash_block(
-        chain_id: u64,
-        block_number: u64,
-        previous_block_hash: Scalar,
-        timestamp: SystemTime,
-        network_topology_root_hash: Scalar,
-        transactions_root_hash: Scalar,
-        accounts_root_hash: Scalar,
-        program_storage_root_hash: Scalar,
-    ) -> Scalar {
-        poseidon::hash_t4(&[
-            Scalar::from(chain_id),
-            Scalar::from(block_number),
-            previous_block_hash,
-            Scalar::from(
-                timestamp
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-            ),
-            network_topology_root_hash,
-            transactions_root_hash,
-            accounts_root_hash,
-            program_storage_root_hash,
-        ])
-    }
-
+impl BlockHeader {
     pub fn new(
         chain_id: u64,
         block_number: u64,
@@ -60,74 +34,176 @@ impl BlockInfo {
         program_storage_root_hash: Scalar,
     ) -> Self {
         Self {
-            hash: Self::hash_block(
-                chain_id,
-                block_number,
-                previous_block_hash,
-                timestamp,
-                network_topology_root_hash,
-                transactions_root_hash,
-                accounts_root_hash,
-                program_storage_root_hash,
-            ),
+            chain_id: chain_id.into(),
+            number: block_number.into(),
+            previous_block_hash: previous_block_hash.into(),
+            timestamp: timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .into(),
+            network_topology_root_hash: network_topology_root_hash.into(),
+            transactions_root_hash: transactions_root_hash.into(),
+            accounts_root_hash: accounts_root_hash.into(),
+            program_storage_root_hash: program_storage_root_hash.into(),
+        }
+    }
+
+    pub fn chain_id(&self) -> u64 {
+        self.chain_id.to_u64()
+    }
+
+    pub fn number(&self) -> u64 {
+        self.number.to_u64()
+    }
+
+    pub fn previous_block_hash(&self) -> Scalar {
+        self.previous_block_hash.to_scalar()
+    }
+
+    pub fn timestamp(&self) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(self.timestamp.to_u64())
+    }
+
+    pub fn network_topology_root_hash(&self) -> Scalar {
+        self.network_topology_root_hash.to_scalar()
+    }
+
+    pub fn transactions_root_hash(&self) -> Scalar {
+        self.transactions_root_hash.to_scalar()
+    }
+
+    pub fn accounts_root_hash(&self) -> Scalar {
+        self.accounts_root_hash.to_scalar()
+    }
+
+    pub fn program_storage_root_hash(&self) -> Scalar {
+        self.program_storage_root_hash.to_scalar()
+    }
+}
+
+impl Stored for BlockHeader {}
+
+impl NodeData for BlockHeader {
+    fn hash(&self) -> Scalar {
+        poseidon::hash_t4(&[
+            self.chain_id.to_u64().into(),
+            self.number.to_u64().into(),
+            self.previous_block_hash.to_scalar(),
+            self.timestamp.to_u64().into(),
+            self.network_topology_root_hash.to_scalar(),
+            self.transactions_root_hash.to_scalar(),
+            self.accounts_root_hash.to_scalar(),
+            self.program_storage_root_hash.to_scalar(),
+        ])
+    }
+}
+
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[repr(C)]
+pub struct BlockListHeader {
+    head_block_hash: StoredScalar,
+}
+
+impl BlockListHeader {
+    pub fn head_block_hash(&self) -> Scalar {
+        self.head_block_hash.to_scalar()
+    }
+
+    pub fn set_head_block_hash(&mut self, block_hash: Scalar) {
+        self.head_block_hash = block_hash.into();
+    }
+}
+
+impl Stored for BlockListHeader {}
+impl HeaderData for BlockListHeader {}
+
+pub type BlockList = MappedHashSet<BlockListHeader, BlockHeader>;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct BlockInfo {
+    hash: Scalar,
+    header: BlockHeader,
+}
+
+impl BlockInfo {
+    pub fn new(
+        chain_id: u64,
+        block_number: u64,
+        previous_block_hash: Scalar,
+        timestamp: SystemTime,
+        network_topology_root_hash: Scalar,
+        transactions_root_hash: Scalar,
+        accounts_root_hash: Scalar,
+        program_storage_root_hash: Scalar,
+    ) -> Self {
+        let header = BlockHeader::new(
             chain_id,
-            number: block_number,
+            block_number,
             previous_block_hash,
             timestamp,
             network_topology_root_hash,
             transactions_root_hash,
             accounts_root_hash,
             program_storage_root_hash,
-        }
+        );
+        let hash = header.hash();
+        Self { hash, header }
     }
 
     pub fn hash(&self) -> Scalar {
         self.hash
     }
 
+    pub fn header(&self) -> &BlockHeader {
+        &self.header
+    }
+
     pub fn chain_id(&self) -> u64 {
-        self.chain_id
+        self.header.chain_id()
     }
 
     pub fn number(&self) -> u64 {
-        self.number
+        self.header.number()
     }
 
     pub fn previous_block_hash(&self) -> Scalar {
-        self.previous_block_hash
+        self.header.previous_block_hash()
     }
 
     pub fn timestamp(&self) -> SystemTime {
-        self.timestamp
+        self.header.timestamp()
     }
 
     pub fn network_topology_root_hash(&self) -> Scalar {
-        self.network_topology_root_hash
+        self.header.network_topology_root_hash()
     }
 
     pub fn transactions_root_hash(&self) -> Scalar {
-        self.transactions_root_hash
+        self.header.transactions_root_hash()
     }
 
     pub fn accounts_root_hash(&self) -> Scalar {
-        self.accounts_root_hash
+        self.header.accounts_root_hash()
     }
 
     pub fn program_storage_root_hash(&self) -> Scalar {
-        self.program_storage_root_hash
+        self.header.program_storage_root_hash()
     }
 
     pub fn encode(&self) -> libernet::BlockDescriptor {
         libernet::BlockDescriptor {
             block_hash: Some(proto::encode_scalar(self.hash)),
-            chain_id: Some(self.chain_id),
-            block_number: Some(self.number),
-            previous_block_hash: Some(proto::encode_scalar(self.previous_block_hash)),
-            timestamp: Some(self.timestamp.into()),
-            network_topology_root_hash: Some(proto::encode_scalar(self.network_topology_root_hash)),
-            transactions_root_hash: Some(proto::encode_scalar(self.transactions_root_hash)),
-            accounts_root_hash: Some(proto::encode_scalar(self.accounts_root_hash)),
-            program_storage_root_hash: Some(proto::encode_scalar(self.program_storage_root_hash)),
+            chain_id: Some(self.chain_id()),
+            block_number: Some(self.number()),
+            previous_block_hash: Some(proto::encode_scalar(self.previous_block_hash())),
+            timestamp: Some(self.timestamp().into()),
+            network_topology_root_hash: Some(proto::encode_scalar(
+                self.network_topology_root_hash(),
+            )),
+            transactions_root_hash: Some(proto::encode_scalar(self.transactions_root_hash())),
+            accounts_root_hash: Some(proto::encode_scalar(self.accounts_root_hash())),
+            program_storage_root_hash: Some(proto::encode_scalar(self.program_storage_root_hash())),
         }
     }
 
@@ -527,6 +603,94 @@ mod tests {
     use std::time::Duration;
 
     const TEST_CHAIN_ID: u64 = 42;
+
+    #[test]
+    fn test_block_header1() {
+        let header = BlockHeader::new(
+            123,
+            12,
+            parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
+            parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68"),
+            parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce"),
+            parse_scalar("0x277b1387699dc9fe9636af621c72872278d290344266612ce6e79555664361c8"),
+            parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060"),
+        );
+        assert_eq!(
+            header.hash(),
+            parse_scalar("0x705a1cee832b5c00ce866716c5dcc78c9655bcfd329487d801b896fe330ad7ee")
+        );
+        assert_eq!(header.chain_id(), 123);
+        assert_eq!(header.number(), 12);
+        assert_eq!(
+            header.previous_block_hash(),
+            parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7")
+        );
+        assert_eq!(
+            header.timestamp(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(71104)
+        );
+        assert_eq!(
+            header.network_topology_root_hash(),
+            parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68")
+        );
+        assert_eq!(
+            header.transactions_root_hash(),
+            parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce")
+        );
+        assert_eq!(
+            header.accounts_root_hash(),
+            parse_scalar("0x277b1387699dc9fe9636af621c72872278d290344266612ce6e79555664361c8")
+        );
+        assert_eq!(
+            header.program_storage_root_hash(),
+            parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060")
+        );
+    }
+
+    #[test]
+    fn test_block_header2() {
+        let header = BlockInfo::new(
+            456,
+            34,
+            parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b"),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(40117),
+            parse_scalar("0x6850d697616cd6f003c99cc13840251db4c9e5bbf2a0daf24fdf371ed0fa0eb1"),
+            parse_scalar("0x5159768a2180cf64008a38917360b7811b1ca488390e76c71ed3c6602f48a51d"),
+            parse_scalar("0x367a546a703795bc1c3965eb037297dfe4956e4866b67e22d0b12995b9f4fbff"),
+            parse_scalar("0x5f2fd026dfc233c1e1adfbcd7c6b20280db9b33e12f493802a72b9a7f55f0a2"),
+        );
+        assert_eq!(
+            header.hash(),
+            parse_scalar("0x1e5faa7a7eac17bb5e804eb81ba914eafebf58c42e579d636d53c07cefc0d1fb")
+        );
+        assert_eq!(header.chain_id(), 456);
+        assert_eq!(header.number(), 34);
+        assert_eq!(
+            header.previous_block_hash(),
+            parse_scalar("0x3b2fc7f32a00e220e6d6792714bfa01679c7a176e2be92cae1d3fab56a28610b")
+        );
+        assert_eq!(
+            header.timestamp(),
+            SystemTime::UNIX_EPOCH + Duration::from_secs(40117)
+        );
+        assert_eq!(
+            header.network_topology_root_hash(),
+            parse_scalar("0x6850d697616cd6f003c99cc13840251db4c9e5bbf2a0daf24fdf371ed0fa0eb1")
+        );
+        assert_eq!(
+            header.transactions_root_hash(),
+            parse_scalar("0x5159768a2180cf64008a38917360b7811b1ca488390e76c71ed3c6602f48a51d")
+        );
+        assert_eq!(
+            header.accounts_root_hash(),
+            parse_scalar("0x367a546a703795bc1c3965eb037297dfe4956e4866b67e22d0b12995b9f4fbff")
+        );
+        assert_eq!(
+            header.program_storage_root_hash(),
+            parse_scalar("0x5f2fd026dfc233c1e1adfbcd7c6b20280db9b33e12f493802a72b9a7f55f0a2")
+        );
+    }
 
     #[test]
     fn test_block_info1() {

@@ -16,6 +16,10 @@ use std::ops::{Index, IndexMut};
 const PAGE_SIZE: usize = 0x1000;
 
 /// Indicates that a type is suitable for storage in a memory-mapped region.
+///
+/// REQUIRES: all implementors must be #[repr(C)], and all of their fields must in turn implement
+/// `Stored`. This module provides convenience implementations for `u64` and `Scalar` (respectively:
+/// `StoredU64` and `StoredScalar`).
 pub trait Stored: Sized + Debug + Default + Copy + Clone + 'static {}
 
 /// A `u64` stored in the memory-mapped region, in little endian order.
