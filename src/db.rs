@@ -1142,7 +1142,7 @@ impl Repr {
     }
 
     fn notify_accounts(&mut self, block_info: &BlockInfo) {
-        let current_version = self.accounts.get_version(self.current_version());
+        let current_version = self.accounts.get_version(self.current_version() - 1);
         let mut empty_accounts = vec![];
         for (account_address, listeners) in &mut self.account_watchers {
             let message = AccountState {
@@ -1168,9 +1168,9 @@ impl Repr {
     }
 
     fn notify_account_changes(&mut self, block_info: &BlockInfo) {
-        let current_version = self.current_version();
-        let previous_version = self.accounts.get_version(current_version - 1);
-        let current_version = self.accounts.get_version(current_version);
+        let last_version = self.current_version() - 1;
+        let previous_version = self.accounts.get_version(last_version - 1);
+        let current_version = self.accounts.get_version(last_version);
         let mut empty_accounts = vec![];
         for (account_address, listeners) in &mut self.account_listeners {
             let previous_hash = previous_version.get(*account_address).as_scalar();
