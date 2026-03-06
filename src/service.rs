@@ -1181,7 +1181,7 @@ mod tests {
         assert_eq!(block_info.number(), 1);
         assert_eq!(
             block_info.hash(),
-            parse_scalar("0x294aaaa096f4a412de6bf13e3ed06b3fe449be667e1c4215639b5a5627ba4757")
+            parse_scalar("0x37f62fc4b2ff815b22d31ad8ae4d605b1c7259a3dad838d431e539b0039f3f6f")
         );
     }
 
@@ -1817,7 +1817,7 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x294aaaa096f4a412de6bf13e3ed06b3fe449be667e1c4215639b5a5627ba4757")
+            parse_scalar("0x37f62fc4b2ff815b22d31ad8ae4d605b1c7259a3dad838d431e539b0039f3f6f")
         );
 
         assert_eq!(proof.key(), account1.address());
@@ -1884,7 +1884,7 @@ mod tests {
         assert_eq!(block_info.number(), 2);
         assert_eq!(
             block_info.previous_block_hash(),
-            parse_scalar("0x294aaaa096f4a412de6bf13e3ed06b3fe449be667e1c4215639b5a5627ba4757")
+            parse_scalar("0x37f62fc4b2ff815b22d31ad8ae4d605b1c7259a3dad838d431e539b0039f3f6f")
         );
 
         assert_eq!(proof.key(), account1.address());
@@ -2000,7 +2000,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x328bf25b8f7e7f50a73be6f30e21fe436c0cb24b91b718db584b402849a16d3b",
+                        "0x443fb5c4881c01586830fbeead3eeb50736c215852c47bd937a225d9dd4a71e1",
                     )
                 );
                 proof.take_value()
@@ -2093,7 +2093,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x328bf25b8f7e7f50a73be6f30e21fe436c0cb24b91b718db584b402849a16d3b",
+                        "0x443fb5c4881c01586830fbeead3eeb50736c215852c47bd937a225d9dd4a71e1",
                     )
                 );
                 proof.take_value()
@@ -2186,7 +2186,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x328bf25b8f7e7f50a73be6f30e21fe436c0cb24b91b718db584b402849a16d3b",
+                        "0x443fb5c4881c01586830fbeead3eeb50736c215852c47bd937a225d9dd4a71e1",
                     )
                 );
                 proof.take_value()
@@ -2268,7 +2268,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x328bf25b8f7e7f50a73be6f30e21fe436c0cb24b91b718db584b402849a16d3b",
+                        "0x443fb5c4881c01586830fbeead3eeb50736c215852c47bd937a225d9dd4a71e1",
                     )
                 );
                 proof.take_value()
@@ -2360,7 +2360,7 @@ mod tests {
                 assert_eq!(
                     block_info.hash(),
                     parse_scalar(
-                        "0x328bf25b8f7e7f50a73be6f30e21fe436c0cb24b91b718db584b402849a16d3b",
+                        "0x443fb5c4881c01586830fbeead3eeb50736c215852c47bd937a225d9dd4a71e1",
                     )
                 );
                 proof.take_value()
