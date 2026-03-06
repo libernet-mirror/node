@@ -211,12 +211,11 @@ impl NodeServiceImpl {
         self.account.sign_message(message)
     }
 
-    async fn add_block_rewards(&self) {
+    async fn add_block_rewards(&self) -> anyhow::Result<()> {
         let account = self
             .db
             .get_latest_account_info(self.account.address())
-            .await
-            .unwrap();
+            .await;
         let account = account.account_info();
         let reward = (account.staking_balance() * Scalar::from(BLOCK_REWARD_NUMERATOR))
             .shr(BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
@@ -232,8 +231,8 @@ impl NodeServiceImpl {
                 )
                 .unwrap(),
             )
-            .await
-            .unwrap();
+            .await?;
+        Ok(())
     }
 
     fn start_block_timer(self: Arc<Self>) {
@@ -243,7 +242,7 @@ impl NodeServiceImpl {
                 utils::format_scalar(self.db.get_latest_block().await.hash())
             );
             loop {
-                self.add_block_rewards().await;
+                self.add_block_rewards().await.unwrap();
                 tokio::select! {
                     _ = sleep(Duration::from_millis(BLOCK_TIME_MS)) => {
                         // NOTE: failure to close the block means we can no longer add data to our
@@ -306,22 +305,12 @@ impl NodeServiceImpl {
                     .await
                     .map_err(|_| {
                         Status::not_found(format!(
-                            "account address {} not found at block {}",
-                            utils::format_scalar(account_address),
+                            "block {} not found",
                             utils::format_scalar(block_hash)
                         ))
                     })
             }
-            None => self
-                .db
-                .get_latest_account_info(account_address)
-                .await
-                .map_err(|_| {
-                    Status::not_found(format!(
-                        "account address {} not found",
-                        utils::format_scalar(account_address)
-                    ))
-                }),
+            None => Ok(self.db.get_latest_account_info(account_address).await),
         }
     }
 

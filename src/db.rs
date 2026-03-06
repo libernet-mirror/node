@@ -502,12 +502,12 @@ impl Repr {
         }
     }
 
-    fn get_latest_account_info(&self, account_address: Scalar) -> Result<AccountState> {
+    fn get_latest_account_info(&self, account_address: Scalar) -> AccountState {
         let block = self.get_latest_block();
-        Ok(AccountState {
+        AccountState {
             block_info: block,
             proof: self.accounts.get_proof(account_address, block.number()),
-        })
+        }
     }
 
     fn watch_account(&mut self, account_address: Scalar) -> Receiver<AccountState> {
@@ -1258,7 +1258,7 @@ impl Db {
             .get_account_info(account_address, block_hash)
     }
 
-    pub async fn get_latest_account_info(&self, account_address: Scalar) -> Result<AccountState> {
+    pub async fn get_latest_account_info(&self, account_address: Scalar) -> AccountState {
         self.repr
             .lock()
             .await
@@ -1725,7 +1725,7 @@ mod tests {
         }
 
         async fn get_latest_account_info(&self, account_address: Scalar) -> Result<AccountInfo> {
-            let account_state = self.db.get_latest_account_info(account_address).await?;
+            let account_state = self.db.get_latest_account_info(account_address).await;
             if account_state.proof.root_hash() != account_state.block_info.accounts_root_hash() {
                 return Err(anyhow!(
                     "incorrect account root hash (got {}, want {})",

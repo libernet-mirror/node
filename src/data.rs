@@ -5,6 +5,7 @@ use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, St
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
+use crypto::utils;
 use crypto::{merkle::AsScalar, poseidon};
 use ff::Field;
 use std::time::{Duration, SystemTime};
@@ -314,7 +315,11 @@ impl AccountInfo {
         let old_balance = self.balance();
         let max = -Scalar::from(1);
         if old_balance > max - amount {
-            return Err(anyhow!("arithmetic overflow"));
+            return Err(anyhow!(
+                "arithmetic overflow: {} + {}",
+                utils::format_scalar(old_balance),
+                utils::format_scalar(amount)
+            ));
         }
         let new_balance = old_balance + amount;
         Ok(Self {
@@ -327,7 +332,11 @@ impl AccountInfo {
     pub fn sub_from_balance(&self, amount: Scalar) -> Result<Self> {
         let old_balance = self.balance();
         if amount > old_balance {
-            return Err(anyhow!("arithmetic underflow"));
+            return Err(anyhow!(
+                "arithmetic underflow: {} - {}",
+                utils::format_scalar(old_balance),
+                utils::format_scalar(amount)
+            ));
         }
         let new_balance = old_balance - amount;
         Ok(Self {
