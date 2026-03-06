@@ -184,6 +184,110 @@ pub fn encode_message_canonical<M: prost::Message + prost::Name>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use blstrs::{G1Projective, G2Projective};
+    use crypto::poseidon;
+    use group::Group;
+    use prost::Message;
+    use std::time::{Duration, SystemTime};
 
-    // TODO
+    #[test]
+    fn test_scalar_encoding_to_any() {
+        let value = utils::get_random_scalar();
+        let encoded = value.encode_to_any().unwrap();
+        assert_eq!(Scalar::decode_from_any(&encoded).unwrap(), value);
+    }
+
+    fn test_u64_encoding(value: u64) {
+        let encoded = value.encode_to_any().unwrap();
+        assert_eq!(u64::decode_from_any(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn test_u64_encoding1() {
+        test_u64_encoding(123);
+    }
+
+    #[test]
+    fn test_u64_encoding2() {
+        test_u64_encoding(456);
+    }
+
+    #[test]
+    fn test_scalar_encoding() {
+        let value = utils::get_random_scalar();
+        let encoded = encode_scalar(value);
+        assert_eq!(decode_scalar(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn test_u256_encoding() {
+        let value = utils::scalar_to_u256(utils::get_random_scalar());
+        let encoded = encode_u256(value);
+        assert_eq!(decode_u256(&encoded).unwrap(), value);
+    }
+
+    #[test]
+    fn test_h256_encoding() {
+        let u256 = utils::scalar_to_u256(utils::get_random_scalar());
+        let h256 = H256::from_slice(&u256.to_little_endian());
+        let encoded = encode_h256(h256);
+        assert_eq!(decode_h256(&encoded).unwrap(), h256);
+    }
+
+    #[test]
+    fn test_g1_point_encoding() {
+        let point = (G1Projective::generator() * utils::get_random_scalar()).into();
+        let encoded = encode_g1(point);
+        assert_eq!(decode_g1(&encoded).unwrap(), point);
+    }
+
+    #[test]
+    fn test_g2_point_encoding() {
+        let point = (G2Projective::generator() * utils::get_random_scalar()).into();
+        let encoded = encode_g2(point);
+        assert_eq!(decode_g2(&encoded).unwrap(), point);
+    }
+
+    #[test]
+    fn test_encode_any_canonical() {
+        let chain_id = 42;
+        let block_number = 123;
+        let previous_block_hash = utils::get_random_scalar();
+        let timestamp = SystemTime::UNIX_EPOCH + Duration::from_secs(71104);
+        let network_topology_root_hash = utils::get_random_scalar();
+        let transactions_root_hash = utils::get_random_scalar();
+        let accounts_root_hash = utils::get_random_scalar();
+        let program_storage_root_hash = utils::get_random_scalar();
+        let block_hash = poseidon::hash_t4(&[
+            chain_id.into(),
+            block_number.into(),
+            previous_block_hash,
+            timestamp
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                .into(),
+            network_topology_root_hash,
+            transactions_root_hash,
+            accounts_root_hash,
+            program_storage_root_hash,
+        ]);
+        let block_descriptor = libernet::BlockDescriptor {
+            block_hash: Some(encode_scalar(block_hash)),
+            chain_id: Some(chain_id),
+            block_number: Some(block_number),
+            previous_block_hash: Some(encode_scalar(previous_block_hash)),
+            timestamp: Some(timestamp.into()),
+            network_topology_root_hash: Some(encode_scalar(network_topology_root_hash)),
+            transactions_root_hash: Some(encode_scalar(transactions_root_hash)),
+            accounts_root_hash: Some(encode_scalar(accounts_root_hash)),
+            program_storage_root_hash: Some(encode_scalar(program_storage_root_hash)),
+        };
+        let (any, bytes) = encode_message_canonical(&block_descriptor).unwrap();
+        assert_eq!(prost_types::Any::decode(bytes.as_slice()).unwrap(), any);
+        assert_eq!(
+            any.to_msg::<libernet::BlockDescriptor>().unwrap(),
+            block_descriptor
+        );
+    }
 }
