@@ -83,6 +83,12 @@ impl From<Scalar> for StoredScalar {
     }
 }
 
+impl From<u64> for StoredScalar {
+    fn from(value: u64) -> Self {
+        Scalar::from(value).into()
+    }
+}
+
 impl Ord for StoredScalar {
     fn cmp(&self, other: &Self) -> Ordering {
         for i in (0..32).rev() {
@@ -972,7 +978,7 @@ mod tests {
 
     impl TestHeaderData {
         fn test_data() -> Self {
-            Self(Scalar::from(42).into())
+            Self(42.into())
         }
     }
 
@@ -993,11 +999,7 @@ mod tests {
         }
 
         fn test_data1() -> Self {
-            Self(
-                Scalar::from(12).into(),
-                Scalar::from(34).into(),
-                Scalar::from(1).into(),
-            )
+            Self(12.into(), 34.into(), 1.into())
         }
 
         fn test_hash1() -> Scalar {
@@ -1005,11 +1007,7 @@ mod tests {
         }
 
         fn test_data2() -> Self {
-            Self(
-                Scalar::from(56).into(),
-                Scalar::from(78).into(),
-                Scalar::from(2).into(),
-            )
+            Self(56.into(), 78.into(), 2.into())
         }
 
         fn test_hash2() -> Scalar {
@@ -1017,11 +1015,7 @@ mod tests {
         }
 
         fn test_data3() -> Self {
-            Self(
-                Scalar::from(90).into(),
-                Scalar::from(12).into(),
-                Scalar::from(3).into(),
-            )
+            Self(90.into(), 12.into(), 3.into())
         }
 
         fn test_hash3() -> Scalar {
@@ -1085,7 +1079,7 @@ mod tests {
 
     #[test]
     fn test_stored_scalar() {
-        let scalar: StoredScalar = Scalar::from(42).into();
+        let scalar: StoredScalar = 42.into();
         assert!(!scalar.is_zero());
         assert_eq!(scalar.to_scalar(), Scalar::from(42));
     }
@@ -1142,7 +1136,7 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_one_element_1() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
-        let value = Scalar::from(42).into();
+        let value = 42.into();
         buffer.push(value);
         assert_eq!(*buffer.top(), value);
         assert_eq!(*buffer.top_mut(), value);
@@ -1157,7 +1151,7 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_one_element_2() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
-        let value = Scalar::from(42).into();
+        let value = 42.into();
         buffer.push(value);
         assert_eq!(*buffer.top(), value);
         assert_eq!(*buffer.top_mut(), value);
@@ -1174,7 +1168,7 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_one_element_3() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
-        let value = Scalar::from(42).into();
+        let value = 42.into();
         buffer.push(value);
         assert_eq!(*buffer.top(), value);
         assert_eq!(*buffer.top_mut(), value);
@@ -1193,8 +1187,8 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_two_elements_1() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
-        let value1 = Scalar::from(12).into();
-        let value2 = Scalar::from(34).into();
+        let value1 = 12.into();
+        let value2 = 34.into();
         buffer.push(value1);
         buffer.push(value2);
         assert_eq!(*buffer.top(), value2);
@@ -1210,8 +1204,8 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_two_elements_2() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
-        let value1 = Scalar::from(12).into();
-        let value2 = Scalar::from(34).into();
+        let value1 = 12.into();
+        let value2 = 34.into();
         buffer.push(value1);
         buffer.push(value2);
         assert_eq!(*buffer.top(), value2);
@@ -1229,8 +1223,8 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_two_elements_3() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
-        let value1 = Scalar::from(12).into();
-        let value2 = Scalar::from(34).into();
+        let value1 = 12.into();
+        let value2 = 34.into();
         buffer.push(value1);
         buffer.push(value2);
         assert_eq!(*buffer.top(), value2);
@@ -1250,9 +1244,9 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_three_elements_1() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 1>::default();
-        let value1 = Scalar::from(56).into();
-        let value2 = Scalar::from(78).into();
-        let value3 = Scalar::from(90).into();
+        let value1 = 56.into();
+        let value2 = 78.into();
+        let value3 = 90.into();
         buffer.push(value1);
         buffer.push(value2);
         buffer.push(value3);
@@ -1269,9 +1263,9 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_three_elements_2() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 2>::default();
-        let value1 = Scalar::from(56).into();
-        let value2 = Scalar::from(78).into();
-        let value3 = Scalar::from(90).into();
+        let value1 = 56.into();
+        let value2 = 78.into();
+        let value3 = 90.into();
         buffer.push(value1);
         buffer.push(value2);
         buffer.push(value3);
@@ -1290,9 +1284,9 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_push_three_elements_3() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
-        let value1 = Scalar::from(56).into();
-        let value2 = Scalar::from(78).into();
-        let value3 = Scalar::from(90).into();
+        let value1 = 56.into();
+        let value2 = 78.into();
+        let value3 = 90.into();
         buffer.push(value1);
         buffer.push(value2);
         buffer.push(value3);
@@ -1313,7 +1307,7 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_pop_one_element() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
-        let value = Scalar::from(42).into();
+        let value = 42.into();
         buffer.push(value);
         assert_eq!(buffer.pop(), value);
         assert_eq!(*buffer.top(), StoredScalar::default());
@@ -1337,8 +1331,8 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_pop_one_of_two_elements() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
-        let value1 = Scalar::from(12).into();
-        let value2 = Scalar::from(34).into();
+        let value1 = 12.into();
+        let value2 = 34.into();
         buffer.push(value1);
         buffer.push(value2);
         assert_eq!(buffer.pop(), value2);
@@ -1359,8 +1353,8 @@ mod tests {
     #[test]
     fn test_stored_circular_buffer_pop_two_elements() {
         let mut buffer = StoredCircularBuffer::<StoredScalar, 3>::default();
-        let value1 = Scalar::from(12).into();
-        let value2 = Scalar::from(34).into();
+        let value1 = 12.into();
+        let value2 = 34.into();
         buffer.push(value1);
         buffer.push(value2);
         assert_eq!(buffer.pop(), value2);
