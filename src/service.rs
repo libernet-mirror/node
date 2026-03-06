@@ -1,8 +1,6 @@
 use crate::account::Account;
 use crate::clock::Clock;
-use crate::constants::{
-    self, BLOCK_REWARD_DENOMINATOR_LOG2, BLOCK_REWARD_NUMERATOR, BLOCK_TIME_MS,
-};
+use crate::constants::{self, BLOCK_TIME_MS};
 use crate::data;
 use crate::db;
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
@@ -217,9 +215,7 @@ impl NodeServiceImpl {
             .get_latest_account_info(self.account.address())
             .await;
         let account = account.account_info();
-        let reward = (account.staking_balance() * Scalar::from(BLOCK_REWARD_NUMERATOR))
-            .shr(BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
-            - account.staking_balance();
+        let reward = data::reward_for(account.staking_balance())?;
         self.db
             .add_transaction(
                 data::Transaction::make_block_reward_proto(
@@ -644,7 +640,7 @@ mod tests {
     use super::*;
     use crate::account::testing;
     use crate::clock::testing::MockClock;
-    use crate::data::{Transaction, TransactionInclusionProof, TransactionTree};
+    use crate::data::{self, Transaction, TransactionInclusionProof, TransactionTree};
     use crate::libernet::{
         node_service_v1_client::NodeServiceV1Client, node_service_v1_server::NodeServiceV1Server,
     };
@@ -664,8 +660,7 @@ mod tests {
     }
 
     fn reward_for(stake: Scalar) -> Scalar {
-        (stake * Scalar::from(BLOCK_REWARD_NUMERATOR)).shr(BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
-            - stake
+        data::reward_for(stake).unwrap()
     }
 
     struct TestFixture {

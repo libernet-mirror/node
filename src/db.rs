@@ -1392,7 +1392,7 @@ mod tests {
     use crate::account::testing;
     use crate::clock::testing::MockClock;
     use crate::constants;
-    use crate::data::AccountFields;
+    use crate::data::{self, AccountFields};
     use crate::testing::parse_scalar;
     use std::time::Duration;
 
@@ -1405,9 +1405,7 @@ mod tests {
     }
 
     fn reward_for(stake: Scalar) -> Scalar {
-        (stake * Scalar::from(constants::BLOCK_REWARD_NUMERATOR))
-            .shr(constants::BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
-            - stake
+        data::reward_for(stake).unwrap()
     }
 
     fn account_info1() -> AccountInfo {

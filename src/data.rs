@@ -1,4 +1,5 @@
 use crate::account;
+use crate::constants;
 use crate::libernet;
 use crate::proto::{self, DecodeFromAny, EncodeToAny};
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
@@ -9,6 +10,15 @@ use crypto::utils;
 use crypto::{merkle::AsScalar, poseidon};
 use ff::Field;
 use std::time::{Duration, SystemTime};
+
+/// Computes the block reward for the given stake.
+pub fn reward_for(stake: Scalar) -> Result<Scalar> {
+    let stake = utils::scalar_to_u256(stake);
+    let reward = ((stake * constants::BLOCK_REWARD_NUMERATOR)
+        >> constants::BLOCK_REWARD_DENOMINATOR_LOG2)
+        - stake;
+    utils::u256_to_scalar(reward)
+}
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
