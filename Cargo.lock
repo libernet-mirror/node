@@ -1351,6 +1351,7 @@ dependencies = [
  "ed25519-dalek",
  "ff",
  "futures",
+ "group",
  "hyper",
  "memmap2",
  "oid-registry",

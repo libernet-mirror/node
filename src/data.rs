@@ -321,6 +321,7 @@ impl AccountInfo {
         self.balance.to_scalar()
     }
 
+    #[must_use]
     pub fn add_to_balance(&self, amount: Scalar) -> Result<Self> {
         let old_balance = self.balance();
         let max = -Scalar::from(1);
@@ -339,6 +340,7 @@ impl AccountInfo {
         })
     }
 
+    #[must_use]
     pub fn sub_from_balance(&self, amount: Scalar) -> Result<Self> {
         let old_balance = self.balance();
         if amount > old_balance {
