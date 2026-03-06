@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::account::Account;
-use crate::data::AccountInfo;
+use crate::data::{AccountFields, AccountInfo};
 use crate::libernet::node_service_v1_server::NodeServiceV1Server;
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
@@ -127,12 +127,14 @@ fn read_accounts(file_path: &str) -> Result<BTreeMap<Scalar, AccountInfo>> {
                 Ok((
                     utils::parse_scalar(address.as_str())?,
                     match account_state {
-                        serde_json::Value::String(balance) => Ok(AccountInfo {
-                            last_nonce: 0,
-                            balance: utils::parse_scalar(balance.as_str())?,
-                            staking_balance: 0.into(),
-                        }),
-                        serde_json::Value::Object(fields) => Ok(AccountInfo {
+                        serde_json::Value::String(balance) => {
+                            Ok(AccountInfo::from(AccountFields {
+                                last_nonce: 0,
+                                balance: utils::parse_scalar(balance.as_str())?,
+                                staking_balance: 0.into(),
+                            }))
+                        }
+                        serde_json::Value::Object(fields) => Ok(AccountInfo::from(AccountFields {
                             last_nonce: 0,
                             balance: match fields.get("balance") {
                                 Some(serde_json::Value::String(balance)) => {
@@ -151,7 +153,7 @@ fn read_accounts(file_path: &str) -> Result<BTreeMap<Scalar, AccountInfo>> {
                                     address.as_str()
                                 )),
                             }?,
-                        }),
+                        })),
                         _ => Err(anyhow!("invalid balance for {}", address)),
                     }?,
                 ))
@@ -194,10 +196,10 @@ async fn main() -> Result<()> {
             println!("initial accounts: {{");
             for (address, account) in &accounts {
                 println!("  {}: {{", utils::format_scalar(*address));
-                println!("    balance: {}", utils::format_scalar(account.balance));
+                println!("    balance: {}", utils::format_scalar(account.balance()));
                 println!(
                     "    staking_balance: {}",
-                    utils::format_scalar(account.staking_balance)
+                    utils::format_scalar(account.staking_balance())
                 );
                 println!("  }}");
             }

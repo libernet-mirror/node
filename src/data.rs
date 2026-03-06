@@ -1,6 +1,6 @@
 use crate::account;
 use crate::libernet;
-use crate::proto;
+use crate::proto::{self, DecodeFromAny, EncodeToAny};
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
@@ -278,39 +278,121 @@ impl BlockInfo {
 }
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-pub struct AccountInfo {
+pub struct AccountFields {
     pub last_nonce: u64,
     pub balance: Scalar,
     pub staking_balance: Scalar,
 }
 
-impl AsScalar for AccountInfo {
-    fn as_scalar(&self) -> Scalar {
-        poseidon::hash_t4(&[self.last_nonce.into(), self.balance, self.staking_balance])
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[repr(C)]
+pub struct AccountInfo {
+    last_nonce: StoredU64,
+    balance: StoredScalar,
+    staking_balance: StoredScalar,
+}
+
+impl AccountInfo {
+    pub fn last_nonce(&self) -> u64 {
+        self.last_nonce.to_u64()
+    }
+
+    #[must_use]
+    pub fn set_last_nonce(&self, last_nonce: u64) -> Self {
+        AccountInfo {
+            last_nonce: last_nonce.into(),
+            balance: self.balance,
+            staking_balance: self.staking_balance,
+        }
+    }
+
+    pub fn balance(&self) -> Scalar {
+        self.balance.to_scalar()
+    }
+
+    pub fn add_to_balance(&self, amount: Scalar) -> Result<Self> {
+        let old_balance = self.balance();
+        let max = -Scalar::from(1);
+        if old_balance > max - amount {
+            return Err(anyhow!("arithmetic overflow"));
+        }
+        let new_balance = old_balance + amount;
+        Ok(Self {
+            last_nonce: self.last_nonce,
+            balance: new_balance.into(),
+            staking_balance: self.staking_balance,
+        })
+    }
+
+    pub fn sub_from_balance(&self, amount: Scalar) -> Result<Self> {
+        let old_balance = self.balance();
+        if amount > old_balance {
+            return Err(anyhow!("arithmetic underflow"));
+        }
+        let new_balance = old_balance - amount;
+        Ok(Self {
+            last_nonce: self.last_nonce,
+            balance: new_balance.into(),
+            staking_balance: self.staking_balance,
+        })
+    }
+
+    pub fn staking_balance(&self) -> Scalar {
+        self.staking_balance.to_scalar()
     }
 }
 
-impl proto::EncodeToAny for AccountInfo {
+impl From<AccountFields> for AccountInfo {
+    fn from(fields: AccountFields) -> Self {
+        Self {
+            last_nonce: fields.last_nonce.into(),
+            balance: fields.balance.into(),
+            staking_balance: fields.staking_balance.into(),
+        }
+    }
+}
+
+impl Stored for AccountInfo {}
+
+impl NodeData for AccountInfo {
+    fn hash(&self) -> Scalar {
+        poseidon::hash_t4(&[
+            self.last_nonce().into(),
+            self.balance(),
+            self.staking_balance(),
+        ])
+    }
+}
+
+impl AsScalar for AccountInfo {
+    fn as_scalar(&self) -> Scalar {
+        self.hash()
+    }
+}
+
+impl EncodeToAny for AccountInfo {
     fn encode_to_any(&self) -> Result<prost_types::Any> {
         Ok(prost_types::Any::from_msg(&libernet::AccountInfo {
-            last_nonce: Some(self.last_nonce),
-            balance: Some(proto::encode_scalar(self.balance)),
-            staking_balance: Some(proto::encode_scalar(self.staking_balance)),
+            last_nonce: Some(self.last_nonce()),
+            balance: Some(proto::encode_scalar(self.balance())),
+            staking_balance: Some(proto::encode_scalar(self.staking_balance())),
         })?)
     }
 }
 
-impl proto::DecodeFromAny for AccountInfo {
+impl DecodeFromAny for AccountInfo {
     fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
         let proto = proto.to_msg::<libernet::AccountInfo>()?;
         Ok(Self {
-            last_nonce: proto.last_nonce(),
+            last_nonce: proto.last_nonce().into(),
             balance: proto
                 .balance
-                .map_or(Ok(Scalar::ZERO), |balance| proto::decode_scalar(&balance))?,
+                .map_or(Ok(Scalar::ZERO), |balance| proto::decode_scalar(&balance))?
+                .into(),
             staking_balance: proto
                 .staking_balance
-                .map_or(Ok(Scalar::ZERO), |balance| proto::decode_scalar(&balance))?,
+                .map_or(Ok(Scalar::ZERO), |balance| proto::decode_scalar(&balance))?
+                .into(),
         })
     }
 }
@@ -511,13 +593,13 @@ impl AsScalar for Transaction {
     }
 }
 
-impl proto::EncodeToAny for Transaction {
+impl EncodeToAny for Transaction {
     fn encode_to_any(&self) -> Result<prost_types::Any> {
         Ok(prost_types::Any::from_msg(&self.diff())?)
     }
 }
 
-impl proto::DecodeFromAny for Transaction {
+impl DecodeFromAny for Transaction {
     fn decode_from_any(proto: &prost_types::Any) -> Result<Self> {
         let proto = proto.to_msg::<libernet::Transaction>()?;
         Self::from_proto_verify(proto)
@@ -899,6 +981,13 @@ mod tests {
     #[test]
     fn test_default_account() {
         let account = AccountInfo::default();
+        assert_eq!(account.last_nonce(), 0);
+        assert_eq!(account.balance(), 0.into());
+        assert_eq!(account.staking_balance(), 0.into());
+        assert_eq!(
+            account.hash(),
+            parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
+        );
         assert_eq!(
             account.as_scalar(),
             parse_scalar("0x447e7f6236dfaf8f3ddf7f0cd38eae309b9bff95f4ea6ecf2a46d106abd0623c")
@@ -906,12 +995,19 @@ mod tests {
     }
 
     #[test]
-    fn test_account_hash() {
+    fn test_account() {
         let account = AccountInfo {
-            last_nonce: 42,
+            last_nonce: 42.into(),
             balance: 123.into(),
             staking_balance: 456.into(),
         };
+        assert_eq!(account.last_nonce(), 42);
+        assert_eq!(account.balance(), 123.into());
+        assert_eq!(account.staking_balance(), 456.into());
+        assert_eq!(
+            account.hash(),
+            parse_scalar("0x076bac30cc799b5d4ad51aefe54de1ecb11d57456ed46167d8003500c58c2f5f")
+        );
         assert_eq!(
             account.as_scalar(),
             parse_scalar("0x076bac30cc799b5d4ad51aefe54de1ecb11d57456ed46167d8003500c58c2f5f")
@@ -919,9 +1015,118 @@ mod tests {
     }
 
     #[test]
+    fn test_account_info_from_fields() {
+        let account: AccountInfo = AccountFields {
+            last_nonce: 42,
+            balance: 123.into(),
+            staking_balance: 456.into(),
+        }
+        .into();
+        assert_eq!(account.last_nonce(), 42);
+        assert_eq!(account.balance(), 123.into());
+        assert_eq!(account.staking_balance(), 456.into());
+        assert_eq!(
+            account.hash(),
+            parse_scalar("0x076bac30cc799b5d4ad51aefe54de1ecb11d57456ed46167d8003500c58c2f5f")
+        );
+        assert_eq!(
+            account.as_scalar(),
+            parse_scalar("0x076bac30cc799b5d4ad51aefe54de1ecb11d57456ed46167d8003500c58c2f5f")
+        );
+    }
+
+    #[test]
+    fn test_set_last_nonce() {
+        let account: AccountInfo = AccountFields {
+            last_nonce: 42,
+            balance: 123.into(),
+            staking_balance: 456.into(),
+        }
+        .into();
+        let account = account.set_last_nonce(50);
+        assert_eq!(account.last_nonce(), 50);
+        assert_eq!(account.balance(), 123.into());
+        assert_eq!(account.staking_balance(), 456.into());
+        assert_eq!(
+            account.hash(),
+            parse_scalar("0x65977a45709d13ef6f2da781ba59321136928e28e6531170239fc1ddd719ad30")
+        );
+        assert_eq!(
+            account.as_scalar(),
+            parse_scalar("0x65977a45709d13ef6f2da781ba59321136928e28e6531170239fc1ddd719ad30")
+        );
+    }
+
+    #[test]
+    fn test_add_to_balance() {
+        let account: AccountInfo = AccountFields {
+            last_nonce: 42,
+            balance: 123.into(),
+            staking_balance: 456.into(),
+        }
+        .into();
+        let account = account.add_to_balance(789.into()).unwrap();
+        assert_eq!(account.last_nonce(), 42);
+        assert_eq!(account.balance(), 912.into());
+        assert_eq!(account.staking_balance(), 456.into());
+        assert_eq!(
+            account.hash(),
+            parse_scalar("0x6d29d5e64b26d390a34b413995e3d0320e6cc6c0b8f28138e5cffc747dca2760")
+        );
+        assert_eq!(
+            account.as_scalar(),
+            parse_scalar("0x6d29d5e64b26d390a34b413995e3d0320e6cc6c0b8f28138e5cffc747dca2760")
+        );
+    }
+
+    #[test]
+    fn test_balance_overflow() {
+        let account: AccountInfo = AccountFields {
+            last_nonce: 42,
+            balance: 321.into(),
+            staking_balance: 456.into(),
+        }
+        .into();
+        assert!(account.add_to_balance(-Scalar::from(123)).is_err());
+    }
+
+    #[test]
+    fn test_sub_from_balance() {
+        let account: AccountInfo = AccountFields {
+            last_nonce: 42,
+            balance: 321.into(),
+            staking_balance: 456.into(),
+        }
+        .into();
+        let account = account.sub_from_balance(123.into()).unwrap();
+        assert_eq!(account.last_nonce(), 42);
+        assert_eq!(account.balance(), 198.into());
+        assert_eq!(account.staking_balance(), 456.into());
+        assert_eq!(
+            account.hash(),
+            parse_scalar("0x5621b06e1df225cf2a756fadddfc19791156e6efc623ece3bf9ff7e49c28b826")
+        );
+        assert_eq!(
+            account.as_scalar(),
+            parse_scalar("0x5621b06e1df225cf2a756fadddfc19791156e6efc623ece3bf9ff7e49c28b826")
+        );
+    }
+
+    #[test]
+    fn test_balance_underflow() {
+        let account: AccountInfo = AccountFields {
+            last_nonce: 42,
+            balance: 321.into(),
+            staking_balance: 456.into(),
+        }
+        .into();
+        assert!(account.sub_from_balance(789.into()).is_err());
+    }
+
+    #[test]
     fn test_encode_account1() {
         let account = AccountInfo {
-            last_nonce: 42,
+            last_nonce: 42.into(),
             balance: 123.into(),
             staking_balance: 456.into(),
         };
@@ -942,7 +1147,7 @@ mod tests {
     #[test]
     fn test_encode_account2() {
         let account = AccountInfo {
-            last_nonce: 24,
+            last_nonce: 24.into(),
             balance: 321.into(),
             staking_balance: 654.into(),
         };
@@ -963,7 +1168,7 @@ mod tests {
     #[test]
     fn test_decode_and_verify_account_proof() {
         let account = AccountInfo {
-            last_nonce: 42,
+            last_nonce: 42.into(),
             balance: 123.into(),
             staking_balance: 456.into(),
         };

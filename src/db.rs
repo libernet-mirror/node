@@ -589,8 +589,10 @@ impl Repr {
                 .as_ref()
                 .context("invalid block reward transaction payload: missing amount")?,
         )?;
-        let mut recipient_account = *self.accounts.get(recipient, version);
-        recipient_account.balance += amount;
+        let recipient_account = self
+            .accounts
+            .get(recipient, version)
+            .add_to_balance(amount)?;
         self.accounts.put(recipient, recipient_account, version);
         Ok(())
     }
@@ -614,19 +616,19 @@ impl Repr {
                 .context("invalid coin transfer transaction payload: missing amount")?,
         )?;
         let mut signer_account = *self.accounts.get(signer, version);
-        let sender_balance = signer_account.balance;
+        let sender_balance = signer_account.balance();
         if sender_balance < amount {
             return Err(anyhow!(
-                "insufficient balance for {:#x}: {} available, cannot transfer {}",
-                utils::scalar_to_u256(signer),
+                "insufficient balance for {}: {} available, cannot transfer {}",
+                utils::format_scalar(signer),
                 utils::scalar_to_u256(sender_balance),
                 utils::scalar_to_u256(amount),
             ));
         }
-        signer_account.balance -= amount;
+        signer_account = signer_account.sub_from_balance(amount)?;
         self.accounts.put(signer, signer_account, version);
         let mut recipient_account = *self.accounts.get(recipient, version);
-        recipient_account.balance += amount;
+        recipient_account = recipient_account.add_to_balance(amount)?;
         self.accounts.put(recipient, recipient_account, version);
         Ok(())
     }
@@ -648,12 +650,12 @@ impl Repr {
         let block_number = self.current_version();
         let nonce = payload.nonce();
         let signer_account = *self.accounts.get(signer, block_number);
-        if nonce <= signer_account.last_nonce {
+        if nonce <= signer_account.last_nonce() {
             return Err(anyhow!(
-                "invalid nonce {} (latest for {:#x} is {})",
+                "invalid nonce {} (latest for {} is {})",
                 nonce,
-                utils::scalar_to_u256(signer),
-                signer_account.last_nonce,
+                utils::format_scalar(signer),
+                signer_account.last_nonce(),
             ));
         }
         match &payload.transaction {
@@ -674,7 +676,7 @@ impl Repr {
             None => Err(anyhow!("invalid transaction payload")),
         }?;
         let mut signer_account = *self.accounts.get(signer, block_number);
-        signer_account.last_nonce = nonce;
+        signer_account = signer_account.set_last_nonce(nonce);
         self.accounts.put(signer, signer_account, block_number);
         Ok(())
     }
@@ -1390,6 +1392,7 @@ mod tests {
     use crate::account::testing;
     use crate::clock::testing::MockClock;
     use crate::constants;
+    use crate::data::AccountFields;
     use crate::testing::parse_scalar;
     use std::time::Duration;
 
@@ -1408,35 +1411,39 @@ mod tests {
     }
 
     fn account_info1() -> AccountInfo {
-        AccountInfo {
+        AccountFields {
             last_nonce: 12,
             balance: coins(90),
             staking_balance: coins(78),
         }
+        .into()
     }
 
     fn account_info2() -> AccountInfo {
-        AccountInfo {
+        AccountFields {
             last_nonce: 34,
             balance: coins(56),
             staking_balance: 0.into(),
         }
+        .into()
     }
 
     fn account_info3() -> AccountInfo {
-        AccountInfo {
+        AccountFields {
             last_nonce: 56,
             balance: coins(34),
             staking_balance: 0.into(),
         }
+        .into()
     }
 
     fn account_info4() -> AccountInfo {
-        AccountInfo {
+        AccountFields {
             last_nonce: 78,
             balance: coins(12),
             staking_balance: 0.into(),
         }
+        .into()
     }
 
     #[test]
@@ -2034,11 +2041,12 @@ mod tests {
         assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
         assert!(db.get_block_by_number(2).await.is_none());
         assert_eq!(db.get_latest_block().await, block2);
-        let updated_account_info1 = AccountInfo {
+        let updated_account_info1 = AccountFields {
             last_nonce: 13,
             balance: coins(90) + reward_for(coins(78)),
             staking_balance: coins(78),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block1_hash)
@@ -2168,11 +2176,12 @@ mod tests {
         assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
         assert!(db.get_block_by_number(2).await.is_none());
         assert_eq!(db.get_latest_block().await, block2);
-        let updated_account_info1 = AccountInfo {
+        let updated_account_info1 = AccountFields {
             last_nonce: 13,
             balance: coins(90) + reward_for(coins(78)),
             staking_balance: coins(78),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block1_hash)
@@ -2194,11 +2203,12 @@ mod tests {
                 .unwrap(),
             updated_account_info1
         );
-        let updated_account_info2 = AccountInfo {
+        let updated_account_info2 = AccountFields {
             last_nonce: 35,
             balance: coins(44),
             staking_balance: 0.into(),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account2.address(), block1_hash)
@@ -2220,11 +2230,12 @@ mod tests {
                 .unwrap(),
             updated_account_info2
         );
-        let updated_account_info3 = AccountInfo {
+        let updated_account_info3 = AccountFields {
             last_nonce: 56,
             balance: coins(46),
             staking_balance: 0.into(),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account3.address(), block1_hash)
@@ -2315,11 +2326,12 @@ mod tests {
         assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
         assert!(db.get_block_by_number(2).await.is_none());
         assert_eq!(db.get_latest_block().await, block2);
-        let updated_account_info1 = AccountInfo {
+        let updated_account_info1 = AccountFields {
             last_nonce: 13,
             balance: coins(90) + reward_for(coins(78)),
             staking_balance: coins(78),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block1_hash)
@@ -2427,11 +2439,12 @@ mod tests {
         assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
         assert!(db.get_block_by_number(2).await.is_none());
         assert_eq!(db.get_latest_block().await, block2);
-        let updated_account_info1 = AccountInfo {
+        let updated_account_info1 = AccountFields {
             last_nonce: 13,
             balance: coins(90) + reward_for(coins(78)),
             staking_balance: coins(78),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block1_hash)
@@ -2539,11 +2552,12 @@ mod tests {
         assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
         assert!(db.get_block_by_number(2).await.is_none());
         assert_eq!(db.get_latest_block().await, block2);
-        let updated_account_info1 = AccountInfo {
+        let updated_account_info1 = AccountFields {
             last_nonce: 13,
             balance: coins(90) + reward_for(coins(78)),
             staking_balance: coins(78),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block1_hash)
@@ -2664,11 +2678,12 @@ mod tests {
         assert_eq!(db.get_block_by_number(1).await.unwrap(), block2);
         assert!(db.get_block_by_number(2).await.is_none());
         assert_eq!(db.get_latest_block().await, block2);
-        let updated_account_info1 = AccountInfo {
+        let updated_account_info1 = AccountFields {
             last_nonce: 13,
             balance: coins(90) + reward_for(coins(78)),
             staking_balance: coins(78),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block1_hash)
@@ -2690,11 +2705,12 @@ mod tests {
                 .unwrap(),
             updated_account_info1
         );
-        let updated_account_info2 = AccountInfo {
+        let updated_account_info2 = AccountFields {
             last_nonce: 35,
             balance: coins(34),
             staking_balance: 0.into(),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account2.address(), block1_hash)
@@ -2716,11 +2732,12 @@ mod tests {
                 .unwrap(),
             updated_account_info2
         );
-        let updated_account_info3 = AccountInfo {
+        let updated_account_info3 = AccountFields {
             last_nonce: 57,
             balance: coins(56),
             staking_balance: 0.into(),
-        };
+        }
+        .into();
         assert_eq!(
             fixture
                 .get_account_info(account3.address(), block1_hash)
@@ -2867,33 +2884,36 @@ mod tests {
                 .get_account_info(account1.address(), block2_hash)
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 13,
                 balance: coins(90) + reward_for(coins(78)),
                 staking_balance: coins(78),
             }
+            .into()
         );
         assert_eq!(
             fixture
                 .get_account_info(account1.address(), block3_hash)
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 14,
                 balance: coins(90) + reward_for(coins(78)).double(),
                 staking_balance: coins(78),
             }
+            .into()
         );
         assert_eq!(
             fixture
                 .get_latest_account_info(account1.address())
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 14,
                 balance: coins(90) + reward_for(coins(78)).double(),
                 staking_balance: coins(78),
             }
+            .into()
         );
         assert_eq!(
             fixture
@@ -2907,33 +2927,36 @@ mod tests {
                 .get_account_info(account2.address(), block2_hash)
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 34,
                 balance: coins(68),
                 staking_balance: 0.into(),
             }
+            .into()
         );
         assert_eq!(
             fixture
                 .get_account_info(account2.address(), block3_hash)
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 35,
                 balance: coins(34),
                 staking_balance: 0.into(),
             }
+            .into()
         );
         assert_eq!(
             fixture
                 .get_latest_account_info(account2.address())
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 35,
                 balance: coins(34),
                 staking_balance: 0.into(),
             }
+            .into()
         );
         assert_eq!(
             fixture
@@ -2947,33 +2970,36 @@ mod tests {
                 .get_account_info(account3.address(), block2_hash)
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 57,
                 balance: coins(22),
                 staking_balance: 0.into(),
             }
+            .into()
         );
         assert_eq!(
             fixture
                 .get_account_info(account3.address(), block3_hash)
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 57,
                 balance: coins(56),
                 staking_balance: 0.into(),
             }
+            .into()
         );
         assert_eq!(
             fixture
                 .get_latest_account_info(account3.address())
                 .await
                 .unwrap(),
-            AccountInfo {
+            AccountFields {
                 last_nonce: 57,
                 balance: coins(56),
                 staking_balance: 0.into(),
             }
+            .into()
         );
         assert_eq!(
             db.get_all_block_transaction_hashes(1).await.unwrap(),

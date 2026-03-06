@@ -218,15 +218,15 @@ impl NodeServiceImpl {
             .await
             .unwrap();
         let account = account.account_info();
-        let reward = (account.staking_balance * Scalar::from(BLOCK_REWARD_NUMERATOR))
+        let reward = (account.staking_balance() * Scalar::from(BLOCK_REWARD_NUMERATOR))
             .shr(BLOCK_REWARD_DENOMINATOR_LOG2 as usize)
-            - account.staking_balance;
+            - account.staking_balance();
         self.db
             .add_transaction(
                 data::Transaction::make_block_reward_proto(
                     &*self.account,
                     self.chain_id,
-                    account.last_nonce + 1,
+                    account.last_nonce() + 1,
                     self.account.address(),
                     reward,
                 )
@@ -776,35 +776,39 @@ mod tests {
                 &[
                     (
                         address1,
-                        data::AccountInfo {
+                        data::AccountFields {
                             last_nonce: 12,
                             balance: coins(90),
                             staking_balance: coins(78),
-                        },
+                        }
+                        .into(),
                     ),
                     (
                         address2,
-                        data::AccountInfo {
+                        data::AccountFields {
                             last_nonce: 34,
                             balance: coins(56),
                             staking_balance: 0.into(),
-                        },
+                        }
+                        .into(),
                     ),
                     (
                         address3,
-                        data::AccountInfo {
+                        data::AccountFields {
                             last_nonce: 56,
                             balance: coins(34),
                             staking_balance: 0.into(),
-                        },
+                        }
+                        .into(),
                     ),
                     (
                         address4,
-                        data::AccountInfo {
+                        data::AccountFields {
                             last_nonce: 78,
                             balance: coins(12),
                             staking_balance: 0.into(),
-                        },
+                        }
+                        .into(),
                     ),
                 ],
             )
@@ -1086,11 +1090,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             account_info,
-            data::AccountInfo {
+            data::AccountFields {
                 last_nonce: 56,
                 balance: coins(34),
                 staking_balance: 0.into(),
             }
+            .into()
         );
     }
 
@@ -1103,11 +1108,12 @@ mod tests {
             .unwrap();
         assert_eq!(
             account_info,
-            data::AccountInfo {
+            data::AccountFields {
                 last_nonce: 56,
                 balance: coins(34),
                 staking_balance: 0.into(),
             }
+            .into()
         );
     }
 
@@ -1227,11 +1233,12 @@ mod tests {
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
         assert_eq!(
             account1_info,
-            data::AccountInfo {
+            data::AccountFields {
                 last_nonce: 13,
                 balance: coins(90) + reward_for(coins(78)),
                 staking_balance: coins(78),
             }
+            .into()
         );
     }
 
@@ -1250,14 +1257,14 @@ mod tests {
         assert!(transactions.is_empty());
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 56);
-        assert_eq!(account1_info.balance, coins(34));
-        assert_eq!(account1_info.staking_balance, 0.into());
+        assert_eq!(account1_info.last_nonce(), 56);
+        assert_eq!(account1_info.balance(), coins(34));
+        assert_eq!(account1_info.staking_balance(), 0.into());
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 78);
-        assert_eq!(account2_info.balance, coins(12));
-        assert_eq!(account2_info.staking_balance, 0.into());
+        assert_eq!(account2_info.last_nonce(), 78);
+        assert_eq!(account2_info.balance(), coins(12));
+        assert_eq!(account2_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1317,19 +1324,19 @@ mod tests {
         }
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 13);
-        assert_eq!(account1_info.balance, coins(90) + reward_for(coins(78)));
-        assert_eq!(account1_info.staking_balance, coins(78));
+        assert_eq!(account1_info.last_nonce(), 13);
+        assert_eq!(account1_info.balance(), coins(90) + reward_for(coins(78)));
+        assert_eq!(account1_info.staking_balance(), coins(78));
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 35);
-        assert_eq!(account2_info.balance, coins(44));
-        assert_eq!(account2_info.staking_balance, 0.into());
+        assert_eq!(account2_info.last_nonce(), 35);
+        assert_eq!(account2_info.balance(), coins(44));
+        assert_eq!(account2_info.staking_balance(), 0.into());
 
         let account3_info = fixture.get_account(account3.address(), None).await.unwrap();
-        assert_eq!(account3_info.last_nonce, 56);
-        assert_eq!(account3_info.balance, coins(46));
-        assert_eq!(account3_info.staking_balance, 0.into());
+        assert_eq!(account3_info.last_nonce(), 56);
+        assert_eq!(account3_info.balance(), coins(46));
+        assert_eq!(account3_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1443,19 +1450,19 @@ mod tests {
         }
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 13);
-        assert_eq!(account1_info.balance, coins(90) + reward_for(coins(78)));
-        assert_eq!(account1_info.staking_balance, coins(78));
+        assert_eq!(account1_info.last_nonce(), 13);
+        assert_eq!(account1_info.balance(), coins(90) + reward_for(coins(78)));
+        assert_eq!(account1_info.staking_balance(), coins(78));
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 35);
-        assert_eq!(account2_info.balance, coins(47));
-        assert_eq!(account2_info.staking_balance, 0.into());
+        assert_eq!(account2_info.last_nonce(), 35);
+        assert_eq!(account2_info.balance(), coins(47));
+        assert_eq!(account2_info.staking_balance(), 0.into());
 
         let account3_info = fixture.get_account(account3.address(), None).await.unwrap();
-        assert_eq!(account3_info.last_nonce, 57);
-        assert_eq!(account3_info.balance, coins(43));
-        assert_eq!(account3_info.staking_balance, 0.into());
+        assert_eq!(account3_info.last_nonce(), 57);
+        assert_eq!(account3_info.balance(), coins(43));
+        assert_eq!(account3_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1563,22 +1570,22 @@ mod tests {
         }
 
         let account1_info = fixture.get_account(account1.address(), None).await.unwrap();
-        assert_eq!(account1_info.last_nonce, 14);
+        assert_eq!(account1_info.last_nonce(), 14);
         assert_eq!(
-            account1_info.balance,
+            account1_info.balance(),
             coins(90) + reward_for(coins(78)) * Scalar::from(2)
         );
-        assert_eq!(account1_info.staking_balance, coins(78));
+        assert_eq!(account1_info.staking_balance(), coins(78));
 
         let account2_info = fixture.get_account(account2.address(), None).await.unwrap();
-        assert_eq!(account2_info.last_nonce, 35);
-        assert_eq!(account2_info.balance, coins(47));
-        assert_eq!(account2_info.staking_balance, 0.into());
+        assert_eq!(account2_info.last_nonce(), 35);
+        assert_eq!(account2_info.balance(), coins(47));
+        assert_eq!(account2_info.staking_balance(), 0.into());
 
         let account3_info = fixture.get_account(account3.address(), None).await.unwrap();
-        assert_eq!(account3_info.last_nonce, 57);
-        assert_eq!(account3_info.balance, coins(43));
-        assert_eq!(account3_info.staking_balance, 0.into());
+        assert_eq!(account3_info.last_nonce(), 57);
+        assert_eq!(account3_info.balance(), coins(43));
+        assert_eq!(account3_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1718,9 +1725,9 @@ mod tests {
 
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 57);
-        assert_eq!(account_info.balance, coins(22));
-        assert_eq!(account_info.staking_balance, 0.into());
+        assert_eq!(account_info.last_nonce(), 57);
+        assert_eq!(account_info.balance(), coins(22));
+        assert_eq!(account_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1773,9 +1780,9 @@ mod tests {
 
         assert_eq!(proof.key(), account2.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 78);
-        assert_eq!(account_info.balance, coins(24));
-        assert_eq!(account_info.staking_balance, 0.into());
+        assert_eq!(account_info.last_nonce(), 78);
+        assert_eq!(account_info.balance(), coins(24));
+        assert_eq!(account_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1831,9 +1838,9 @@ mod tests {
 
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 57);
-        assert_eq!(account_info.balance, coins(22));
-        assert_eq!(account_info.staking_balance, 0.into());
+        assert_eq!(account_info.last_nonce(), 57);
+        assert_eq!(account_info.balance(), coins(22));
+        assert_eq!(account_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
@@ -1872,9 +1879,9 @@ mod tests {
 
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 56);
-        assert_eq!(account_info.balance, coins(34));
-        assert_eq!(account_info.staking_balance, 0.into());
+        assert_eq!(account_info.last_nonce(), 56);
+        assert_eq!(account_info.balance(), coins(34));
+        assert_eq!(account_info.staking_balance(), 0.into());
 
         fixture
             .send_coins(&account1, 57, account2.address(), coins(12))
@@ -1898,9 +1905,9 @@ mod tests {
 
         assert_eq!(proof.key(), account1.address());
         let account_info = proof.value();
-        assert_eq!(account_info.last_nonce, 57);
-        assert_eq!(account_info.balance, coins(22));
-        assert_eq!(account_info.staking_balance, 0.into());
+        assert_eq!(account_info.last_nonce(), 57);
+        assert_eq!(account_info.balance(), coins(22));
+        assert_eq!(account_info.staking_balance(), 0.into());
     }
 
     #[tokio::test(start_paused = true)]
