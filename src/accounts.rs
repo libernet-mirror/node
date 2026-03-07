@@ -54,6 +54,8 @@ pub struct AccountStore {
 
 impl AccountStore {
     pub fn default() -> Result<Self> {
+        let default_account = AccountNode::default();
+        let default_hash = default_account.hash();
         let mut store = Self {
             data: AccountHashSet::new(
                 MmapMut::map_anon(
@@ -63,19 +65,34 @@ impl AccountStore {
                 )?,
                 constants::DATA_FILE_TYPE_ACCOUNT_DATA,
             )?,
-            tree: AccountTree::default(constants::DATA_FILE_TYPE_ACCOUNT_TREE)?,
+            tree: AccountTree::new(
+                MmapMut::map_anon(
+                    AccountTree::PADDED_HEADER_SIZE
+                        + AccountTree::optimal_initial_capacity() * AccountTree::padded_node_size(),
+                )?,
+                constants::DATA_FILE_TYPE_ACCOUNT_TREE,
+                default_hash,
+            )?,
             roots: vec![],
         };
-        store.data.insert(AccountNode::default())?;
+        store.data.insert(default_account)?;
         Ok(store)
     }
 
+    pub fn current_version(&self) -> usize {
+        self.roots.len()
+    }
+
     pub fn root_hash(&self, version: usize) -> Scalar {
-        self.roots[version]
+        if version < self.roots.len() {
+            self.roots[version]
+        } else {
+            self.tree.root_hash()
+        }
     }
 
     pub fn get(&self, address: Scalar, version: usize) -> &AccountInfo {
-        let root_hash = self.roots[version];
+        let root_hash = self.root_hash(version);
         let hash = self.tree.get_at(root_hash, address).unwrap();
         self.data.get(hash).unwrap().account()
     }
@@ -85,8 +102,8 @@ impl AccountStore {
         let new_hash = account.hash();
         self.data
             .insert_hashed(AccountNode::new(account), new_hash)?;
-        let empty_hash = AccountInfo::default().hash();
-        if old_hash != empty_hash {
+        let default_hash = AccountInfo::default().hash();
+        if old_hash != default_hash {
             self.data.erase_and_shrink(old_hash)?;
         }
         self.tree.put(address, new_hash)?;
@@ -103,6 +120,61 @@ impl AccountStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::parse_scalar;
+
+    fn test_key1() -> Scalar {
+        parse_scalar("0x46e9d1f65e08ba9a338f124e31fb07ad76ce985be9fbc996c1b9df57e2566f75")
+    }
+
+    fn test_key2() -> Scalar {
+        parse_scalar("0x6c46cd2477a2e51f8c774cd2280e6646f871268a1d22eeea9a7df98c6e86a247")
+    }
+
+    #[test]
+    fn test_initial_state() {
+        let store = AccountStore::default().unwrap();
+        assert_eq!(store.current_version(), 0);
+        assert_eq!(
+            store.root_hash(0),
+            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176")
+        );
+        assert_eq!(*store.get(test_key1(), 0), AccountInfo::default());
+        assert_eq!(*store.get(test_key2(), 0), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_one_empty_commit() {
+        let root_hash =
+            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176");
+        let mut store = AccountStore::default().unwrap();
+        assert_eq!(store.commit(), root_hash);
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(*store.get(test_key1(), 0), AccountInfo::default());
+        assert_eq!(*store.get(test_key2(), 0), AccountInfo::default());
+        assert_eq!(*store.get(test_key1(), 1), AccountInfo::default());
+        assert_eq!(*store.get(test_key2(), 1), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_two_empty_commits() {
+        let root_hash =
+            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176");
+        let mut store = AccountStore::default().unwrap();
+        assert_eq!(store.commit(), root_hash);
+        assert_eq!(store.commit(), root_hash);
+        assert_eq!(store.current_version(), 2);
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(store.root_hash(2), root_hash);
+        assert_eq!(*store.get(test_key1(), 0), AccountInfo::default());
+        assert_eq!(*store.get(test_key2(), 0), AccountInfo::default());
+        assert_eq!(*store.get(test_key1(), 1), AccountInfo::default());
+        assert_eq!(*store.get(test_key2(), 1), AccountInfo::default());
+        assert_eq!(*store.get(test_key1(), 2), AccountInfo::default());
+        assert_eq!(*store.get(test_key2(), 2), AccountInfo::default());
+    }
 
     // TODO
 }
