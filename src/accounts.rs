@@ -4,6 +4,7 @@ use crate::smt;
 use crate::store::{EmptyHeaderData, MappedHashSet, NodeData, Stored, StoredRefCount};
 use anyhow::Result;
 use blstrs::Scalar;
+use crypto::merkle;
 use memmap2::MmapMut;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
@@ -97,6 +98,17 @@ impl AccountStore {
         self.data.get(hash).unwrap().account()
     }
 
+    pub fn get_proof(
+        &self,
+        address: Scalar,
+        version: usize,
+    ) -> merkle::Proof<Scalar, AccountInfo, 3, 161> {
+        let root_hash = self.root_hash(version);
+        let proof = self.tree.get_proof_at(root_hash, address).unwrap();
+        let account = *self.data.get(*proof.value()).unwrap().account();
+        proof.map(account).unwrap()
+    }
+
     pub fn put(&mut self, address: Scalar, account: AccountInfo) -> Result<()> {
         let old_hash = self.tree.get(address);
         let new_hash = account.hash();
@@ -130,6 +142,14 @@ mod tests {
         parse_scalar("0x6c46cd2477a2e51f8c774cd2280e6646f871268a1d22eeea9a7df98c6e86a247")
     }
 
+    fn lookup(store: &AccountStore, address: Scalar, version: usize) -> AccountInfo {
+        let account = *store.get(address, version);
+        let proof = store.get_proof(address, version);
+        assert!(proof.verify().is_ok());
+        assert_eq!(proof.take_value(), account);
+        account
+    }
+
     #[test]
     fn test_initial_state() {
         let store = AccountStore::default().unwrap();
@@ -138,8 +158,8 @@ mod tests {
             store.root_hash(0),
             parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176")
         );
-        assert_eq!(*store.get(test_key1(), 0), AccountInfo::default());
-        assert_eq!(*store.get(test_key2(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
     }
 
     #[test]
@@ -151,10 +171,10 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash);
         assert_eq!(store.root_hash(1), root_hash);
-        assert_eq!(*store.get(test_key1(), 0), AccountInfo::default());
-        assert_eq!(*store.get(test_key2(), 0), AccountInfo::default());
-        assert_eq!(*store.get(test_key1(), 1), AccountInfo::default());
-        assert_eq!(*store.get(test_key2(), 1), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
     }
 
     #[test]
@@ -168,12 +188,12 @@ mod tests {
         assert_eq!(store.root_hash(0), root_hash);
         assert_eq!(store.root_hash(1), root_hash);
         assert_eq!(store.root_hash(2), root_hash);
-        assert_eq!(*store.get(test_key1(), 0), AccountInfo::default());
-        assert_eq!(*store.get(test_key2(), 0), AccountInfo::default());
-        assert_eq!(*store.get(test_key1(), 1), AccountInfo::default());
-        assert_eq!(*store.get(test_key2(), 1), AccountInfo::default());
-        assert_eq!(*store.get(test_key1(), 2), AccountInfo::default());
-        assert_eq!(*store.get(test_key2(), 2), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 2), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 2), AccountInfo::default());
     }
 
     // TODO
