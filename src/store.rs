@@ -60,6 +60,41 @@ impl PartialOrd for StoredU64 {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
+#[repr(C)]
+pub struct StoredRefCount(StoredU64);
+
+impl StoredRefCount {
+    pub fn to_u64(&self) -> u64 {
+        self.0.to_u64()
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.0.is_zero()
+    }
+
+    pub fn r#ref(&mut self) {
+        self.0 = (self.0.to_u64() + 1).into();
+    }
+
+    pub fn unref(&mut self) -> bool {
+        let mut ref_count = self.0.to_u64();
+        assert!(ref_count > 0);
+        ref_count -= 1;
+        let is_zero = ref_count == 0;
+        self.0 = ref_count.into();
+        is_zero
+    }
+}
+
+impl Stored for StoredRefCount {}
+
+impl From<u64> for StoredRefCount {
+    fn from(value: u64) -> Self {
+        Self(value.into())
+    }
+}
+
 /// A BLS12-381 scalar stored in the memory-mapped region, in little endian order.
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
@@ -1067,6 +1102,66 @@ mod tests {
         let value: StoredU64 = 42.into();
         assert!(!value.is_zero());
         assert_eq!(value.to_u64(), 42);
+    }
+
+    #[test]
+    fn test_default_stored_ref_count() {
+        let ref_count = StoredRefCount::default();
+        assert_eq!(ref_count.to_u64(), 0);
+    }
+
+    #[test]
+    fn test_default_stored_ref_count_from_u64() {
+        let ref_count = StoredRefCount::from(42);
+        assert_eq!(ref_count.to_u64(), 42);
+        assert!(!ref_count.is_zero());
+    }
+
+    #[test]
+    fn test_stored_ref_count_ref_once() {
+        let mut ref_count = StoredRefCount::default();
+        ref_count.r#ref();
+        assert_eq!(ref_count.to_u64(), 1);
+        assert!(!ref_count.is_zero());
+    }
+
+    #[test]
+    fn test_stored_ref_count_unref_once() {
+        let mut ref_count = StoredRefCount::default();
+        ref_count.r#ref();
+        assert!(ref_count.unref());
+        assert_eq!(ref_count.to_u64(), 0);
+        assert!(ref_count.is_zero());
+    }
+
+    #[test]
+    fn test_stored_ref_count_ref_twice() {
+        let mut ref_count = StoredRefCount::default();
+        ref_count.r#ref();
+        ref_count.r#ref();
+        assert_eq!(ref_count.to_u64(), 2);
+        assert!(!ref_count.is_zero());
+    }
+
+    #[test]
+    fn test_stored_ref_count_ref_twice_unref_once() {
+        let mut ref_count = StoredRefCount::default();
+        ref_count.r#ref();
+        ref_count.r#ref();
+        assert!(!ref_count.unref());
+        assert_eq!(ref_count.to_u64(), 1);
+        assert!(!ref_count.is_zero());
+    }
+
+    #[test]
+    fn test_stored_ref_count_ref_twice_unref_twice() {
+        let mut ref_count = StoredRefCount::default();
+        ref_count.r#ref();
+        ref_count.r#ref();
+        assert!(!ref_count.unref());
+        assert!(ref_count.unref());
+        assert_eq!(ref_count.to_u64(), 0);
+        assert!(ref_count.is_zero());
     }
 
     #[test]

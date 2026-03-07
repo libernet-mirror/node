@@ -306,6 +306,14 @@ pub struct AccountInfo {
 }
 
 impl AccountInfo {
+    pub fn hash(&self) -> Scalar {
+        poseidon::hash_t4(&[
+            self.last_nonce().into(),
+            self.balance(),
+            self.staking_balance(),
+        ])
+    }
+
     pub fn last_nonce(&self) -> u64 {
         self.last_nonce.to_u64()
     }
@@ -376,16 +384,6 @@ impl From<AccountFields> for AccountInfo {
 }
 
 impl Stored for AccountInfo {}
-
-impl NodeData for AccountInfo {
-    fn hash(&self) -> Scalar {
-        poseidon::hash_t4(&[
-            self.last_nonce().into(),
-            self.balance(),
-            self.staking_balance(),
-        ])
-    }
-}
 
 impl AsScalar for AccountInfo {
     fn as_scalar(&self) -> Scalar {

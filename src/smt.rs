@@ -1,6 +1,6 @@
 use crate::store::{
-    self, HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar,
-    StoredU64,
+    self, HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredRefCount,
+    StoredScalar,
 };
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
@@ -14,7 +14,7 @@ use std::fmt::Debug;
 #[repr(C)]
 struct Node<const W: usize> {
     /// Tracks how many other nodes refer to this node.
-    ref_count: StoredU64,
+    ref_count: StoredRefCount,
 
     /// For leaf nodes these are arbitrary values, while for internal nodes they're the hashes of
     /// the child nodes.
@@ -38,16 +38,11 @@ impl<const W: usize> Node<W> {
     }
 
     fn r#ref(&mut self) {
-        self.ref_count = (self.ref_count.to_u64() + 1).into();
+        self.ref_count.r#ref();
     }
 
     fn unref(&mut self) -> bool {
-        let mut ref_count = self.ref_count.to_u64();
-        assert!(ref_count > 0);
-        ref_count -= 1;
-        let is_zero = ref_count == 0;
-        self.ref_count = ref_count.into();
-        is_zero
+        self.ref_count.unref()
     }
 
     fn children(&self) -> [Scalar; W] {
@@ -239,28 +234,30 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
 }
 
 impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
-    /// Returns the value associated with the specified key.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
-        let mut node = self.hash_set.get(root_hash).unwrap();
+    /// Returns the value associated with the specified key, or `None` if the `root_hash` is not
+    /// found.
+    fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
             let child_hash = node.child(bit as usize);
             node = self.hash_set.get(child_hash).unwrap();
         }
         let bit = xits::and1(key).to_repr()[0];
-        node.child(bit as usize)
+        Some(node.child(bit as usize))
     }
 
-    /// Looks up an element and returns it along with a Merkle proof for it.
+    /// Looks up an element from the tree rooted at `root_hash` and returns it along with a Merkle
+    /// proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 2, H>> {
         let mut path = [[Scalar::ZERO; 2]; H];
-        let mut node = self.hash_set.get(root_hash).unwrap();
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             path[i] = node.children();
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
@@ -270,7 +267,7 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
         path[0] = node.children();
         let bit = xits::and1(key).to_repr()[0];
         let value = node.child(bit as usize);
-        merkle::Proof::new(key, value, path, root_hash)
+        Some(merkle::Proof::new(key, value, path, root_hash))
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -294,28 +291,30 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
 }
 
 impl<HD: HeaderData, const H: usize> Repr<HD, 3, H> {
-    /// Returns the value associated with the specified key.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
-        let mut node = self.hash_set.get(root_hash).unwrap();
+    /// Returns the value associated with the specified key, or `None` if the `root_hash` is not
+    /// found.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
             let child_hash = node.child(trit as usize);
             node = self.hash_set.get(child_hash).unwrap();
         }
         let trit = xits::mod3(key).to_repr()[0];
-        node.child(trit as usize)
+        Some(node.child(trit as usize))
     }
 
-    /// Looks up an element and returns it along with a Merkle proof for it.
+    /// Looks up an element from the tree rooted at `root_hash` and returns it along with a Merkle
+    /// proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 3, H>> {
         let mut path = [[Scalar::ZERO; 3]; H];
-        let mut node = self.hash_set.get(root_hash).unwrap();
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             path[i] = node.children();
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
@@ -325,7 +324,7 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 3, H> {
         path[0] = node.children();
         let trit = xits::mod3(key).to_repr()[0];
         let value = node.child(trit as usize);
-        merkle::Proof::new(key, value, path, root_hash)
+        Some(merkle::Proof::new(key, value, path, root_hash))
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -506,14 +505,32 @@ impl<const W: usize, const H: usize> Tree<W, H> {
 impl<const H: usize> Tree<2, H> {
     /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
-        self.repr.get(self.root_hash(), key)
+        self.repr.get(self.root_hash(), key).unwrap()
+    }
+
+    /// Returns the value associated with the specified key at a past revision rooted at
+    /// `root_hash`.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_at(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        self.repr.get(root_hash, key)
     }
 
     /// Looks up an element and returns it along with a Merkle proof for it.
-    ///
-    /// Returns `None` if the element is not found.
     pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
-        self.repr.get_proof(self.root_hash(), key)
+        self.repr.get_proof(self.root_hash(), key).unwrap()
+    }
+
+    /// Looks up an element from a past revision rooted at `root_hash` and returns it along with a
+    /// Merkle proof for it.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_proof_at(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 2, H>> {
+        self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified key.
@@ -527,14 +544,32 @@ impl<const H: usize> Tree<2, H> {
 impl<const H: usize> Tree<3, H> {
     /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
-        self.repr.get(self.root_hash(), key)
+        self.repr.get(self.root_hash(), key).unwrap()
+    }
+
+    /// Returns the value associated with the specified key at a past revision rooted at
+    /// `root_hash`.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_at(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        self.repr.get(root_hash, key)
     }
 
     /// Looks up an element and returns it along with a Merkle proof for it.
-    ///
-    /// Returns `None` if the element is not found.
     pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
-        self.repr.get_proof(self.root_hash(), key)
+        self.repr.get_proof(self.root_hash(), key).unwrap()
+    }
+
+    /// Looks up an element from a past revision rooted at `root_hash` and returns it along with a
+    /// Merkle proof for it.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_proof_at(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 3, H>> {
+        self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified key.
@@ -691,25 +726,27 @@ impl<const W: usize, const H: usize> Forest<W, H> {
 impl<const H: usize> Forest<2, H> {
     /// Looks up an element in the tree rooted at `root_hash` and returns its value.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
         self.repr.get(root_hash, key)
     }
 
     /// Looks up an element in the tree rooted at `root_hash` and returns its value along with a
     /// Merkle proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 2, H>> {
         self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified `key` in the tree rooted at `root_hash` and
     /// returns the new root hash of that tree.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    /// Returns an error if the `root_hash` is not found.
     pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
         let new_root_hash = self.repr.put(root_hash, key, value)?;
         self.repr.ref_node(new_root_hash);
@@ -723,25 +760,27 @@ impl<const H: usize> Forest<2, H> {
 impl<const H: usize> Forest<3, H> {
     /// Looks up an element in the tree rooted at `root_hash` and returns its value.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
         self.repr.get(root_hash, key)
     }
 
     /// Looks up an element in the tree rooted at `root_hash` and returns its value along with a
     /// Merkle proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 3, H>> {
         self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified `key` in the tree rooted at `root_hash` and
     /// returns the new root hash of that tree.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    /// Returns an error if the `root_hash` is not found.
     pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
         let new_root_hash = self.repr.put(root_hash, key, value)?;
         self.repr.ref_node(new_root_hash);
@@ -937,16 +976,26 @@ mod tests {
     }
 
     fn lookup_binary_tree<const H: usize>(tree: &Tree<2, H>, key: Scalar) -> Scalar {
+        let root_hash = tree.root_hash();
         let value = tree.get(key);
+        assert_eq!(tree.get_at(root_hash, key).unwrap(), value);
         let proof = tree.get_proof(key);
+        assert!(proof.verify().is_ok());
+        assert_eq!(*proof.value(), value);
+        let proof = tree.get_proof_at(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
     }
 
     fn lookup_ternary_tree<const H: usize>(tree: &Tree<3, H>, key: Scalar) -> Scalar {
+        let root_hash = tree.root_hash();
         let value = tree.get(key);
+        assert_eq!(tree.get_at(tree.root_hash(), key).unwrap(), value);
         let proof = tree.get_proof(key);
+        assert!(proof.verify().is_ok());
+        assert_eq!(*proof.value(), value);
+        let proof = tree.get_proof_at(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
@@ -1502,8 +1551,8 @@ mod tests {
         root_hash: Scalar,
         key: Scalar,
     ) -> Scalar {
-        let value = forest.get(root_hash, key);
-        let proof = forest.get_proof(root_hash, key);
+        let value = forest.get(root_hash, key).unwrap();
+        let proof = forest.get_proof(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
@@ -1514,8 +1563,8 @@ mod tests {
         root_hash: Scalar,
         key: Scalar,
     ) -> Scalar {
-        let value = forest.get(root_hash, key);
-        let proof = forest.get_proof(root_hash, key);
+        let value = forest.get(root_hash, key).unwrap();
+        let proof = forest.get_proof(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value

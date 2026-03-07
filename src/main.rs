@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime};
 use tonic::transport::Server;
 
 mod account;
+mod accounts;
 mod clock;
 mod constants;
 mod data;
@@ -127,14 +128,12 @@ fn read_accounts(file_path: &str) -> Result<BTreeMap<Scalar, AccountInfo>> {
                 Ok((
                     utils::parse_scalar(address.as_str())?,
                     match account_state {
-                        serde_json::Value::String(balance) => {
-                            Ok(AccountInfo::from(AccountFields {
-                                last_nonce: 0,
-                                balance: utils::parse_scalar(balance.as_str())?,
-                                staking_balance: 0.into(),
-                            }))
-                        }
-                        serde_json::Value::Object(fields) => Ok(AccountInfo::from(AccountFields {
+                        serde_json::Value::String(balance) => Ok(AccountFields {
+                            last_nonce: 0,
+                            balance: utils::parse_scalar(balance.as_str())?,
+                            staking_balance: 0.into(),
+                        }),
+                        serde_json::Value::Object(fields) => Ok(AccountFields {
                             last_nonce: 0,
                             balance: match fields.get("balance") {
                                 Some(serde_json::Value::String(balance)) => {
@@ -153,9 +152,10 @@ fn read_accounts(file_path: &str) -> Result<BTreeMap<Scalar, AccountInfo>> {
                                     address.as_str()
                                 )),
                             }?,
-                        })),
+                        }),
                         _ => Err(anyhow!("invalid balance for {}", address)),
-                    }?,
+                    }?
+                    .into(),
                 ))
             })
             .collect::<Result<BTreeMap<Scalar, AccountInfo>>>()?),
