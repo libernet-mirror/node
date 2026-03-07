@@ -5,7 +5,7 @@ use crate::data;
 use crate::db;
 use crate::libernet::{self, node_service_v1_server::NodeServiceV1};
 use crate::net;
-use crate::proto;
+use crate::proto::{self, EncodeMerkleProof};
 use anyhow::Context;
 use blstrs::{G1Affine, Scalar};
 use crypto::{signer::BlsVerifier, utils};
@@ -640,7 +640,10 @@ mod tests {
     use super::*;
     use crate::account::testing;
     use crate::clock::testing::MockClock;
-    use crate::data::{self, Transaction, TransactionInclusionProof, TransactionTree};
+    use crate::data::{
+        self, DecodeAccountProof, DecodeTransactionInclusionProof, Transaction,
+        TransactionInclusionProof, TransactionTree,
+    };
     use crate::libernet::{
         node_service_v1_client::NodeServiceV1Client, node_service_v1_server::NodeServiceV1Server,
     };

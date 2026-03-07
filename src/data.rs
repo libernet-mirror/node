@@ -1,13 +1,15 @@
 use crate::account;
 use crate::constants;
 use crate::libernet;
-use crate::proto::{self, DecodeFromAny, EncodeToAny};
+use crate::proto::{self, DecodeFromAny, DecodeMerkleProof, EncodeToAny};
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
-use crypto::utils;
-use crypto::{merkle::AsScalar, poseidon};
+use crypto::{
+    merkle::{self, AsScalar},
+    poseidon, utils,
+};
 use ff::Field;
 use std::time::{Duration, SystemTime};
 
@@ -419,15 +421,17 @@ impl DecodeFromAny for AccountInfo {
 }
 
 pub type AccountTree = tree::MerkleTree<Scalar, AccountInfo, 3, 161>;
-pub type AccountProof = tree::MerkleProof<Scalar, AccountInfo, 3, 161>;
+pub type AccountProof = merkle::Proof<Scalar, AccountInfo, 3, 161>;
 
-impl AccountProof {
+pub trait DecodeAccountProof: DecodeMerkleProof<Scalar, AccountInfo, 3, 161> {
     /// Decodes a Merkle proof protobuf for an account, including the block descriptor, and
     /// validates it up to the block hash. Returns the decoded `BlockInfo` and high-level
     /// `MerkleProof` object containing the proven `AccountInfo`.
-    pub fn decode_and_verify_account_proof(
-        proto: &libernet::MerkleProof,
-    ) -> Result<(BlockInfo, Self)> {
+    fn decode_and_verify_account_proof(proto: &libernet::MerkleProof) -> Result<(BlockInfo, Self)>;
+}
+
+impl DecodeAccountProof for AccountProof {
+    fn decode_and_verify_account_proof(proto: &libernet::MerkleProof) -> Result<(BlockInfo, Self)> {
         let block_descriptor = proto
             .block_descriptor
             .as_ref()
@@ -636,13 +640,19 @@ pub type TransactionTree = tree::MerkleTreeVersion<Scalar, Scalar, 2, 32>;
 /// `MerkleProof` doesn't require the `Default` trait. `TransactionTree.get_proof` won't return
 /// `TransactionInclusionProof` objects but rather `MerkleProof<Scalar, Scalar, 2, 32>`, so the
 /// caller will have to convert manually.
-pub type TransactionInclusionProof = tree::MerkleProof<Scalar, Transaction, 2, 32>;
+pub type TransactionInclusionProof = merkle::Proof<Scalar, Transaction, 2, 32>;
 
-impl TransactionInclusionProof {
+pub trait DecodeTransactionInclusionProof: DecodeMerkleProof<Scalar, Transaction, 2, 32> {
     /// Decodes a Merkle proof protobuf for a transaction, including the block descriptor, and
     /// validates it up to the block hash. Returns the decoded `BlockInfo` and high-level
     /// `MerkleProof` object containing the proven `Transaction`.
-    pub fn decode_and_verify_transaction_proof(
+    fn decode_and_verify_transaction_proof(
+        proto: &libernet::MerkleProof,
+    ) -> Result<(BlockInfo, Self)>;
+}
+
+impl DecodeTransactionInclusionProof for TransactionInclusionProof {
+    fn decode_and_verify_transaction_proof(
         proto: &libernet::MerkleProof,
     ) -> Result<(BlockInfo, Self)> {
         let block_descriptor = proto
@@ -702,12 +712,12 @@ impl ProgramStorage {
 
 pub type ProgramStorageTree =
     tree::MerkleTree<Scalar, tree::MerkleTreeVersion<u32, u32, 2, 30>, 3, 161>;
-pub type ProgramStorageProof = tree::MerkleProof<u32, u32, 2, 30>;
+pub type ProgramStorageProof = merkle::Proof<u32, u32, 2, 30>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proto::{DecodeFromAny, EncodeToAny};
+    use crate::proto::{DecodeFromAny, EncodeMerkleProof, EncodeToAny};
     use crate::testing::parse_scalar;
     use crypto::utils;
     use std::time::Duration;
