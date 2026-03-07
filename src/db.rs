@@ -5,14 +5,13 @@ use crate::data::{
     Transaction, TransactionInclusionProof, TransactionTree,
 };
 use crate::libernet;
-use crate::proto;
+use crate::proto::{self, EncodeMerkleProof};
 use crate::store::NodeData;
 use crate::topology;
-use crate::tree;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
 use crypto::{
-    merkle::{AsScalar, FromScalar},
+    merkle::{self, AsScalar, FromScalar},
     utils,
 };
 use ff::Field;
@@ -47,7 +46,7 @@ pub struct QueryResults<
     V: Debug + Clone + Send + Sync + AsScalar + 'static,
     const W: usize,
     const H: usize,
->(Vec<(BlockInfo, Vec<tree::MerkleProof<K, V, W, H>>)>);
+>(Vec<(BlockInfo, Vec<merkle::Proof<K, V, W, H>>)>);
 
 impl<
     K: Debug + Copy + Send + Sync + FromScalar + AsScalar + 'static,
@@ -56,11 +55,7 @@ impl<
     const H: usize,
 > QueryResults<K, V, W, H>
 {
-    fn add_block(
-        &mut self,
-        block_info: BlockInfo,
-        block_results: Vec<tree::MerkleProof<K, V, W, H>>,
-    ) {
+    fn add_block(&mut self, block_info: BlockInfo, block_results: Vec<merkle::Proof<K, V, W, H>>) {
         self.0.push((block_info, block_results));
     }
 }
