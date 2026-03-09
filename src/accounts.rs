@@ -46,6 +46,11 @@ impl NodeData for AccountNode {
 type AccountHashSet = MappedHashSet<EmptyHeaderData, AccountNode>;
 type AccountTree = smt::Tree<3, 161>;
 
+/// Stores `AccountInfo` objects to mapped memory and allows Merkle-proven retrieval.
+///
+/// The store is versioned: it allows "sealing" the current version into the version history and
+/// retrieving data from past revisions (including Merkle proofs). Version numbers are incremental
+/// and start at 0. The caller uses version numbers as block numbers.
 #[derive(Debug)]
 pub struct AccountStore {
     data: AccountHashSet,
@@ -54,6 +59,7 @@ pub struct AccountStore {
 }
 
 impl AccountStore {
+    /// Constructs an empty account store.
     pub fn default() -> Result<Self> {
         let default_account = AccountNode::default();
         let default_hash = default_account.hash();
@@ -80,10 +86,12 @@ impl AccountStore {
         Ok(store)
     }
 
+    /// Returns the current version number.
     pub fn current_version(&self) -> usize {
         self.roots.len()
     }
 
+    /// Returns the Merkle root hash.
     pub fn root_hash(&self, version: usize) -> Scalar {
         if version < self.roots.len() {
             self.roots[version]
@@ -92,12 +100,22 @@ impl AccountStore {
         }
     }
 
+    /// Retrieves an `AccountInfo` from the store.
+    ///
+    /// REQUIRES: `version` must be less than or equal to `current_version()`. The current
+    /// implementation will panic in an `unwrap` if `version > current_version()`.
     pub fn get(&self, address: Scalar, version: usize) -> &AccountInfo {
         let root_hash = self.root_hash(version);
         let hash = self.tree.get_at(root_hash, address).unwrap();
         self.data.get(hash).unwrap().account()
     }
 
+    /// Retrieves an `AccountInfo` from the store along with a Merkle proof for it.
+    ///
+    /// The Merkle proof is valid iff its root hash matches the root hash of the store at `version`.
+    ///
+    /// REQUIRES: `version` must be less than or equal to `current_version()`. The current
+    /// implementation will panic in an `unwrap` if `version > current_version()`.
     pub fn get_proof(
         &self,
         address: Scalar,
@@ -109,6 +127,11 @@ impl AccountStore {
         proof.map(account).unwrap()
     }
 
+    /// Updates the current version of the store by setting the `AccountInfo` at `address` with the
+    /// provided `account`.
+    ///
+    /// Returns an error only in case of an I/O error while rehashing the underlying memory-mapped
+    /// region, otherwise this method always succeeds.
     pub fn put(&mut self, address: Scalar, account: AccountInfo) -> Result<()> {
         let old_hash = self.tree.get(address);
         let new_hash = account.hash();
@@ -131,6 +154,10 @@ impl AccountStore {
         Ok(())
     }
 
+    /// Seals the current version, locking it into the version history. Returns the root hash of the
+    /// committed version.
+    ///
+    /// After this call `current_version()` will increase by 1.
     pub fn commit(&mut self) -> Scalar {
         let root_hash = self.tree.commit();
         self.roots.push(root_hash);
@@ -302,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_one_out_of_two() {
+    fn test_update_one_out_of_two_1() {
         let mut store = AccountStore::default().unwrap();
         let account1 = AccountInfo::default()
             .set_last_nonce(42)
@@ -327,6 +354,136 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), account3);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_update_one_out_of_two_2() {
+        let mut store = AccountStore::default().unwrap();
+        let account1 = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        let account2 = AccountInfo::default()
+            .set_last_nonce(43)
+            .add_to_balance(456.into())
+            .unwrap();
+        let account3 = AccountInfo::default()
+            .set_last_nonce(44)
+            .add_to_balance(789.into())
+            .unwrap();
+        assert!(store.put(test_key1(), account1).is_ok());
+        assert!(store.put(test_key2(), account2).is_ok());
+        assert!(store.put(test_key2(), account3).is_ok());
+        assert_eq!(store.current_version(), 0);
+        assert_eq!(
+            store.root_hash(0),
+            parse_scalar("0x5d5c0815bf115feb04f0bf0c80938f5773a9a0f41eb58479e3de00b8b8d74169")
+        );
+        assert_eq!(lookup(&store, test_key1(), 0), account1);
+        assert_eq!(lookup(&store, test_key2(), 0), account3);
+        assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_set_one_and_commit() {
+        let mut store = AccountStore::default().unwrap();
+        let account = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        assert!(store.put(test_key1(), account).is_ok());
+        let root_hash =
+            parse_scalar("0x39ba09774c00f627745f2c915055684141923129d9bef8c3fc79438618eaba44");
+        assert_eq!(store.commit(), root_hash);
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(lookup(&store, test_key1(), 0), account);
+        assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), account);
+        assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_set_two_and_commit() {
+        let mut store = AccountStore::default().unwrap();
+        let account1 = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        let account2 = AccountInfo::default()
+            .set_last_nonce(43)
+            .add_to_balance(456.into())
+            .unwrap();
+        assert!(store.put(test_key1(), account1).is_ok());
+        assert!(store.put(test_key2(), account2).is_ok());
+        let root_hash =
+            parse_scalar("0x370ca8d84234ce10f0d40bd56a55fbbde0280dad0d751e4cdc68c4bd84536dbd");
+        assert_eq!(store.commit(), root_hash);
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(lookup(&store, test_key1(), 0), account1);
+        assert_eq!(lookup(&store, test_key2(), 0), account2);
+        assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), account1);
+        assert_eq!(lookup(&store, test_key2(), 1), account2);
+        assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_commit_and_set_one() {
+        let mut store = AccountStore::default().unwrap();
+        let root_hash1 =
+            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176");
+        assert_eq!(store.commit(), root_hash1);
+        let account = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        assert!(store.put(test_key1(), account).is_ok());
+        let root_hash2 =
+            parse_scalar("0x39ba09774c00f627745f2c915055684141923129d9bef8c3fc79438618eaba44");
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(store.root_hash(0), root_hash1);
+        assert_eq!(store.root_hash(1), root_hash2);
+        assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), account);
+        assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_commit_and_set_two() {
+        let mut store = AccountStore::default().unwrap();
+        let root_hash1 =
+            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176");
+        assert_eq!(store.commit(), root_hash1);
+        let account1 = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        let account2 = AccountInfo::default()
+            .set_last_nonce(43)
+            .add_to_balance(456.into())
+            .unwrap();
+        assert!(store.put(test_key1(), account1).is_ok());
+        assert!(store.put(test_key2(), account2).is_ok());
+        let root_hash2 =
+            parse_scalar("0x370ca8d84234ce10f0d40bd56a55fbbde0280dad0d751e4cdc68c4bd84536dbd");
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(store.root_hash(0), root_hash1);
+        assert_eq!(store.root_hash(1), root_hash2);
+        assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), account1);
+        assert_eq!(lookup(&store, test_key2(), 1), account2);
+        assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
     }
 
     // TODO
