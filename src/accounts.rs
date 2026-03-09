@@ -243,6 +243,14 @@ mod tests {
         account
     }
 
+    fn lookup_latest(store: &AccountStore, address: Scalar) -> AccountInfo {
+        let account = store.get_latest(address);
+        let proof = store.get_latest_proof(address);
+        assert!(proof.verify().is_ok());
+        assert_eq!(proof.take_value(), account);
+        account
+    }
+
     #[test]
     fn test_initial_state() {
         let store = AccountStore::default().unwrap();
@@ -254,6 +262,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -271,6 +282,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 1), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -293,6 +307,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 2), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 2), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 2), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -311,6 +328,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), account);
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account);
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -329,6 +349,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), account);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key2()), account);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -352,6 +375,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), account1);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account1);
+        assert_eq!(lookup_latest(&store, test_key2()), account2);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -375,6 +401,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), account2);
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account2);
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -403,6 +432,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), account3);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account3);
+        assert_eq!(lookup_latest(&store, test_key2()), account2);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -431,6 +463,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 0), account1);
         assert_eq!(lookup(&store, test_key2(), 0), account3);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account1);
+        assert_eq!(lookup_latest(&store, test_key2()), account3);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -453,6 +488,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 1), account);
         assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account);
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -480,6 +518,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 1), account1);
         assert_eq!(lookup(&store, test_key2(), 1), account2);
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account1);
+        assert_eq!(lookup_latest(&store, test_key2()), account2);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -504,6 +545,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 1), account);
         assert_eq!(lookup(&store, test_key2(), 1), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account);
+        assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -533,6 +577,9 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 1), account1);
         assert_eq!(lookup(&store, test_key2(), 1), account2);
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account1);
+        assert_eq!(lookup_latest(&store, test_key2()), account2);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 
     #[test]
@@ -567,5 +614,8 @@ mod tests {
         assert_eq!(lookup(&store, test_key1(), 1), account3);
         assert_eq!(lookup(&store, test_key2(), 1), account2);
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+        assert_eq!(lookup_latest(&store, test_key1()), account3);
+        assert_eq!(lookup_latest(&store, test_key2()), account2);
+        assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
     }
 }
