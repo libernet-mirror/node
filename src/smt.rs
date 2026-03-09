@@ -9,7 +9,7 @@ use ff::{Field, PrimeField};
 use memmap2::MmapMut;
 use std::fmt::Debug;
 
-pub trait ExternalNodeManager: Debug {
+pub trait ExternalNodeManager: Debug + Send {
     fn r#ref(&mut self, label: Scalar);
     fn unref(&mut self, label: Scalar) -> bool;
 }

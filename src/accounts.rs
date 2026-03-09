@@ -1,13 +1,11 @@
 use crate::constants;
-use crate::data::AccountInfo;
+use crate::data::{AccountInfo, AccountProof};
 use crate::smt;
 use crate::store::{EmptyHeaderData, MappedHashSet, NodeData, Stored, StoredRefCount};
 use anyhow::Result;
 use blstrs::Scalar;
-use crypto::merkle;
 use memmap2::MmapMut;
-use std::cell::RefCell;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
@@ -50,16 +48,18 @@ type AccountTree = smt::Tree<3, 161>;
 
 #[derive(Debug)]
 struct LeafManager {
-    leaves: Rc<RefCell<AccountHashSet>>,
+    leaves: Arc<Mutex<AccountHashSet>>,
 }
 
 impl smt::ExternalNodeManager for LeafManager {
     fn r#ref(&mut self, label: Scalar) {
-        self.leaves.borrow_mut().get_mut(label).unwrap().r#ref();
+        let mut leaves = self.leaves.lock().unwrap();
+        leaves.get_mut(label).unwrap().r#ref();
     }
 
     fn unref(&mut self, label: Scalar) -> bool {
-        self.leaves.borrow_mut().get_mut(label).unwrap().unref()
+        let mut leaves = self.leaves.lock().unwrap();
+        leaves.get_mut(label).unwrap().unref()
     }
 }
 
@@ -70,7 +70,7 @@ impl smt::ExternalNodeManager for LeafManager {
 /// and start at 0. The caller uses version numbers as block numbers.
 #[derive(Debug)]
 pub struct AccountStore {
-    data: Rc<RefCell<AccountHashSet>>,
+    data: Arc<Mutex<AccountHashSet>>,
     tree: AccountTree,
     roots: Vec<Scalar>,
 }
@@ -80,14 +80,15 @@ impl AccountStore {
     pub fn default() -> Result<Self> {
         let default_account = AccountNode::default();
         let default_hash = default_account.hash();
-        let data = Rc::new(RefCell::new(AccountHashSet::new(
+        let mut data = AccountHashSet::new(
             MmapMut::map_anon(
                 AccountHashSet::PADDED_HEADER_SIZE
                     + AccountHashSet::get_max_capacity_for(1) * AccountHashSet::padded_node_size(),
             )?,
             constants::DATA_FILE_TYPE_ACCOUNT_DATA,
-        )?));
-        data.borrow_mut().insert(default_account)?;
+        )?;
+        data.insert(default_account)?;
+        let data = Arc::new(Mutex::new(data));
         let tree = AccountTree::new(
             MmapMut::map_anon(
                 AccountTree::PADDED_HEADER_SIZE
@@ -106,6 +107,15 @@ impl AccountStore {
         })
     }
 
+    pub fn from(accounts: &[(Scalar, AccountInfo)]) -> Result<Self> {
+        let mut store = Self::default()?;
+        for (address, account) in accounts {
+            store.put(*address, *account)?;
+        }
+        store.commit();
+        Ok(store)
+    }
+
     /// Returns the current version number.
     pub fn current_version(&self) -> usize {
         self.roots.len()
@@ -120,6 +130,11 @@ impl AccountStore {
         }
     }
 
+    /// Returns the Merkle root hash at the current version.
+    pub fn latest_root_hash(&self) -> Scalar {
+        self.root_hash(self.current_version())
+    }
+
     /// Retrieves an `AccountInfo` from the store.
     ///
     /// REQUIRES: `version` must be less than or equal to `current_version()`. The current
@@ -127,7 +142,13 @@ impl AccountStore {
     pub fn get(&self, address: Scalar, version: usize) -> AccountInfo {
         let root_hash = self.root_hash(version);
         let hash = self.tree.get_at(root_hash, address).unwrap();
-        *self.data.borrow().get(hash).unwrap().account()
+        let data = self.data.lock().unwrap();
+        *data.get(hash).unwrap().account()
+    }
+
+    /// Retrieves an `AccountInfo` from the store at the latest version.
+    pub fn get_latest(&self, address: Scalar) -> AccountInfo {
+        self.get(address, self.current_version())
     }
 
     /// Retrieves an `AccountInfo` from the store along with a Merkle proof for it.
@@ -136,15 +157,22 @@ impl AccountStore {
     ///
     /// REQUIRES: `version` must be less than or equal to `current_version()`. The current
     /// implementation will panic in an `unwrap` if `version > current_version()`.
-    pub fn get_proof(
-        &self,
-        address: Scalar,
-        version: usize,
-    ) -> merkle::Proof<Scalar, AccountInfo, 3, 161> {
+    pub fn get_proof(&self, address: Scalar, version: usize) -> AccountProof {
         let root_hash = self.root_hash(version);
         let proof = self.tree.get_proof_at(root_hash, address).unwrap();
-        let account = *self.data.borrow().get(*proof.value()).unwrap().account();
+        let account = {
+            let data = self.data.lock().unwrap();
+            *data.get(*proof.value()).unwrap().account()
+        };
         proof.map(account).unwrap()
+    }
+
+    /// Retrieves an `AccountInfo` from the store at the latest version, along with a Merkle proof
+    /// for it.
+    ///
+    /// The Merkle proof is valid iff its root hash matches the latest root hash of the store.
+    pub fn get_latest_proof(&self, address: Scalar) -> AccountProof {
+        self.get_proof(address, self.current_version())
     }
 
     /// Updates the current version of the store by setting the `AccountInfo` at `address` with the
@@ -159,7 +187,7 @@ impl AccountStore {
             return Ok(());
         }
         {
-            let mut data = self.data.borrow_mut();
+            let mut data = self.data.lock().unwrap();
             let (node, _) = data.insert_hashed(AccountNode::new(account), new_hash)?;
             let default_hash = AccountInfo::default().hash();
             if new_hash != default_hash {
@@ -540,6 +568,4 @@ mod tests {
         assert_eq!(lookup(&store, test_key2(), 1), account2);
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
     }
-
-    // TODO
 }
