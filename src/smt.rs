@@ -9,6 +9,22 @@ use ff::{Field, PrimeField};
 use memmap2::MmapMut;
 use std::fmt::Debug;
 
+pub trait ExternalNodeManager: Debug {
+    fn r#ref(&mut self, label: Scalar);
+    fn unref(&mut self, label: Scalar) -> bool;
+}
+
+#[derive(Debug, Default)]
+pub struct NoopExternalNodeManager {}
+
+impl ExternalNodeManager for NoopExternalNodeManager {
+    fn r#ref(&mut self, _label: Scalar) {}
+
+    fn unref(&mut self, _label: Scalar) -> bool {
+        true
+    }
+}
+
 /// A node of the tree.
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
@@ -75,6 +91,7 @@ impl<const W: usize> NodeData for Node<W> {
 #[derive(Debug)]
 struct Repr<HD: HeaderData, const W: usize, const H: usize> {
     hash_set: MappedHashSet<HD, Node<W>>,
+    external_node_manager: Box<dyn ExternalNodeManager>,
 }
 
 impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
@@ -97,9 +114,15 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
 
     /// Increments the reference count of a node.
     ///
-    /// REQUIRES: `hash` must refer to an existing node.
-    fn ref_node(&mut self, hash: Scalar) {
-        self.hash_set.get_mut(hash).unwrap().r#ref();
+    /// For external nodes, the `ExternalNodeManager` is used.
+    ///
+    /// REQUIRES: `hash` must refer to an existing node (either owned or external).
+    fn ref_node(&mut self, hash: Scalar, external: bool) {
+        if external {
+            self.external_node_manager.r#ref(hash);
+        } else {
+            self.hash_set.get_mut(hash).unwrap().r#ref();
+        }
     }
 
     /// Ensures that a node with the given children exists.
@@ -113,10 +136,8 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
     fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> Result<&mut Node<W>> {
         let hash = Node::<W>::hash_node(children);
         self.hash_set.insert_hashed(Node::new(children), hash)?;
-        if !leaf {
-            for child_hash in children {
-                self.ref_node(*child_hash);
-            }
+        for child_hash in children {
+            self.ref_node(*child_hash, leaf);
         }
         Ok(self.hash_set.get_mut(hash).unwrap())
     }
@@ -130,9 +151,11 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
             return true;
         };
         let node = self.hash_set.extract(hash).unwrap();
-        if level > 0 {
-            for child_hash in node.children() {
+        for child_hash in node.children() {
+            if level > 0 {
                 self.unref_node_impl(child_hash, level - 1);
+            } else {
+                self.external_node_manager.unref(child_hash);
             }
         }
         true
@@ -164,16 +187,26 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
     }
 
     /// Constructs a new `Repr` over the provided memory-mapped region.
-    fn new(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+    fn new(
+        mmap: MmapMut,
+        flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+    ) -> Result<Self> {
         Ok(Self {
-            hash_set: MappedHashSet::new(mmap, expected_flags)?,
+            hash_set: MappedHashSet::new(mmap, flags)?,
+            external_node_manager,
         })
     }
 
     /// Loads a `Repr` from the provided memory-mapped data.
-    fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+    fn load(
+        mmap: MmapMut,
+        expected_flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+    ) -> Result<Self> {
         Ok(Self {
             hash_set: MappedHashSet::load(mmap, expected_flags)?,
+            external_node_manager,
         })
     }
 
@@ -207,7 +240,7 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
         self.hash_set.take()
     }
 
-    /// Constructs the `H` nodes of an empty tree, referencing all of them exactly once.
+    /// Constructs the `H` nodes of an empty tree, referencing all of them exactly `W` times.
     ///
     /// The returned scalar is the hash of the root node.
     ///
@@ -220,7 +253,7 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
                 .make_node(&std::array::from_fn(|_| hash), i == 0)?
                 .hash();
         }
-        self.ref_node(hash);
+        self.ref_node(hash, false);
         Ok(hash)
     }
 
@@ -425,9 +458,14 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     }
 
     /// Initializes a new empty tree over the provided memory-mapped region.
-    pub fn new(mmap: MmapMut, flags: u32, default_value: Scalar) -> Result<Self> {
+    pub fn new(
+        mmap: MmapMut,
+        flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let mut tree = Self {
-            repr: Repr::new(mmap, flags)?,
+            repr: Repr::new(mmap, flags, external_node_manager)?,
         };
         tree.init_empty(default_value)?;
         Ok(tree)
@@ -444,14 +482,20 @@ impl<const W: usize, const H: usize> Tree<W, H> {
                     + Self::optimal_initial_capacity() * Self::padded_node_size(),
             )?,
             flags,
+            Box::new(NoopExternalNodeManager::default()),
             Scalar::ZERO,
         )
     }
 
     /// Constructs a `Tree` from the provided memory-mapped data.
-    pub fn load(mmap: MmapMut, expected_flags: u32, default_value: Scalar) -> Result<Self> {
+    pub fn load(
+        mmap: MmapMut,
+        expected_flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let tree = Self {
-            repr: Repr::load(mmap, expected_flags)?,
+            repr: Repr::load(mmap, expected_flags, external_node_manager)?,
         };
         if tree.default_value() != default_value {
             return Err(anyhow!(
@@ -502,7 +546,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
 
     /// REQUIRES: `hash` must refer to an existing node at level H-1.
     fn set_root(&mut self, hash: Scalar) -> Result<()> {
-        self.repr.ref_node(hash);
+        self.repr.ref_node(hash, false);
         self.repr.unref_node(self.root_hash(), H - 1)?;
         self.repr.header_mut().set_root_hash(hash);
         Ok(())
@@ -520,7 +564,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     /// getting reffed K times. That is not a problem.
     pub fn commit(&mut self) -> Scalar {
         let root_hash = self.root_hash();
-        self.repr.ref_node(root_hash);
+        self.repr.ref_node(root_hash, false);
         self.repr.header_mut().add_root_hash(root_hash);
         root_hash
     }
@@ -680,9 +724,14 @@ impl<const W: usize, const H: usize> Forest<W, H> {
     }
 
     /// Initializes a new empty forest over the provided memory-mapped region.
-    pub fn new(mmap: MmapMut, flags: u32, default_value: Scalar) -> Result<Self> {
+    pub fn new(
+        mmap: MmapMut,
+        flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let mut forest = Self {
-            repr: Repr::new(mmap, flags)?,
+            repr: Repr::new(mmap, flags, external_node_manager)?,
         };
         forest.init_empty(default_value)?;
         Ok(forest)
@@ -699,6 +748,7 @@ impl<const W: usize, const H: usize> Forest<W, H> {
                     + Self::optimal_initial_capacity() * Self::padded_node_size(),
             )?,
             flags,
+            Box::new(NoopExternalNodeManager::default()),
             Scalar::ZERO,
         )
     }
@@ -716,9 +766,14 @@ impl<const W: usize, const H: usize> Forest<W, H> {
     }
 
     /// Constructs a `Forest` from the provided memory-mapped data.
-    pub fn load(mmap: MmapMut, expected_flags: u32, default_value: Scalar) -> Result<Self> {
+    pub fn load(
+        mmap: MmapMut,
+        expected_flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let forest = Self {
-            repr: Repr::load(mmap, expected_flags)?,
+            repr: Repr::load(mmap, expected_flags, external_node_manager)?,
         };
         if forest.default_value() != default_value {
             return Err(anyhow!(
@@ -797,7 +852,7 @@ impl<const H: usize> Forest<2, H> {
     /// Returns an error if the `root_hash` is not found.
     pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
         let new_root_hash = self.repr.put(root_hash, key, value)?;
-        self.repr.ref_node(new_root_hash);
+        self.repr.ref_node(new_root_hash, false);
         if root_hash != self.repr.header().empty_root_hash() {
             self.repr.unref_node(root_hash, H - 1)?;
         }
@@ -831,7 +886,7 @@ impl<const H: usize> Forest<3, H> {
     /// Returns an error if the `root_hash` is not found.
     pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
         let new_root_hash = self.repr.put(root_hash, key, value)?;
-        self.repr.ref_node(new_root_hash);
+        self.repr.ref_node(new_root_hash, false);
         if root_hash != self.repr.header().empty_root_hash() {
             self.repr.unref_node(root_hash, H - 1)?;
         }
@@ -1020,6 +1075,7 @@ mod tests {
                 Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
             default_value,
         )
     }
@@ -1157,6 +1213,73 @@ mod tests {
         assert_eq!(lookup_binary_tree(&tree, 5.into()), 0.into());
         assert_eq!(lookup_binary_tree(&tree, 6.into()), 0.into());
         assert_eq!(lookup_binary_tree(&tree, 7.into()), 0.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_binary_tree_h1() {
+        let mut tree = make_default_test_tree::<2, 1>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x3826b1d360193dc143acde330a1fde39d7f7c65e5836e5bb84104da9240d7511")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 34.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_binary_tree_h2() {
+        let mut tree = make_default_test_tree::<2, 2>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert!(tree.put(3.into(), 78.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.capacity(), 8);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x23531e38b11a44fa07a42dd66cd777dc0b57c1bab00b8b3ceae7915790fcc544")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_binary_tree(&tree, 2.into()), 56.into());
+        assert_eq!(lookup_binary_tree(&tree, 3.into()), 78.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_binary_tree_h3() {
+        let mut tree = make_default_test_tree::<2, 3>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert!(tree.put(3.into(), 78.into()).is_ok());
+        assert!(tree.put(4.into(), 90.into()).is_ok());
+        assert!(tree.put(5.into(), 123.into()).is_ok());
+        assert!(tree.put(6.into(), 456.into()).is_ok());
+        assert!(tree.put(7.into(), 789.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 7);
+        assert_eq!(tree.capacity(), 32);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2456250fe4138e488640f04664827c14b2a00c0cb041ea931d7fbb1987aef779")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_binary_tree(&tree, 2.into()), 56.into());
+        assert_eq!(lookup_binary_tree(&tree, 3.into()), 78.into());
+        assert_eq!(lookup_binary_tree(&tree, 4.into()), 90.into());
+        assert_eq!(lookup_binary_tree(&tree, 5.into()), 123.into());
+        assert_eq!(lookup_binary_tree(&tree, 6.into()), 456.into());
+        assert_eq!(lookup_binary_tree(&tree, 7.into()), 789.into());
         assert!(check_tree_consistency(&tree).is_ok());
     }
 
@@ -1313,6 +1436,123 @@ mod tests {
         assert_eq!(lookup_ternary_tree(&tree, 24.into()), 0.into());
         assert_eq!(lookup_ternary_tree(&tree, 25.into()), 0.into());
         assert_eq!(lookup_ternary_tree(&tree, 26.into()), 0.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_ternary_tree_h1() {
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2e02eed5b290a9d8fff51dba1cbbf5883d08e53a88c2b0a983b60aab11d690d2")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 56.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_ternary_tree_h2() {
+        let mut tree = make_default_test_tree::<3, 2>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert!(tree.put(3.into(), 78.into()).is_ok());
+        assert!(tree.put(4.into(), 90.into()).is_ok());
+        assert!(tree.put(5.into(), 87.into()).is_ok());
+        assert!(tree.put(6.into(), 65.into()).is_ok());
+        assert!(tree.put(7.into(), 43.into()).is_ok());
+        assert!(tree.put(8.into(), 21.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 4);
+        assert_eq!(tree.capacity(), 16);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x5f794b6e04811ab55b58bec8cac7b082f2f6060ed229cdab921e0d9d361d434a")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 56.into());
+        assert_eq!(lookup_ternary_tree(&tree, 3.into()), 78.into());
+        assert_eq!(lookup_ternary_tree(&tree, 4.into()), 90.into());
+        assert_eq!(lookup_ternary_tree(&tree, 5.into()), 87.into());
+        assert_eq!(lookup_ternary_tree(&tree, 6.into()), 65.into());
+        assert_eq!(lookup_ternary_tree(&tree, 7.into()), 43.into());
+        assert_eq!(lookup_ternary_tree(&tree, 8.into()), 21.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_ternary_tree_h3() {
+        let mut tree = make_default_test_tree::<3, 3>().unwrap();
+        assert!(tree.put(0.into(), 1234.into()).is_ok());
+        assert!(tree.put(1.into(), 1243.into()).is_ok());
+        assert!(tree.put(2.into(), 1324.into()).is_ok());
+        assert!(tree.put(3.into(), 1342.into()).is_ok());
+        assert!(tree.put(4.into(), 1423.into()).is_ok());
+        assert!(tree.put(5.into(), 1432.into()).is_ok());
+        assert!(tree.put(6.into(), 2134.into()).is_ok());
+        assert!(tree.put(7.into(), 2143.into()).is_ok());
+        assert!(tree.put(8.into(), 2314.into()).is_ok());
+        assert!(tree.put(9.into(), 2341.into()).is_ok());
+        assert!(tree.put(10.into(), 2413.into()).is_ok());
+        assert!(tree.put(11.into(), 2431.into()).is_ok());
+        assert!(tree.put(12.into(), 3124.into()).is_ok());
+        assert!(tree.put(13.into(), 3142.into()).is_ok());
+        assert!(tree.put(14.into(), 3214.into()).is_ok());
+        assert!(tree.put(15.into(), 3241.into()).is_ok());
+        assert!(tree.put(16.into(), 3412.into()).is_ok());
+        assert!(tree.put(17.into(), 3421.into()).is_ok());
+        assert!(tree.put(18.into(), 4123.into()).is_ok());
+        assert!(tree.put(19.into(), 4132.into()).is_ok());
+        assert!(tree.put(20.into(), 4213.into()).is_ok());
+        assert!(tree.put(21.into(), 4231.into()).is_ok());
+        assert!(tree.put(22.into(), 4312.into()).is_ok());
+        assert!(tree.put(23.into(), 4321.into()).is_ok());
+        assert!(tree.put(24.into(), 42.into()).is_ok());
+        assert!(tree.put(25.into(), 43.into()).is_ok());
+        assert!(tree.put(26.into(), 44.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 13);
+        assert_eq!(tree.capacity(), 32);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2193a62d5d822c3fcb3c31aeb1774f3cfcc18e055fb3cdd8e5d3612d8068f683")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 1234.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 1243.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 1324.into());
+        assert_eq!(lookup_ternary_tree(&tree, 3.into()), 1342.into());
+        assert_eq!(lookup_ternary_tree(&tree, 4.into()), 1423.into());
+        assert_eq!(lookup_ternary_tree(&tree, 5.into()), 1432.into());
+        assert_eq!(lookup_ternary_tree(&tree, 6.into()), 2134.into());
+        assert_eq!(lookup_ternary_tree(&tree, 7.into()), 2143.into());
+        assert_eq!(lookup_ternary_tree(&tree, 8.into()), 2314.into());
+        assert_eq!(lookup_ternary_tree(&tree, 9.into()), 2341.into());
+        assert_eq!(lookup_ternary_tree(&tree, 10.into()), 2413.into());
+        assert_eq!(lookup_ternary_tree(&tree, 11.into()), 2431.into());
+        assert_eq!(lookup_ternary_tree(&tree, 12.into()), 3124.into());
+        assert_eq!(lookup_ternary_tree(&tree, 13.into()), 3142.into());
+        assert_eq!(lookup_ternary_tree(&tree, 14.into()), 3214.into());
+        assert_eq!(lookup_ternary_tree(&tree, 15.into()), 3241.into());
+        assert_eq!(lookup_ternary_tree(&tree, 16.into()), 3412.into());
+        assert_eq!(lookup_ternary_tree(&tree, 17.into()), 3421.into());
+        assert_eq!(lookup_ternary_tree(&tree, 18.into()), 4123.into());
+        assert_eq!(lookup_ternary_tree(&tree, 19.into()), 4132.into());
+        assert_eq!(lookup_ternary_tree(&tree, 20.into()), 4213.into());
+        assert_eq!(lookup_ternary_tree(&tree, 21.into()), 4231.into());
+        assert_eq!(lookup_ternary_tree(&tree, 22.into()), 4312.into());
+        assert_eq!(lookup_ternary_tree(&tree, 23.into()), 4321.into());
+        assert_eq!(lookup_ternary_tree(&tree, 24.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 25.into()), 43.into());
+        assert_eq!(lookup_ternary_tree(&tree, 26.into()), 44.into());
         assert!(check_tree_consistency(&tree).is_ok());
     }
 
@@ -1604,7 +1844,13 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let tree = Tree::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1617,7 +1863,13 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let tree = Tree::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1659,7 +1911,13 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let tree = Tree::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1677,7 +1935,13 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let tree = Tree::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1707,6 +1971,7 @@ mod tests {
                 Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
             default_value,
         )
     }
@@ -2298,7 +2563,13 @@ mod tests {
                 .unwrap();
             (forest.take(), root_hash)
         };
-        let forest = Forest::<2, 256>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let forest = Forest::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert!(check_forest_consistency(&forest, &[root_hash]).is_ok());
     }
 
@@ -2311,7 +2582,13 @@ mod tests {
                 .unwrap();
             (forest.take(), root_hash)
         };
-        let forest = Forest::<3, 161>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let forest = Forest::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert!(check_forest_consistency(&forest, &[root_hash]).is_ok());
     }
 
@@ -2360,7 +2637,13 @@ mod tests {
             });
             (forest.take(), roots)
         };
-        let forest = Forest::<2, 256>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let forest = Forest::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(
             forest.empty_root_hash(),
             parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
@@ -2383,7 +2666,13 @@ mod tests {
             });
             (forest.take(), roots)
         };
-        let forest = Forest::<3, 161>::load(mmap, TEST_FLAGS, Scalar::ZERO).unwrap();
+        let forest = Forest::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(
             forest.empty_root_hash(),
             parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")

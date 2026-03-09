@@ -6,6 +6,8 @@ use anyhow::Result;
 use blstrs::Scalar;
 use crypto::merkle;
 use memmap2::MmapMut;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
 #[repr(C)]
@@ -46,6 +48,21 @@ impl NodeData for AccountNode {
 type AccountHashSet = MappedHashSet<EmptyHeaderData, AccountNode>;
 type AccountTree = smt::Tree<3, 161>;
 
+#[derive(Debug)]
+struct LeafManager {
+    leaves: Rc<RefCell<AccountHashSet>>,
+}
+
+impl smt::ExternalNodeManager for LeafManager {
+    fn r#ref(&mut self, label: Scalar) {
+        self.leaves.borrow_mut().get_mut(label).unwrap().r#ref();
+    }
+
+    fn unref(&mut self, label: Scalar) -> bool {
+        self.leaves.borrow_mut().get_mut(label).unwrap().unref()
+    }
+}
+
 /// Stores `AccountInfo` objects to mapped memory and allows Merkle-proven retrieval.
 ///
 /// The store is versioned: it allows "sealing" the current version into the version history and
@@ -53,7 +70,7 @@ type AccountTree = smt::Tree<3, 161>;
 /// and start at 0. The caller uses version numbers as block numbers.
 #[derive(Debug)]
 pub struct AccountStore {
-    data: AccountHashSet,
+    data: Rc<RefCell<AccountHashSet>>,
     tree: AccountTree,
     roots: Vec<Scalar>,
 }
@@ -63,27 +80,30 @@ impl AccountStore {
     pub fn default() -> Result<Self> {
         let default_account = AccountNode::default();
         let default_hash = default_account.hash();
-        let mut store = Self {
-            data: AccountHashSet::new(
-                MmapMut::map_anon(
-                    AccountHashSet::PADDED_HEADER_SIZE
-                        + AccountHashSet::get_max_capacity_for(1)
-                            * AccountHashSet::padded_node_size(),
-                )?,
-                constants::DATA_FILE_TYPE_ACCOUNT_DATA,
+        let data = Rc::new(RefCell::new(AccountHashSet::new(
+            MmapMut::map_anon(
+                AccountHashSet::PADDED_HEADER_SIZE
+                    + AccountHashSet::get_max_capacity_for(1) * AccountHashSet::padded_node_size(),
             )?,
-            tree: AccountTree::new(
-                MmapMut::map_anon(
-                    AccountTree::PADDED_HEADER_SIZE
-                        + AccountTree::optimal_initial_capacity() * AccountTree::padded_node_size(),
-                )?,
-                constants::DATA_FILE_TYPE_ACCOUNT_TREE,
-                default_hash,
+            constants::DATA_FILE_TYPE_ACCOUNT_DATA,
+        )?));
+        data.borrow_mut().insert(default_account)?;
+        let tree = AccountTree::new(
+            MmapMut::map_anon(
+                AccountTree::PADDED_HEADER_SIZE
+                    + AccountTree::optimal_initial_capacity() * AccountTree::padded_node_size(),
             )?,
+            constants::DATA_FILE_TYPE_ACCOUNT_TREE,
+            Box::new(LeafManager {
+                leaves: data.clone(),
+            }),
+            default_hash,
+        )?;
+        Ok(Self {
+            data,
+            tree,
             roots: vec![],
-        };
-        store.data.insert(default_account)?;
-        Ok(store)
+        })
     }
 
     /// Returns the current version number.
@@ -104,10 +124,10 @@ impl AccountStore {
     ///
     /// REQUIRES: `version` must be less than or equal to `current_version()`. The current
     /// implementation will panic in an `unwrap` if `version > current_version()`.
-    pub fn get(&self, address: Scalar, version: usize) -> &AccountInfo {
+    pub fn get(&self, address: Scalar, version: usize) -> AccountInfo {
         let root_hash = self.root_hash(version);
         let hash = self.tree.get_at(root_hash, address).unwrap();
-        self.data.get(hash).unwrap().account()
+        *self.data.borrow().get(hash).unwrap().account()
     }
 
     /// Retrieves an `AccountInfo` from the store along with a Merkle proof for it.
@@ -123,7 +143,7 @@ impl AccountStore {
     ) -> merkle::Proof<Scalar, AccountInfo, 3, 161> {
         let root_hash = self.root_hash(version);
         let proof = self.tree.get_proof_at(root_hash, address).unwrap();
-        let account = *self.data.get(*proof.value()).unwrap().account();
+        let account = *self.data.borrow().get(*proof.value()).unwrap().account();
         proof.map(account).unwrap()
     }
 
@@ -138,16 +158,17 @@ impl AccountStore {
         if new_hash == old_hash {
             return Ok(());
         }
-        let (node, _) = self
-            .data
-            .insert_hashed(AccountNode::new(account), new_hash)?;
-        let default_hash = AccountInfo::default().hash();
-        if new_hash != default_hash {
-            node.r#ref();
-        }
-        if old_hash != default_hash {
-            if self.data.get_mut(old_hash).unwrap().unref() {
-                self.data.erase_and_shrink(old_hash)?;
+        {
+            let mut data = self.data.borrow_mut();
+            let (node, _) = data.insert_hashed(AccountNode::new(account), new_hash)?;
+            let default_hash = AccountInfo::default().hash();
+            if new_hash != default_hash {
+                node.r#ref();
+            }
+            if old_hash != default_hash {
+                if data.get_mut(old_hash).unwrap().unref() {
+                    data.erase_and_shrink(old_hash)?;
+                }
             }
         }
         self.tree.put(address, new_hash)?;
@@ -187,7 +208,7 @@ mod tests {
     }
 
     fn lookup(store: &AccountStore, address: Scalar, version: usize) -> AccountInfo {
-        let account = *store.get(address, version);
+        let account = store.get(address, version);
         let proof = store.get_proof(address, version);
         assert!(proof.verify().is_ok());
         assert_eq!(proof.take_value(), account);
@@ -482,6 +503,40 @@ mod tests {
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key1(), 1), account1);
+        assert_eq!(lookup(&store, test_key2(), 1), account2);
+        assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_update_after_commit() {
+        let mut store = AccountStore::default().unwrap();
+        let account1 = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        let account2 = AccountInfo::default()
+            .set_last_nonce(43)
+            .add_to_balance(456.into())
+            .unwrap();
+        let account3 = AccountInfo::default()
+            .set_last_nonce(44)
+            .add_to_balance(789.into())
+            .unwrap();
+        assert!(store.put(test_key1(), account1).is_ok());
+        assert!(store.put(test_key2(), account2).is_ok());
+        let root_hash1 =
+            parse_scalar("0x370ca8d84234ce10f0d40bd56a55fbbde0280dad0d751e4cdc68c4bd84536dbd");
+        assert_eq!(store.commit(), root_hash1);
+        assert!(store.put(test_key1(), account3).is_ok());
+        let root_hash2 =
+            parse_scalar("0x2013945dbf9027583e24bea6311122371f80c3a0dc9eeb65386454c3f6a93622");
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(store.root_hash(0), root_hash1);
+        assert_eq!(store.root_hash(1), root_hash2);
+        assert_eq!(lookup(&store, test_key1(), 0), account1);
+        assert_eq!(lookup(&store, test_key2(), 0), account2);
+        assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
+        assert_eq!(lookup(&store, test_key1(), 1), account3);
         assert_eq!(lookup(&store, test_key2(), 1), account2);
         assert_eq!(lookup(&store, test_key3(), 1), AccountInfo::default());
     }
