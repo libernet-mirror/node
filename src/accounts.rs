@@ -230,9 +230,7 @@ mod tests {
     }
 
     fn test_key3() -> Scalar {
-        let x = utils::get_random_scalar();
-        println!("{}", x);
-        x
+        parse_scalar("0x2c2a109b22a002c6976ddb95f2cd485353e6e5195858b1a360a8d3ab4f13bb22")
     }
 
     fn lookup(store: &AccountStore, address: Scalar, version: usize) -> AccountInfo {
@@ -255,16 +253,49 @@ mod tests {
     fn test_initial_state() {
         let store = AccountStore::default().unwrap();
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176")
-        );
+        let root_hash =
+            parse_scalar("0x490222871f1d15b49498ecad22a0be514a3a4b9744df61b80886856bf9230176");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
         assert_eq!(lookup_latest(&store, test_key1()), AccountInfo::default());
         assert_eq!(lookup_latest(&store, test_key2()), AccountInfo::default());
         assert_eq!(lookup_latest(&store, test_key3()), AccountInfo::default());
+    }
+
+    #[test]
+    fn test_from_accounts() {
+        let account1 = AccountInfo::default()
+            .set_last_nonce(42)
+            .add_to_balance(123.into())
+            .unwrap();
+        let account2 = AccountInfo::default()
+            .set_last_nonce(43)
+            .add_to_balance(456.into())
+            .unwrap();
+        let account3 = AccountInfo::default()
+            .set_last_nonce(44)
+            .add_to_balance(789.into())
+            .unwrap();
+        let store = AccountStore::from(&[
+            (test_key1(), account1),
+            (test_key2(), account2),
+            (test_key3(), account3),
+        ])
+        .unwrap();
+        assert_eq!(store.current_version(), 1);
+        let root_hash =
+            parse_scalar("0x2fc0a26bdd14a7beaa7b3773b29b35d9e468e2ca0a7386e21138a58d398a1ae4");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
+        assert_eq!(lookup(&store, test_key1(), 0), account1);
+        assert_eq!(lookup(&store, test_key2(), 0), account2);
+        assert_eq!(lookup(&store, test_key3(), 0), account3);
+        assert_eq!(lookup_latest(&store, test_key1()), account1);
+        assert_eq!(lookup_latest(&store, test_key2()), account2);
+        assert_eq!(lookup_latest(&store, test_key3()), account3);
     }
 
     #[test]
@@ -276,6 +307,7 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash);
         assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -298,6 +330,7 @@ mod tests {
         assert_eq!(store.root_hash(0), root_hash);
         assert_eq!(store.root_hash(1), root_hash);
         assert_eq!(store.root_hash(2), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -321,10 +354,10 @@ mod tests {
             .unwrap();
         assert!(store.put(test_key1(), account).is_ok());
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x39ba09774c00f627745f2c915055684141923129d9bef8c3fc79438618eaba44")
-        );
+        let root_hash =
+            parse_scalar("0x39ba09774c00f627745f2c915055684141923129d9bef8c3fc79438618eaba44");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account);
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -342,10 +375,10 @@ mod tests {
             .unwrap();
         assert!(store.put(test_key2(), account).is_ok());
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x4a89ae1727e0454819203d393c1868aefd8b02fc1d151a70825617380b3b1143")
-        );
+        let root_hash =
+            parse_scalar("0x4a89ae1727e0454819203d393c1868aefd8b02fc1d151a70825617380b3b1143");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), account);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -368,10 +401,10 @@ mod tests {
         assert!(store.put(test_key1(), account1).is_ok());
         assert!(store.put(test_key2(), account2).is_ok());
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x370ca8d84234ce10f0d40bd56a55fbbde0280dad0d751e4cdc68c4bd84536dbd")
-        );
+        let root_hash =
+            parse_scalar("0x370ca8d84234ce10f0d40bd56a55fbbde0280dad0d751e4cdc68c4bd84536dbd");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account1);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -394,10 +427,10 @@ mod tests {
         assert!(store.put(test_key1(), account1).is_ok());
         assert!(store.put(test_key1(), account2).is_ok());
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x105b50978f14c59d6776ead97523874f574dea4cf3f5ed2bc2a195a3ddab101d")
-        );
+        let root_hash =
+            parse_scalar("0x105b50978f14c59d6776ead97523874f574dea4cf3f5ed2bc2a195a3ddab101d");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account2);
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -425,10 +458,10 @@ mod tests {
         assert!(store.put(test_key2(), account2).is_ok());
         assert!(store.put(test_key1(), account3).is_ok());
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x2013945dbf9027583e24bea6311122371f80c3a0dc9eeb65386454c3f6a93622")
-        );
+        let root_hash =
+            parse_scalar("0x2013945dbf9027583e24bea6311122371f80c3a0dc9eeb65386454c3f6a93622");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account3);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -456,10 +489,10 @@ mod tests {
         assert!(store.put(test_key2(), account2).is_ok());
         assert!(store.put(test_key2(), account3).is_ok());
         assert_eq!(store.current_version(), 0);
-        assert_eq!(
-            store.root_hash(0),
-            parse_scalar("0x5d5c0815bf115feb04f0bf0c80938f5773a9a0f41eb58479e3de00b8b8d74169")
-        );
+        let root_hash =
+            parse_scalar("0x5d5c0815bf115feb04f0bf0c80938f5773a9a0f41eb58479e3de00b8b8d74169");
+        assert_eq!(store.root_hash(0), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account1);
         assert_eq!(lookup(&store, test_key2(), 0), account3);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -482,6 +515,7 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash);
         assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account);
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -512,6 +546,7 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash);
         assert_eq!(store.root_hash(1), root_hash);
+        assert_eq!(store.latest_root_hash(), root_hash);
         assert_eq!(lookup(&store, test_key1(), 0), account1);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -539,6 +574,7 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash1);
         assert_eq!(store.root_hash(1), root_hash2);
+        assert_eq!(store.latest_root_hash(), root_hash2);
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -571,6 +607,7 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash1);
         assert_eq!(store.root_hash(1), root_hash2);
+        assert_eq!(store.latest_root_hash(), root_hash2);
         assert_eq!(lookup(&store, test_key1(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key2(), 0), AccountInfo::default());
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
@@ -608,6 +645,7 @@ mod tests {
         assert_eq!(store.current_version(), 1);
         assert_eq!(store.root_hash(0), root_hash1);
         assert_eq!(store.root_hash(1), root_hash2);
+        assert_eq!(store.latest_root_hash(), root_hash2);
         assert_eq!(lookup(&store, test_key1(), 0), account1);
         assert_eq!(lookup(&store, test_key2(), 0), account2);
         assert_eq!(lookup(&store, test_key3(), 0), AccountInfo::default());
