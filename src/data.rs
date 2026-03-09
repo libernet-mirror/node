@@ -1192,35 +1192,6 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn test_decode_and_verify_account_proof() {
-    //     let account = AccountInfo {
-    //         last_nonce: 42.into(),
-    //         balance: 123.into(),
-    //         staking_balance: 456.into(),
-    //     };
-    //     let address = utils::get_random_scalar();
-    //     let version = 42;
-    //     let mut tree = AccountTree::default();
-    //     tree.put(address, account, version);
-    //     let block_info = BlockInfo::new(
-    //         TEST_CHAIN_ID,
-    //         version,
-    //         parse_scalar("0x387d4e5f500fb33a27eb820239e845aaef7a84f852be4033a7d3c23d64571ea7"),
-    //         SystemTime::UNIX_EPOCH + Duration::from_secs(71104),
-    //         parse_scalar("0x351e6822f39868e620d10995eb2c58513ccce8e55d0998e78bce97703c15df68"),
-    //         parse_scalar("0x25cec4238bfaa905f2c97075aade1b266fc1120ccca08634e5adf1572d4d03ce"),
-    //         tree.root_hash(version),
-    //         parse_scalar("0x2b346f1eeac6cd03a43c826d72a102e78d82dcf249c01fc9f185a4b957daf060"),
-    //     );
-    //     let proof = tree.get_proof(address, version);
-    //     let proto = proof.encode(block_info.encode()).unwrap();
-    //     let (decoded_block_info, decoded_proof) =
-    //         AccountProof::decode_and_verify_account_proof(&proto).unwrap();
-    //     assert_eq!(decoded_block_info, block_info);
-    //     assert_eq!(decoded_proof.take_value(), account);
-    // }
-
     #[test]
     fn test_decode_and_verify_transaction_proof() {
         let account1 = account::testing::account1();
