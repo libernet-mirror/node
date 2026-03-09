@@ -1,6 +1,6 @@
 use crate::store::{
-    self, HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredScalar,
-    StoredU64,
+    self, HeaderData, MappedHashSet, NodeData, Stored, StoredCircularBuffer, StoredRefCount,
+    StoredScalar,
 };
 use anyhow::{Result, anyhow};
 use blstrs::Scalar;
@@ -9,12 +9,28 @@ use ff::{Field, PrimeField};
 use memmap2::MmapMut;
 use std::fmt::Debug;
 
+pub trait ExternalNodeManager: Debug + Send {
+    fn r#ref(&mut self, label: Scalar);
+    fn unref(&mut self, label: Scalar) -> bool;
+}
+
+#[derive(Debug, Default)]
+pub struct NoopExternalNodeManager {}
+
+impl ExternalNodeManager for NoopExternalNodeManager {
+    fn r#ref(&mut self, _label: Scalar) {}
+
+    fn unref(&mut self, _label: Scalar) -> bool {
+        true
+    }
+}
+
 /// A node of the tree.
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 struct Node<const W: usize> {
     /// Tracks how many other nodes refer to this node.
-    ref_count: StoredU64,
+    ref_count: StoredRefCount,
 
     /// For leaf nodes these are arbitrary values, while for internal nodes they're the hashes of
     /// the child nodes.
@@ -38,16 +54,11 @@ impl<const W: usize> Node<W> {
     }
 
     fn r#ref(&mut self) {
-        self.ref_count = (self.ref_count.to_u64() + 1).into();
+        self.ref_count.r#ref();
     }
 
     fn unref(&mut self) -> bool {
-        let mut ref_count = self.ref_count.to_u64();
-        assert!(ref_count > 0);
-        ref_count -= 1;
-        let is_zero = ref_count == 0;
-        self.ref_count = ref_count.into();
-        is_zero
+        self.ref_count.unref()
     }
 
     fn children(&self) -> [Scalar; W] {
@@ -80,6 +91,7 @@ impl<const W: usize> NodeData for Node<W> {
 #[derive(Debug)]
 struct Repr<HD: HeaderData, const W: usize, const H: usize> {
     hash_set: MappedHashSet<HD, Node<W>>,
+    external_node_manager: Box<dyn ExternalNodeManager>,
 }
 
 impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
@@ -102,9 +114,15 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
 
     /// Increments the reference count of a node.
     ///
-    /// REQUIRES: `hash` must refer to an existing node.
-    fn ref_node(&mut self, hash: Scalar) {
-        self.hash_set.get_mut(hash).unwrap().r#ref();
+    /// For external nodes, the `ExternalNodeManager` is used.
+    ///
+    /// REQUIRES: `hash` must refer to an existing node (either owned or external).
+    fn ref_node(&mut self, hash: Scalar, external: bool) {
+        if external {
+            self.external_node_manager.r#ref(hash);
+        } else {
+            self.hash_set.get_mut(hash).unwrap().r#ref();
+        }
     }
 
     /// Ensures that a node with the given children exists.
@@ -118,10 +136,8 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
     fn make_node(&mut self, children: &[Scalar; W], leaf: bool) -> Result<&mut Node<W>> {
         let hash = Node::<W>::hash_node(children);
         self.hash_set.insert_hashed(Node::new(children), hash)?;
-        if !leaf {
-            for child_hash in children {
-                self.ref_node(*child_hash);
-            }
+        for child_hash in children {
+            self.ref_node(*child_hash, leaf);
         }
         Ok(self.hash_set.get_mut(hash).unwrap())
     }
@@ -135,9 +151,11 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
             return true;
         };
         let node = self.hash_set.extract(hash).unwrap();
-        if level > 0 {
-            for child_hash in node.children() {
+        for child_hash in node.children() {
+            if level > 0 {
                 self.unref_node_impl(child_hash, level - 1);
+            } else {
+                self.external_node_manager.unref(child_hash);
             }
         }
         true
@@ -169,16 +187,26 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
     }
 
     /// Constructs a new `Repr` over the provided memory-mapped region.
-    fn new(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+    fn new(
+        mmap: MmapMut,
+        flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+    ) -> Result<Self> {
         Ok(Self {
-            hash_set: MappedHashSet::new(mmap, expected_flags)?,
+            hash_set: MappedHashSet::new(mmap, flags)?,
+            external_node_manager,
         })
     }
 
     /// Loads a `Repr` from the provided memory-mapped data.
-    fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+    fn load(
+        mmap: MmapMut,
+        expected_flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+    ) -> Result<Self> {
         Ok(Self {
             hash_set: MappedHashSet::load(mmap, expected_flags)?,
+            external_node_manager,
         })
     }
 
@@ -212,20 +240,20 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
         self.hash_set.take()
     }
 
-    /// Constructs the `H` nodes of an empty tree, referencing all of them exactly once.
+    /// Constructs the `H` nodes of an empty tree, referencing all of them exactly `W` times.
     ///
     /// The returned scalar is the hash of the root node.
     ///
     /// NOTE: if the nodes of the empty tree already exist, the only effect of this function is to
     /// reference the root one more time.
-    fn init_empty(&mut self) -> Result<Scalar> {
-        let mut hash = Scalar::ZERO;
+    fn init_empty(&mut self, default_value: Scalar) -> Result<Scalar> {
+        let mut hash = default_value;
         for i in 0..H {
             hash = self
                 .make_node(&std::array::from_fn(|_| hash), i == 0)?
                 .hash();
         }
-        self.ref_node(hash);
+        self.ref_node(hash, false);
         Ok(hash)
     }
 
@@ -239,28 +267,30 @@ impl<HD: HeaderData, const W: usize, const H: usize> Repr<HD, W, H> {
 }
 
 impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
-    /// Returns the value associated with the specified key.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
-        let mut node = self.hash_set.get(root_hash).unwrap();
+    /// Returns the value associated with the specified key, or `None` if the `root_hash` is not
+    /// found.
+    fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
             let child_hash = node.child(bit as usize);
             node = self.hash_set.get(child_hash).unwrap();
         }
         let bit = xits::and1(key).to_repr()[0];
-        node.child(bit as usize)
+        Some(node.child(bit as usize))
     }
 
-    /// Looks up an element and returns it along with a Merkle proof for it.
+    /// Looks up an element from the tree rooted at `root_hash` and returns it along with a Merkle
+    /// proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 2, H>> {
         let mut path = [[Scalar::ZERO; 2]; H];
-        let mut node = self.hash_set.get(root_hash).unwrap();
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             path[i] = node.children();
             let bit = xits::and1(xits::shr(key, i)).to_repr()[0];
@@ -270,7 +300,7 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
         path[0] = node.children();
         let bit = xits::and1(key).to_repr()[0];
         let value = node.child(bit as usize);
-        merkle::Proof::new(key, value, path, root_hash)
+        Some(merkle::Proof::new(key, value, path, root_hash))
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -294,28 +324,30 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 2, H> {
 }
 
 impl<HD: HeaderData, const H: usize> Repr<HD, 3, H> {
-    /// Returns the value associated with the specified key.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
-        let mut node = self.hash_set.get(root_hash).unwrap();
+    /// Returns the value associated with the specified key, or `None` if the `root_hash` is not
+    /// found.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
             let child_hash = node.child(trit as usize);
             node = self.hash_set.get(child_hash).unwrap();
         }
         let trit = xits::mod3(key).to_repr()[0];
-        node.child(trit as usize)
+        Some(node.child(trit as usize))
     }
 
-    /// Looks up an element and returns it along with a Merkle proof for it.
+    /// Looks up an element from the tree rooted at `root_hash` and returns it along with a Merkle
+    /// proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to an existing node.
-    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 3, H>> {
         let mut path = [[Scalar::ZERO; 3]; H];
-        let mut node = self.hash_set.get(root_hash).unwrap();
+        let mut node = self.hash_set.get(root_hash)?;
         for i in (1..H).rev() {
             path[i] = node.children();
             let trit = xits::mod3(xits::div_pow3(key, i)).to_repr()[0];
@@ -325,7 +357,7 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 3, H> {
         path[0] = node.children();
         let trit = xits::mod3(key).to_repr()[0];
         let value = node.child(trit as usize);
-        merkle::Proof::new(key, value, path, root_hash)
+        Some(merkle::Proof::new(key, value, path, root_hash))
     }
 
     fn update(&mut self, hash: Scalar, level: usize, key: Scalar, value: Scalar) -> Result<Scalar> {
@@ -351,10 +383,19 @@ impl<HD: HeaderData, const H: usize> Repr<HD, 3, H> {
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 struct TreeHeader {
-    root_hashes: StoredCircularBuffer<StoredScalar, 126>,
+    default_value: StoredScalar,
+    root_hashes: StoredCircularBuffer<StoredScalar, 125>,
 }
 
 impl TreeHeader {
+    fn default_value(&self) -> Scalar {
+        self.default_value.to_scalar()
+    }
+
+    fn set_default_value(&mut self, default_value: Scalar) {
+        self.default_value = default_value.into();
+    }
+
     fn root_hash(&self) -> Scalar {
         self.root_hashes.top().to_scalar()
     }
@@ -408,18 +449,25 @@ impl<const W: usize, const H: usize> Tree<W, H> {
         Repr::<TreeHeader, W, H>::get_max_capacity_for(H)
     }
 
-    fn init_empty(&mut self) -> Result<()> {
-        let root_hash = self.repr.init_empty()?;
-        self.repr.header_mut().add_root_hash(root_hash);
+    fn init_empty(&mut self, default_value: Scalar) -> Result<()> {
+        let root_hash = self.repr.init_empty(default_value)?;
+        let header = self.repr.header_mut();
+        header.set_default_value(default_value);
+        header.add_root_hash(root_hash);
         Ok(())
     }
 
     /// Initializes a new empty tree over the provided memory-mapped region.
-    pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
+    pub fn new(
+        mmap: MmapMut,
+        flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let mut tree = Self {
-            repr: Repr::new(mmap, flags)?,
+            repr: Repr::new(mmap, flags, external_node_manager)?,
         };
-        tree.init_empty()?;
+        tree.init_empty(default_value)?;
         Ok(tree)
     }
 
@@ -434,14 +482,28 @@ impl<const W: usize, const H: usize> Tree<W, H> {
                     + Self::optimal_initial_capacity() * Self::padded_node_size(),
             )?,
             flags,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
         )
     }
 
     /// Constructs a `Tree` from the provided memory-mapped data.
-    pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+    pub fn load(
+        mmap: MmapMut,
+        expected_flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let tree = Self {
-            repr: Repr::load(mmap, expected_flags)?,
+            repr: Repr::load(mmap, expected_flags, external_node_manager)?,
         };
+        if tree.default_value() != default_value {
+            return Err(anyhow!(
+                "default value mismatch (got {}, want {})",
+                utils::format_scalar(tree.default_value()),
+                utils::format_scalar(default_value)
+            ));
+        }
         let root_hash = tree.root_hash();
         if !tree.repr.has_node(root_hash) {
             return Err(anyhow!(
@@ -450,6 +512,11 @@ impl<const W: usize, const H: usize> Tree<W, H> {
             ));
         }
         Ok(tree)
+    }
+
+    /// Returns the value all leaves are initialized to.
+    pub fn default_value(&self) -> Scalar {
+        self.repr.header().default_value()
     }
 
     /// Returns the number of nodes in the underlying hash table.
@@ -479,7 +546,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
 
     /// REQUIRES: `hash` must refer to an existing node at level H-1.
     fn set_root(&mut self, hash: Scalar) -> Result<()> {
-        self.repr.ref_node(hash);
+        self.repr.ref_node(hash, false);
         self.repr.unref_node(self.root_hash(), H - 1)?;
         self.repr.header_mut().set_root_hash(hash);
         Ok(())
@@ -497,7 +564,7 @@ impl<const W: usize, const H: usize> Tree<W, H> {
     /// getting reffed K times. That is not a problem.
     pub fn commit(&mut self) -> Scalar {
         let root_hash = self.root_hash();
-        self.repr.ref_node(root_hash);
+        self.repr.ref_node(root_hash, false);
         self.repr.header_mut().add_root_hash(root_hash);
         root_hash
     }
@@ -506,14 +573,32 @@ impl<const W: usize, const H: usize> Tree<W, H> {
 impl<const H: usize> Tree<2, H> {
     /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
-        self.repr.get(self.root_hash(), key)
+        self.repr.get(self.root_hash(), key).unwrap()
+    }
+
+    /// Returns the value associated with the specified key at a past revision rooted at
+    /// `root_hash`.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_at(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        self.repr.get(root_hash, key)
     }
 
     /// Looks up an element and returns it along with a Merkle proof for it.
-    ///
-    /// Returns `None` if the element is not found.
     pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
-        self.repr.get_proof(self.root_hash(), key)
+        self.repr.get_proof(self.root_hash(), key).unwrap()
+    }
+
+    /// Looks up an element from a past revision rooted at `root_hash` and returns it along with a
+    /// Merkle proof for it.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_proof_at(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 2, H>> {
+        self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified key.
@@ -527,14 +612,32 @@ impl<const H: usize> Tree<2, H> {
 impl<const H: usize> Tree<3, H> {
     /// Returns the value associated with the specified key.
     pub fn get(&self, key: Scalar) -> Scalar {
-        self.repr.get(self.root_hash(), key)
+        self.repr.get(self.root_hash(), key).unwrap()
+    }
+
+    /// Returns the value associated with the specified key at a past revision rooted at
+    /// `root_hash`.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_at(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
+        self.repr.get(root_hash, key)
     }
 
     /// Looks up an element and returns it along with a Merkle proof for it.
-    ///
-    /// Returns `None` if the element is not found.
     pub fn get_proof(&self, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
-        self.repr.get_proof(self.root_hash(), key)
+        self.repr.get_proof(self.root_hash(), key).unwrap()
+    }
+
+    /// Looks up an element from a past revision rooted at `root_hash` and returns it along with a
+    /// Merkle proof for it.
+    ///
+    /// Returns `None` if `root_hash` is not found.
+    pub fn get_proof_at(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 3, H>> {
+        self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified key.
@@ -548,10 +651,19 @@ impl<const H: usize> Tree<3, H> {
 #[derive(Debug, Default, Copy, Clone)]
 #[repr(C)]
 struct ForestHeader {
+    default_value: StoredScalar,
     empty_root_hash: StoredScalar,
 }
 
 impl ForestHeader {
+    fn default_value(&self) -> Scalar {
+        self.default_value.to_scalar()
+    }
+
+    fn set_default_value(&mut self, default_value: Scalar) {
+        self.default_value = default_value.into();
+    }
+
     fn empty_root_hash(&self) -> Scalar {
         self.empty_root_hash.to_scalar()
     }
@@ -603,18 +715,25 @@ impl<const W: usize, const H: usize> Forest<W, H> {
         self.repr.header().empty_root_hash()
     }
 
-    fn init_empty(&mut self) -> Result<()> {
-        let empty_root_hash = self.repr.init_empty()?;
-        self.repr.header_mut().set_empty_root_hash(empty_root_hash);
+    fn init_empty(&mut self, default_value: Scalar) -> Result<()> {
+        let empty_root_hash = self.repr.init_empty(default_value)?;
+        let header = self.repr.header_mut();
+        header.set_default_value(default_value);
+        header.set_empty_root_hash(empty_root_hash);
         Ok(())
     }
 
     /// Initializes a new empty forest over the provided memory-mapped region.
-    pub fn new(mmap: MmapMut, flags: u32) -> Result<Self> {
+    pub fn new(
+        mmap: MmapMut,
+        flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let mut forest = Self {
-            repr: Repr::new(mmap, flags)?,
+            repr: Repr::new(mmap, flags, external_node_manager)?,
         };
-        forest.init_empty()?;
+        forest.init_empty(default_value)?;
         Ok(forest)
     }
 
@@ -629,11 +748,13 @@ impl<const W: usize, const H: usize> Forest<W, H> {
                     + Self::optimal_initial_capacity() * Self::padded_node_size(),
             )?,
             flags,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
         )
     }
 
-    fn calculate_empty_root_hash() -> Scalar {
-        let mut hash = Scalar::ZERO;
+    fn calculate_empty_root_hash(&self) -> Scalar {
+        let mut hash = self.default_value();
         for _ in 0..H {
             hash = match W {
                 2 => poseidon::hash_t3(&[hash, hash]),
@@ -645,12 +766,24 @@ impl<const W: usize, const H: usize> Forest<W, H> {
     }
 
     /// Constructs a `Forest` from the provided memory-mapped data.
-    pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+    pub fn load(
+        mmap: MmapMut,
+        expected_flags: u32,
+        external_node_manager: Box<dyn ExternalNodeManager>,
+        default_value: Scalar,
+    ) -> Result<Self> {
         let forest = Self {
-            repr: Repr::load(mmap, expected_flags)?,
+            repr: Repr::load(mmap, expected_flags, external_node_manager)?,
         };
+        if forest.default_value() != default_value {
+            return Err(anyhow!(
+                "default value mismatch (got {}, want {})",
+                utils::format_scalar(forest.default_value()),
+                utils::format_scalar(default_value)
+            ));
+        }
         let empty_root_hash = forest.empty_root_hash();
-        let expected_empty_root_hash = Self::calculate_empty_root_hash();
+        let expected_empty_root_hash = forest.calculate_empty_root_hash();
         if empty_root_hash != expected_empty_root_hash {
             return Err(anyhow!(
                 "incorrect empty root hash (got {}, want {})",
@@ -665,6 +798,11 @@ impl<const W: usize, const H: usize> Forest<W, H> {
             ));
         }
         Ok(forest)
+    }
+
+    /// Returns the value all leaves are initialized to.
+    pub fn default_value(&self) -> Scalar {
+        self.repr.header().default_value()
     }
 
     /// Returns the number of nodes in the underlying hash table.
@@ -691,28 +829,30 @@ impl<const W: usize, const H: usize> Forest<W, H> {
 impl<const H: usize> Forest<2, H> {
     /// Looks up an element in the tree rooted at `root_hash` and returns its value.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
         self.repr.get(root_hash, key)
     }
 
     /// Looks up an element in the tree rooted at `root_hash` and returns its value along with a
     /// Merkle proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 2, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 2, H>> {
         self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified `key` in the tree rooted at `root_hash` and
     /// returns the new root hash of that tree.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    /// Returns an error if the `root_hash` is not found.
     pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
         let new_root_hash = self.repr.put(root_hash, key, value)?;
-        self.repr.ref_node(new_root_hash);
+        self.repr.ref_node(new_root_hash, false);
         if root_hash != self.repr.header().empty_root_hash() {
             self.repr.unref_node(root_hash, H - 1)?;
         }
@@ -723,28 +863,30 @@ impl<const H: usize> Forest<2, H> {
 impl<const H: usize> Forest<3, H> {
     /// Looks up an element in the tree rooted at `root_hash` and returns its value.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Scalar {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get(&self, root_hash: Scalar, key: Scalar) -> Option<Scalar> {
         self.repr.get(root_hash, key)
     }
 
     /// Looks up an element in the tree rooted at `root_hash` and returns its value along with a
     /// Merkle proof for it.
     ///
-    /// Returns `None` if the element is not found.
-    ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
-    pub fn get_proof(&self, root_hash: Scalar, key: Scalar) -> merkle::Proof<Scalar, Scalar, 3, H> {
+    /// Returns `None` if the `root_hash` is not found.
+    pub fn get_proof(
+        &self,
+        root_hash: Scalar,
+        key: Scalar,
+    ) -> Option<merkle::Proof<Scalar, Scalar, 3, H>> {
         self.repr.get_proof(root_hash, key)
     }
 
     /// Updates the value associated with the specified `key` in the tree rooted at `root_hash` and
     /// returns the new root hash of that tree.
     ///
-    /// REQUIRES: `root_hash` must refer to a valid tree root.
+    /// Returns an error if the `root_hash` is not found.
     pub fn put(&mut self, root_hash: Scalar, key: Scalar, value: Scalar) -> Result<Scalar> {
         let new_root_hash = self.repr.put(root_hash, key, value)?;
-        self.repr.ref_node(new_root_hash);
+        self.repr.ref_node(new_root_hash, false);
         if root_hash != self.repr.header().empty_root_hash() {
             self.repr.unref_node(root_hash, H - 1)?;
         }
@@ -858,7 +1000,7 @@ mod tests {
     ) -> Result<()> {
         forest.repr.hash_set.check_consistency()?;
         let empty_root_hash = forest.empty_root_hash();
-        let expected_empty_root_hash = Forest::<W, H>::calculate_empty_root_hash();
+        let expected_empty_root_hash = forest.calculate_empty_root_hash();
         if empty_root_hash != expected_empty_root_hash {
             return Err(anyhow!(
                 "incorrect empty root hash (got {}, want {})",
@@ -926,27 +1068,43 @@ mod tests {
         assert_eq!(TestTree::padded_node_size(), 136);
     }
 
-    fn make_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
+    fn make_test_tree<const W: usize, const H: usize>(default_value: Scalar) -> Result<Tree<W, H>> {
         let capacity = Tree::<W, H>::optimal_initial_capacity();
         Tree::new(
             MmapMut::map_anon(
                 Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            default_value,
         )
     }
 
+    fn make_default_test_tree<const W: usize, const H: usize>() -> Result<Tree<W, H>> {
+        Tree::default(TEST_FLAGS)
+    }
+
     fn lookup_binary_tree<const H: usize>(tree: &Tree<2, H>, key: Scalar) -> Scalar {
+        let root_hash = tree.root_hash();
         let value = tree.get(key);
+        assert_eq!(tree.get_at(root_hash, key).unwrap(), value);
         let proof = tree.get_proof(key);
+        assert!(proof.verify().is_ok());
+        assert_eq!(*proof.value(), value);
+        let proof = tree.get_proof_at(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
     }
 
     fn lookup_ternary_tree<const H: usize>(tree: &Tree<3, H>, key: Scalar) -> Scalar {
+        let root_hash = tree.root_hash();
         let value = tree.get(key);
+        assert_eq!(tree.get_at(tree.root_hash(), key).unwrap(), value);
         let proof = tree.get_proof(key);
+        assert!(proof.verify().is_ok());
+        assert_eq!(*proof.value(), value);
+        let proof = tree.get_proof_at(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
@@ -954,7 +1112,61 @@ mod tests {
 
     #[test]
     fn test_new_binary_tree_h1() {
-        let tree = make_test_tree::<2, 1>().unwrap();
+        let tree = make_test_tree::<2, 1>(42.into()).unwrap();
+        assert_eq!(tree.default_value(), 42.into());
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x5b07d72aa4b046fbfd84a0ba5dfd50da03498a2ce7edf08683ff7b5dd9aa785a")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 42.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_new_binary_tree_h2() {
+        let tree = make_test_tree::<2, 2>(42.into()).unwrap();
+        assert_eq!(tree.default_value(), 42.into());
+        assert_eq!(tree.size(), 2);
+        assert_eq!(tree.capacity(), 8);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x6641c2ebad4e619c379db260351c10940e6b8a2ef941250fc351323656418468")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 2.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 3.into()), 42.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_new_binary_tree_h3() {
+        let tree = make_test_tree::<2, 3>(42.into()).unwrap();
+        assert_eq!(tree.default_value(), 42.into());
+        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.capacity(), 8);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x56a47a49fdb78e39db47d3756209b90a17f31fba5496b3f0b87ff6b08790ced8")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 2.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 3.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 4.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 5.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 6.into()), 42.into());
+        assert_eq!(lookup_binary_tree(&tree, 7.into()), 42.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_default_binary_tree_h1() {
+        let tree = make_default_test_tree::<2, 1>().unwrap();
+        assert_eq!(tree.default_value(), 0.into());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
         assert_eq!(
@@ -967,8 +1179,9 @@ mod tests {
     }
 
     #[test]
-    fn test_new_binary_tree_h2() {
-        let tree = make_test_tree::<2, 2>().unwrap();
+    fn test_default_binary_tree_h2() {
+        let tree = make_default_test_tree::<2, 2>().unwrap();
+        assert_eq!(tree.default_value(), 0.into());
         assert_eq!(tree.size(), 2);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -983,8 +1196,9 @@ mod tests {
     }
 
     #[test]
-    fn test_new_binary_tree_h3() {
-        let tree = make_test_tree::<2, 3>().unwrap();
+    fn test_default_binary_tree_h3() {
+        let tree = make_default_test_tree::<2, 3>().unwrap();
+        assert_eq!(tree.default_value(), 0.into());
         assert_eq!(tree.size(), 3);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -1003,8 +1217,154 @@ mod tests {
     }
 
     #[test]
+    fn test_fill_binary_tree_h1() {
+        let mut tree = make_default_test_tree::<2, 1>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x3826b1d360193dc143acde330a1fde39d7f7c65e5836e5bb84104da9240d7511")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 34.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_binary_tree_h2() {
+        let mut tree = make_default_test_tree::<2, 2>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert!(tree.put(3.into(), 78.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.capacity(), 8);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x23531e38b11a44fa07a42dd66cd777dc0b57c1bab00b8b3ceae7915790fcc544")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_binary_tree(&tree, 2.into()), 56.into());
+        assert_eq!(lookup_binary_tree(&tree, 3.into()), 78.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_binary_tree_h3() {
+        let mut tree = make_default_test_tree::<2, 3>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert!(tree.put(3.into(), 78.into()).is_ok());
+        assert!(tree.put(4.into(), 90.into()).is_ok());
+        assert!(tree.put(5.into(), 123.into()).is_ok());
+        assert!(tree.put(6.into(), 456.into()).is_ok());
+        assert!(tree.put(7.into(), 789.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 7);
+        assert_eq!(tree.capacity(), 32);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2456250fe4138e488640f04664827c14b2a00c0cb041ea931d7fbb1987aef779")
+        );
+        assert_eq!(lookup_binary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_binary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_binary_tree(&tree, 2.into()), 56.into());
+        assert_eq!(lookup_binary_tree(&tree, 3.into()), 78.into());
+        assert_eq!(lookup_binary_tree(&tree, 4.into()), 90.into());
+        assert_eq!(lookup_binary_tree(&tree, 5.into()), 123.into());
+        assert_eq!(lookup_binary_tree(&tree, 6.into()), 456.into());
+        assert_eq!(lookup_binary_tree(&tree, 7.into()), 789.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
     fn test_new_ternary_tree_h1() {
-        let tree = make_test_tree::<3, 1>().unwrap();
+        let tree = make_test_tree::<3, 1>(42.into()).unwrap();
+        assert_eq!(tree.default_value(), 42.into());
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x60653febe5d9f8ad2b671775053c06b50ba4b1d84dcece6dc2d7bec1f55eba7a")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 42.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_new_ternary_tree_h2() {
+        let tree = make_test_tree::<3, 2>(42.into()).unwrap();
+        assert_eq!(tree.default_value(), 42.into());
+        assert_eq!(tree.size(), 2);
+        assert_eq!(tree.capacity(), 8);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x3cf49b5724b5d776b3d4dc1b2f72f4305c489974823faa6bfc444e5fadf42f68")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 3.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 4.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 5.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 6.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 7.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 8.into()), 42.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_new_ternary_tree_h3() {
+        let tree = make_test_tree::<3, 3>(42.into()).unwrap();
+        assert_eq!(tree.default_value(), 42.into());
+        assert_eq!(tree.size(), 3);
+        assert_eq!(tree.capacity(), 8);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x35eb28aec0bb894ea2a7ae99a0fb85777b4cc0165a68a3a7abb9e509cbe300b5")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 3.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 4.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 5.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 6.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 7.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 8.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 9.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 10.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 11.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 12.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 13.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 14.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 15.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 16.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 17.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 18.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 19.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 20.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 21.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 22.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 23.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 24.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 25.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 26.into()), 42.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_default_ternary_tree_h1() {
+        let tree = make_default_test_tree::<3, 1>().unwrap();
+        assert_eq!(tree.default_value(), 0.into());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
         assert_eq!(
@@ -1018,8 +1378,9 @@ mod tests {
     }
 
     #[test]
-    fn test_new_ternary_tree_h2() {
-        let tree = make_test_tree::<3, 2>().unwrap();
+    fn test_default_ternary_tree_h2() {
+        let tree = make_default_test_tree::<3, 2>().unwrap();
+        assert_eq!(tree.default_value(), 0.into());
         assert_eq!(tree.size(), 2);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -1039,8 +1400,9 @@ mod tests {
     }
 
     #[test]
-    fn test_new_ternary_tree_h3() {
-        let tree = make_test_tree::<3, 3>().unwrap();
+    fn test_default_ternary_tree_h3() {
+        let tree = make_default_test_tree::<3, 3>().unwrap();
+        assert_eq!(tree.default_value(), 0.into());
         assert_eq!(tree.size(), 3);
         assert_eq!(tree.capacity(), 8);
         assert_eq!(
@@ -1078,8 +1440,125 @@ mod tests {
     }
 
     #[test]
+    fn test_fill_ternary_tree_h1() {
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 1);
+        assert_eq!(tree.capacity(), 4);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2e02eed5b290a9d8fff51dba1cbbf5883d08e53a88c2b0a983b60aab11d690d2")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 56.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_ternary_tree_h2() {
+        let mut tree = make_default_test_tree::<3, 2>().unwrap();
+        assert!(tree.put(0.into(), 12.into()).is_ok());
+        assert!(tree.put(1.into(), 34.into()).is_ok());
+        assert!(tree.put(2.into(), 56.into()).is_ok());
+        assert!(tree.put(3.into(), 78.into()).is_ok());
+        assert!(tree.put(4.into(), 90.into()).is_ok());
+        assert!(tree.put(5.into(), 87.into()).is_ok());
+        assert!(tree.put(6.into(), 65.into()).is_ok());
+        assert!(tree.put(7.into(), 43.into()).is_ok());
+        assert!(tree.put(8.into(), 21.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 4);
+        assert_eq!(tree.capacity(), 16);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x5f794b6e04811ab55b58bec8cac7b082f2f6060ed229cdab921e0d9d361d434a")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 12.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 34.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 56.into());
+        assert_eq!(lookup_ternary_tree(&tree, 3.into()), 78.into());
+        assert_eq!(lookup_ternary_tree(&tree, 4.into()), 90.into());
+        assert_eq!(lookup_ternary_tree(&tree, 5.into()), 87.into());
+        assert_eq!(lookup_ternary_tree(&tree, 6.into()), 65.into());
+        assert_eq!(lookup_ternary_tree(&tree, 7.into()), 43.into());
+        assert_eq!(lookup_ternary_tree(&tree, 8.into()), 21.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
+    fn test_fill_ternary_tree_h3() {
+        let mut tree = make_default_test_tree::<3, 3>().unwrap();
+        assert!(tree.put(0.into(), 1234.into()).is_ok());
+        assert!(tree.put(1.into(), 1243.into()).is_ok());
+        assert!(tree.put(2.into(), 1324.into()).is_ok());
+        assert!(tree.put(3.into(), 1342.into()).is_ok());
+        assert!(tree.put(4.into(), 1423.into()).is_ok());
+        assert!(tree.put(5.into(), 1432.into()).is_ok());
+        assert!(tree.put(6.into(), 2134.into()).is_ok());
+        assert!(tree.put(7.into(), 2143.into()).is_ok());
+        assert!(tree.put(8.into(), 2314.into()).is_ok());
+        assert!(tree.put(9.into(), 2341.into()).is_ok());
+        assert!(tree.put(10.into(), 2413.into()).is_ok());
+        assert!(tree.put(11.into(), 2431.into()).is_ok());
+        assert!(tree.put(12.into(), 3124.into()).is_ok());
+        assert!(tree.put(13.into(), 3142.into()).is_ok());
+        assert!(tree.put(14.into(), 3214.into()).is_ok());
+        assert!(tree.put(15.into(), 3241.into()).is_ok());
+        assert!(tree.put(16.into(), 3412.into()).is_ok());
+        assert!(tree.put(17.into(), 3421.into()).is_ok());
+        assert!(tree.put(18.into(), 4123.into()).is_ok());
+        assert!(tree.put(19.into(), 4132.into()).is_ok());
+        assert!(tree.put(20.into(), 4213.into()).is_ok());
+        assert!(tree.put(21.into(), 4231.into()).is_ok());
+        assert!(tree.put(22.into(), 4312.into()).is_ok());
+        assert!(tree.put(23.into(), 4321.into()).is_ok());
+        assert!(tree.put(24.into(), 42.into()).is_ok());
+        assert!(tree.put(25.into(), 43.into()).is_ok());
+        assert!(tree.put(26.into(), 44.into()).is_ok());
+        assert_eq!(tree.default_value(), 0.into());
+        assert_eq!(tree.size(), 13);
+        assert_eq!(tree.capacity(), 32);
+        assert_eq!(
+            tree.root_hash(),
+            parse_scalar("0x2193a62d5d822c3fcb3c31aeb1774f3cfcc18e055fb3cdd8e5d3612d8068f683")
+        );
+        assert_eq!(lookup_ternary_tree(&tree, 0.into()), 1234.into());
+        assert_eq!(lookup_ternary_tree(&tree, 1.into()), 1243.into());
+        assert_eq!(lookup_ternary_tree(&tree, 2.into()), 1324.into());
+        assert_eq!(lookup_ternary_tree(&tree, 3.into()), 1342.into());
+        assert_eq!(lookup_ternary_tree(&tree, 4.into()), 1423.into());
+        assert_eq!(lookup_ternary_tree(&tree, 5.into()), 1432.into());
+        assert_eq!(lookup_ternary_tree(&tree, 6.into()), 2134.into());
+        assert_eq!(lookup_ternary_tree(&tree, 7.into()), 2143.into());
+        assert_eq!(lookup_ternary_tree(&tree, 8.into()), 2314.into());
+        assert_eq!(lookup_ternary_tree(&tree, 9.into()), 2341.into());
+        assert_eq!(lookup_ternary_tree(&tree, 10.into()), 2413.into());
+        assert_eq!(lookup_ternary_tree(&tree, 11.into()), 2431.into());
+        assert_eq!(lookup_ternary_tree(&tree, 12.into()), 3124.into());
+        assert_eq!(lookup_ternary_tree(&tree, 13.into()), 3142.into());
+        assert_eq!(lookup_ternary_tree(&tree, 14.into()), 3214.into());
+        assert_eq!(lookup_ternary_tree(&tree, 15.into()), 3241.into());
+        assert_eq!(lookup_ternary_tree(&tree, 16.into()), 3412.into());
+        assert_eq!(lookup_ternary_tree(&tree, 17.into()), 3421.into());
+        assert_eq!(lookup_ternary_tree(&tree, 18.into()), 4123.into());
+        assert_eq!(lookup_ternary_tree(&tree, 19.into()), 4132.into());
+        assert_eq!(lookup_ternary_tree(&tree, 20.into()), 4213.into());
+        assert_eq!(lookup_ternary_tree(&tree, 21.into()), 4231.into());
+        assert_eq!(lookup_ternary_tree(&tree, 22.into()), 4312.into());
+        assert_eq!(lookup_ternary_tree(&tree, 23.into()), 4321.into());
+        assert_eq!(lookup_ternary_tree(&tree, 24.into()), 42.into());
+        assert_eq!(lookup_ternary_tree(&tree, 25.into()), 43.into());
+        assert_eq!(lookup_ternary_tree(&tree, 26.into()), 44.into());
+        assert!(check_tree_consistency(&tree).is_ok());
+    }
+
+    #[test]
     fn test_update_binary_tree_h1_0() {
-        let mut tree = make_test_tree::<2, 1>().unwrap();
+        let mut tree = make_default_test_tree::<2, 1>().unwrap();
         assert!(tree.put(0.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -1094,7 +1573,7 @@ mod tests {
 
     #[test]
     fn test_update_binary_tree_h1_1() {
-        let mut tree = make_test_tree::<2, 1>().unwrap();
+        let mut tree = make_default_test_tree::<2, 1>().unwrap();
         assert!(tree.put(1.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -1109,7 +1588,7 @@ mod tests {
 
     #[test]
     fn test_update_binary_tree_h2() {
-        let mut tree = make_test_tree::<2, 2>().unwrap();
+        let mut tree = make_default_test_tree::<2, 2>().unwrap();
         assert!(tree.put(0.into(), 12.into()).is_ok());
         assert!(tree.put(1.into(), 34.into()).is_ok());
         assert!(tree.put(2.into(), 56.into()).is_ok());
@@ -1129,7 +1608,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h1_0() {
-        let mut tree = make_test_tree::<3, 1>().unwrap();
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
         assert!(tree.put(0.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -1145,7 +1624,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h1_1() {
-        let mut tree = make_test_tree::<3, 1>().unwrap();
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
         assert!(tree.put(1.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -1161,7 +1640,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h1_2() {
-        let mut tree = make_test_tree::<3, 1>().unwrap();
+        let mut tree = make_default_test_tree::<3, 1>().unwrap();
         assert!(tree.put(2.into(), 42.into()).is_ok());
         assert_eq!(tree.size(), 1);
         assert_eq!(tree.capacity(), 4);
@@ -1177,7 +1656,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_tree_h2() {
-        let mut tree = make_test_tree::<3, 2>().unwrap();
+        let mut tree = make_default_test_tree::<3, 2>().unwrap();
         assert!(tree.put(0.into(), 123.into()).is_ok());
         assert!(tree.put(1.into(), 456.into()).is_ok());
         assert!(tree.put(2.into(), 789.into()).is_ok());
@@ -1206,36 +1685,8 @@ mod tests {
     }
 
     #[test]
-    fn test_new_tall_binary_tree() {
-        let tree = make_test_tree::<2, 256>().unwrap();
-        assert_eq!(tree.size(), 256);
-        assert_eq!(tree.capacity(), 1024);
-        assert_eq!(
-            tree.root_hash(),
-            parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
-        );
-        assert_eq!(lookup_binary_tree(&tree, test_key1()), 0.into());
-        assert_eq!(lookup_binary_tree(&tree, test_key2()), 0.into());
-        assert!(check_tree_consistency(&tree).is_ok());
-    }
-
-    #[test]
-    fn test_new_tall_ternary_tree() {
-        let tree = make_test_tree::<3, 161>().unwrap();
-        assert_eq!(tree.size(), 161);
-        assert_eq!(tree.capacity(), 512);
-        assert_eq!(
-            tree.root_hash(),
-            parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
-        );
-        assert_eq!(lookup_ternary_tree(&tree, test_key1()), 0.into());
-        assert_eq!(lookup_ternary_tree(&tree, test_key2()), 0.into());
-        assert!(check_tree_consistency(&tree).is_ok());
-    }
-
-    #[test]
     fn test_default_tall_binary_tree() {
-        let tree = Tree::<2, 256>::default(TEST_FLAGS).unwrap();
+        let tree = make_default_test_tree::<2, 256>().unwrap();
         assert_eq!(tree.size(), 256);
         assert_eq!(tree.capacity(), 1024);
         assert_eq!(
@@ -1249,7 +1700,7 @@ mod tests {
 
     #[test]
     fn test_default_tall_ternary_tree() {
-        let tree = Tree::<3, 161>::default(TEST_FLAGS).unwrap();
+        let tree = make_default_test_tree::<3, 161>().unwrap();
         assert_eq!(tree.size(), 161);
         assert_eq!(tree.capacity(), 512);
         assert_eq!(
@@ -1263,7 +1714,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_binary_tree1() {
-        let mut tree = make_test_tree::<2, 256>().unwrap();
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
@@ -1278,7 +1729,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_binary_tree2() {
-        let mut tree = make_test_tree::<2, 256>().unwrap();
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key2(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
         assert_eq!(tree.capacity(), 1024);
@@ -1293,7 +1744,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_binary_tree3() {
-        let mut tree = make_test_tree::<2, 256>().unwrap();
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 12.into()).is_ok());
         assert!(tree.put(test_key2(), 34.into()).is_ok());
         assert_eq!(tree.size(), 764);
@@ -1309,7 +1760,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_binary_tree_twice() {
-        let mut tree = make_test_tree::<2, 256>().unwrap();
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
         assert!(tree.put(test_key1(), 123.into()).is_ok());
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 511);
@@ -1325,7 +1776,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_ternary_tree1() {
-        let mut tree = make_test_tree::<3, 161>().unwrap();
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
@@ -1340,7 +1791,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_ternary_tree2() {
-        let mut tree = make_test_tree::<3, 161>().unwrap();
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key2(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
         assert_eq!(tree.capacity(), 1024);
@@ -1355,7 +1806,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_ternary_tree3() {
-        let mut tree = make_test_tree::<3, 161>().unwrap();
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 12.into()).is_ok());
         assert!(tree.put(test_key2(), 34.into()).is_ok());
         assert_eq!(tree.size(), 481);
@@ -1371,7 +1822,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_ternary_tree_twice() {
-        let mut tree = make_test_tree::<3, 161>().unwrap();
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
         assert!(tree.put(test_key1(), 123.into()).is_ok());
         assert!(tree.put(test_key1(), 42.into()).is_ok());
         assert_eq!(tree.size(), 321);
@@ -1388,12 +1839,18 @@ mod tests {
     #[test]
     fn test_reload_binary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_test_tree::<2, 256>().unwrap();
+            let mut tree = make_default_test_tree::<2, 256>().unwrap();
             assert!(tree.put(test_key1(), 42.into()).is_ok());
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
+        let tree = Tree::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1401,19 +1858,25 @@ mod tests {
     #[test]
     fn test_reload_ternary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_test_tree::<3, 161>().unwrap();
+            let mut tree = make_default_test_tree::<3, 161>().unwrap();
             assert!(tree.put(test_key1(), 42.into()).is_ok());
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
+        let tree = Tree::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
 
     #[test]
     fn test_new_random_binary_tree() {
-        let mut tree = make_test_tree::<2, 256>().unwrap();
+        let mut tree = make_default_test_tree::<2, 256>().unwrap();
         for _ in 0..100 {
             assert!(
                 tree.put(utils::get_random_scalar(), utils::get_random_scalar())
@@ -1425,7 +1888,7 @@ mod tests {
 
     #[test]
     fn test_new_random_ternary_tree() {
-        let mut tree = make_test_tree::<3, 161>().unwrap();
+        let mut tree = make_default_test_tree::<3, 161>().unwrap();
         for _ in 0..100 {
             assert!(
                 tree.put(utils::get_random_scalar(), utils::get_random_scalar())
@@ -1438,7 +1901,7 @@ mod tests {
     #[test]
     fn test_reload_random_binary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_test_tree::<2, 256>().unwrap();
+            let mut tree = make_default_test_tree::<2, 256>().unwrap();
             for _ in 0..100 {
                 assert!(
                     tree.put(utils::get_random_scalar(), utils::get_random_scalar())
@@ -1448,7 +1911,13 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
+        let tree = Tree::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1456,7 +1925,7 @@ mod tests {
     #[test]
     fn test_reload_random_ternary_tree() {
         let (mmap, root_hash) = {
-            let mut tree = make_test_tree::<3, 161>().unwrap();
+            let mut tree = make_default_test_tree::<3, 161>().unwrap();
             for _ in 0..100 {
                 assert!(
                     tree.put(utils::get_random_scalar(), utils::get_random_scalar())
@@ -1466,7 +1935,13 @@ mod tests {
             let root_hash = tree.root_hash();
             (tree.take(), root_hash)
         };
-        let tree = Tree::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
+        let tree = Tree::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(tree.root_hash(), root_hash);
         assert!(check_tree_consistency(&tree).is_ok());
     }
@@ -1487,14 +1962,22 @@ mod tests {
         assert_eq!(TestForest::padded_node_size(), 136);
     }
 
-    fn make_test_forest<const W: usize, const H: usize>() -> Result<Forest<W, H>> {
+    fn make_test_forest<const W: usize, const H: usize>(
+        default_value: Scalar,
+    ) -> Result<Forest<W, H>> {
         let capacity = Forest::<W, H>::optimal_initial_capacity();
         Forest::new(
             MmapMut::map_anon(
                 Tree::<W, H>::PADDED_HEADER_SIZE + capacity * Tree::<W, H>::padded_node_size(),
             )?,
             TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            default_value,
         )
+    }
+
+    fn make_default_test_forest<const W: usize, const H: usize>() -> Result<Forest<W, H>> {
+        Forest::default(TEST_FLAGS)
     }
 
     fn lookup_binary_forest<const H: usize>(
@@ -1502,8 +1985,8 @@ mod tests {
         root_hash: Scalar,
         key: Scalar,
     ) -> Scalar {
-        let value = forest.get(root_hash, key);
-        let proof = forest.get_proof(root_hash, key);
+        let value = forest.get(root_hash, key).unwrap();
+        let proof = forest.get_proof(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
@@ -1514,8 +1997,8 @@ mod tests {
         root_hash: Scalar,
         key: Scalar,
     ) -> Scalar {
-        let value = forest.get(root_hash, key);
-        let proof = forest.get_proof(root_hash, key);
+        let value = forest.get(root_hash, key).unwrap();
+        let proof = forest.get_proof(root_hash, key).unwrap();
         assert!(proof.verify().is_ok());
         assert_eq!(*proof.value(), value);
         value
@@ -1523,8 +2006,65 @@ mod tests {
 
     #[test]
     fn test_new_binary_forest_h1() {
-        let forest = make_test_forest::<2, 1>().unwrap();
+        let forest = make_test_forest::<2, 1>(42.into()).unwrap();
         let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 42.into());
+        assert_eq!(forest.size(), 1);
+        assert_eq!(forest.capacity(), 4);
+        assert_eq!(
+            erh,
+            parse_scalar("0x5b07d72aa4b046fbfd84a0ba5dfd50da03498a2ce7edf08683ff7b5dd9aa785a")
+        );
+        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[erh]).is_ok());
+    }
+
+    #[test]
+    fn test_new_binary_forest_h2() {
+        let forest = make_test_forest::<2, 2>(42.into()).unwrap();
+        let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 42.into());
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 8);
+        assert_eq!(
+            erh,
+            parse_scalar("0x6641c2ebad4e619c379db260351c10940e6b8a2ef941250fc351323656418468")
+        );
+        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 2.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 3.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[erh]).is_ok());
+    }
+
+    #[test]
+    fn test_new_binary_forest_h3() {
+        let forest = make_test_forest::<2, 3>(42.into()).unwrap();
+        let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 42.into());
+        assert_eq!(forest.size(), 3);
+        assert_eq!(forest.capacity(), 8);
+        assert_eq!(
+            erh,
+            parse_scalar("0x56a47a49fdb78e39db47d3756209b90a17f31fba5496b3f0b87ff6b08790ced8")
+        );
+        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 2.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 3.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 4.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 5.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 6.into()), 42.into());
+        assert_eq!(lookup_binary_forest(&forest, erh, 7.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[erh]).is_ok());
+    }
+
+    #[test]
+    fn test_default_binary_forest_h1() {
+        let forest = make_default_test_forest::<2, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 0.into());
         assert_eq!(forest.size(), 1);
         assert_eq!(forest.capacity(), 4);
         assert_eq!(
@@ -1537,9 +2077,10 @@ mod tests {
     }
 
     #[test]
-    fn test_new_binary_forest_h2() {
-        let forest = make_test_forest::<2, 2>().unwrap();
+    fn test_default_binary_forest_h2() {
+        let forest = make_default_test_forest::<2, 2>().unwrap();
         let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 0.into());
         assert_eq!(forest.size(), 2);
         assert_eq!(forest.capacity(), 8);
         assert_eq!(
@@ -1554,30 +2095,91 @@ mod tests {
     }
 
     #[test]
-    fn test_new_binary_forest_h3() {
-        let forest = make_test_forest::<2, 3>().unwrap();
+    fn test_new_ternary_forest_h1() {
+        let forest = make_test_forest::<3, 1>(42.into()).unwrap();
         let erh = forest.empty_root_hash();
-        assert_eq!(forest.size(), 3);
-        assert_eq!(forest.capacity(), 8);
+        assert_eq!(forest.default_value(), 42.into());
+        assert_eq!(forest.size(), 1);
+        assert_eq!(forest.capacity(), 4);
         assert_eq!(
             erh,
-            parse_scalar("0x30ac7c720131f3ab706f3c8542a0ecdd6ca65b0f690cbea695b699fb2a6a0a6b")
+            parse_scalar("0x60653febe5d9f8ad2b671775053c06b50ba4b1d84dcece6dc2d7bec1f55eba7a")
         );
-        assert_eq!(lookup_binary_forest(&forest, erh, 0.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 1.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 2.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 3.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 4.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 5.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 6.into()), 0.into());
-        assert_eq!(lookup_binary_forest(&forest, erh, 7.into()), 0.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), 42.into());
         assert!(check_forest_consistency(&forest, &[erh]).is_ok());
     }
 
     #[test]
-    fn test_new_ternary_forest_h1() {
-        let forest = make_test_forest::<3, 1>().unwrap();
+    fn test_new_ternary_forest_h2() {
+        let forest = make_test_forest::<3, 2>(42.into()).unwrap();
         let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 42.into());
+        assert_eq!(forest.size(), 2);
+        assert_eq!(forest.capacity(), 8);
+        assert_eq!(
+            erh,
+            parse_scalar("0x3cf49b5724b5d776b3d4dc1b2f72f4305c489974823faa6bfc444e5fadf42f68")
+        );
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 3.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 4.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 5.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 6.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 7.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 8.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[erh]).is_ok());
+    }
+
+    #[test]
+    fn test_new_ternary_forest_h3() {
+        let forest = make_test_forest::<3, 3>(42.into()).unwrap();
+        let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 42.into());
+        assert_eq!(forest.size(), 3);
+        assert_eq!(forest.capacity(), 8);
+        assert_eq!(
+            erh,
+            parse_scalar("0x35eb28aec0bb894ea2a7ae99a0fb85777b4cc0165a68a3a7abb9e509cbe300b5")
+        );
+        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 3.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 4.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 5.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 6.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 7.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 8.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 9.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 10.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 11.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 12.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 13.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 14.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 15.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 16.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 17.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 18.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 19.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 20.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 21.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 22.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 23.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 24.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 25.into()), 42.into());
+        assert_eq!(lookup_ternary_forest(&forest, erh, 26.into()), 42.into());
+        assert!(check_forest_consistency(&forest, &[erh]).is_ok());
+    }
+
+    #[test]
+    fn test_default_ternary_forest_h1() {
+        let forest = make_default_test_forest::<3, 1>().unwrap();
+        let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 0.into());
         assert_eq!(forest.size(), 1);
         assert_eq!(forest.capacity(), 4);
         assert_eq!(
@@ -1591,9 +2193,10 @@ mod tests {
     }
 
     #[test]
-    fn test_new_ternary_forest_h2() {
-        let forest = make_test_forest::<3, 2>().unwrap();
+    fn test_default_ternary_forest_h2() {
+        let forest = make_default_test_forest::<3, 2>().unwrap();
         let erh = forest.empty_root_hash();
+        assert_eq!(forest.default_value(), 0.into());
         assert_eq!(forest.size(), 2);
         assert_eq!(forest.capacity(), 8);
         assert_eq!(
@@ -1613,48 +2216,8 @@ mod tests {
     }
 
     #[test]
-    fn test_new_ternary_forest_h3() {
-        let forest = make_test_forest::<3, 3>().unwrap();
-        let erh = forest.empty_root_hash();
-        assert_eq!(forest.size(), 3);
-        assert_eq!(forest.capacity(), 8);
-        assert_eq!(
-            erh,
-            parse_scalar("0x0d59114550233029c2dd76cb35aed5d87d0c11af9dcc16d59aea354cdf7b1904")
-        );
-        assert_eq!(lookup_ternary_forest(&forest, erh, 0.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 1.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 2.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 3.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 4.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 5.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 6.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 7.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 8.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 9.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 10.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 11.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 12.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 13.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 14.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 15.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 16.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 17.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 18.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 19.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 20.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 21.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 22.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 23.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 24.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 25.into()), 0.into());
-        assert_eq!(lookup_ternary_forest(&forest, erh, 26.into()), 0.into());
-        assert!(check_forest_consistency(&forest, &[erh]).is_ok());
-    }
-
-    #[test]
     fn test_update_binary_forest_h1_0() {
-        let mut forest = make_test_forest::<2, 1>().unwrap();
+        let mut forest = make_default_test_forest::<2, 1>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 0.into(), 42.into()).unwrap();
         assert_eq!(forest.size(), 2);
@@ -1672,7 +2235,7 @@ mod tests {
 
     #[test]
     fn test_update_binary_forest_h1_1() {
-        let mut forest = make_test_forest::<2, 1>().unwrap();
+        let mut forest = make_default_test_forest::<2, 1>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 1.into(), 42.into()).unwrap();
         assert_eq!(forest.size(), 2);
@@ -1690,7 +2253,7 @@ mod tests {
 
     #[test]
     fn test_update_binary_forest_h2() {
-        let mut forest = make_test_forest::<2, 2>().unwrap();
+        let mut forest = make_default_test_forest::<2, 2>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 0.into(), 12.into()).unwrap();
         let rh = forest.put(rh, 1.into(), 34.into()).unwrap();
@@ -1715,7 +2278,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_forest_h1_0() {
-        let mut forest = make_test_forest::<3, 1>().unwrap();
+        let mut forest = make_default_test_forest::<3, 1>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 0.into(), 42.into()).unwrap();
         assert_eq!(forest.size(), 2);
@@ -1735,7 +2298,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_forest_h1_1() {
-        let mut forest = make_test_forest::<3, 1>().unwrap();
+        let mut forest = make_default_test_forest::<3, 1>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 1.into(), 42.into()).unwrap();
         assert_eq!(forest.size(), 2);
@@ -1755,7 +2318,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_forest_h1_2() {
-        let mut forest = make_test_forest::<3, 1>().unwrap();
+        let mut forest = make_default_test_forest::<3, 1>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 2.into(), 42.into()).unwrap();
         assert_eq!(forest.size(), 2);
@@ -1775,7 +2338,7 @@ mod tests {
 
     #[test]
     fn test_update_ternary_forest_h2() {
-        let mut forest = make_test_forest::<3, 2>().unwrap();
+        let mut forest = make_default_test_forest::<3, 2>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, 0.into(), 123.into()).unwrap();
         let rh = forest.put(rh, 1.into(), 456.into()).unwrap();
@@ -1845,7 +2408,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_binary_forest1() {
-        let mut forest = make_test_forest::<2, 256>().unwrap();
+        let mut forest = make_default_test_forest::<2, 256>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key1(), 42.into()).unwrap();
         assert_eq!(forest.size(), 512);
@@ -1863,7 +2426,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_binary_forest2() {
-        let mut forest = make_test_forest::<2, 256>().unwrap();
+        let mut forest = make_default_test_forest::<2, 256>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key2(), 42.into()).unwrap();
         assert_eq!(forest.size(), 512);
@@ -1881,7 +2444,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_binary_forest3() {
-        let mut forest = make_test_forest::<2, 256>().unwrap();
+        let mut forest = make_default_test_forest::<2, 256>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key1(), 12.into()).unwrap();
         let rh = forest.put(rh, test_key2(), 34.into()).unwrap();
@@ -1900,7 +2463,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_binary_forest_twice() {
-        let mut forest = make_test_forest::<2, 256>().unwrap();
+        let mut forest = make_default_test_forest::<2, 256>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key1(), 123.into()).unwrap();
         let rh = forest.put(rh, test_key1(), 42.into()).unwrap();
@@ -1919,7 +2482,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_ternary_forest1() {
-        let mut forest = make_test_forest::<3, 161>().unwrap();
+        let mut forest = make_default_test_forest::<3, 161>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key1(), 42.into()).unwrap();
         assert_eq!(forest.size(), 322);
@@ -1937,7 +2500,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_ternary_forest2() {
-        let mut forest = make_test_forest::<3, 161>().unwrap();
+        let mut forest = make_default_test_forest::<3, 161>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key2(), 42.into()).unwrap();
         assert_eq!(forest.size(), 322);
@@ -1955,7 +2518,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_ternary_forest3() {
-        let mut forest = make_test_forest::<3, 161>().unwrap();
+        let mut forest = make_default_test_forest::<3, 161>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key1(), 12.into()).unwrap();
         let rh = forest.put(rh, test_key2(), 34.into()).unwrap();
@@ -1974,7 +2537,7 @@ mod tests {
 
     #[test]
     fn test_update_tall_tree_in_ternary_forest_twice() {
-        let mut forest = make_test_forest::<3, 161>().unwrap();
+        let mut forest = make_default_test_forest::<3, 161>().unwrap();
         let erh = forest.empty_root_hash();
         let rh = forest.put(erh, test_key1(), 123.into()).unwrap();
         let rh = forest.put(rh, test_key1(), 42.into()).unwrap();
@@ -1994,40 +2557,44 @@ mod tests {
     #[test]
     fn test_reload_binary_forest() {
         let (mmap, root_hash) = {
-            let mut forest = make_test_forest::<2, 256>().unwrap();
+            let mut forest = make_default_test_forest::<2, 256>().unwrap();
             let root_hash = forest
                 .put(forest.empty_root_hash(), test_key1(), 42.into())
                 .unwrap();
             (forest.take(), root_hash)
         };
-        let forest = Forest::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
-        assert_eq!(
-            forest.empty_root_hash(),
-            Forest::<2, 256>::calculate_empty_root_hash()
-        );
+        let forest = Forest::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert!(check_forest_consistency(&forest, &[root_hash]).is_ok());
     }
 
     #[test]
     fn test_reload_ternary_forest() {
         let (mmap, root_hash) = {
-            let mut forest = make_test_forest::<3, 161>().unwrap();
+            let mut forest = make_default_test_forest::<3, 161>().unwrap();
             let root_hash = forest
                 .put(forest.empty_root_hash(), test_key1(), 42.into())
                 .unwrap();
             (forest.take(), root_hash)
         };
-        let forest = Forest::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
-        assert_eq!(
-            forest.empty_root_hash(),
-            Forest::<3, 161>::calculate_empty_root_hash()
-        );
+        let forest = Forest::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert!(check_forest_consistency(&forest, &[root_hash]).is_ok());
     }
 
     #[test]
     fn test_new_random_binary_forest() {
-        let mut forest = make_test_forest::<2, 256>().unwrap();
+        let mut forest = make_default_test_forest::<2, 256>().unwrap();
         let roots: [Scalar; 10] = std::array::from_fn(|_| {
             let mut rh = forest.empty_root_hash();
             for _ in 0..10 {
@@ -2042,7 +2609,7 @@ mod tests {
 
     #[test]
     fn test_new_random_ternary_forest() {
-        let mut forest = make_test_forest::<3, 161>().unwrap();
+        let mut forest = make_default_test_forest::<3, 161>().unwrap();
         let roots: [Scalar; 10] = std::array::from_fn(|_| {
             let mut rh = forest.empty_root_hash();
             for _ in 0..10 {
@@ -2058,7 +2625,7 @@ mod tests {
     #[test]
     fn test_reload_random_binary_forest() {
         let (mmap, roots) = {
-            let mut forest = make_test_forest::<2, 256>().unwrap();
+            let mut forest = make_default_test_forest::<2, 256>().unwrap();
             let roots: [Scalar; 10] = std::array::from_fn(|_| {
                 let mut rh = forest.empty_root_hash();
                 for _ in 0..10 {
@@ -2070,10 +2637,16 @@ mod tests {
             });
             (forest.take(), roots)
         };
-        let forest = Forest::<2, 256>::load(mmap, TEST_FLAGS).unwrap();
+        let forest = Forest::<2, 256>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(
             forest.empty_root_hash(),
-            Forest::<2, 256>::calculate_empty_root_hash()
+            parse_scalar("0x705e15516059a313b2ffe555adaba446dda553dd38588b322f4415d62dcd0595")
         );
         assert!(check_forest_consistency(&forest, &roots).is_ok());
     }
@@ -2081,7 +2654,7 @@ mod tests {
     #[test]
     fn test_reload_random_ternary_forest() {
         let (mmap, roots) = {
-            let mut forest = make_test_forest::<3, 161>().unwrap();
+            let mut forest = make_default_test_forest::<3, 161>().unwrap();
             let roots: [Scalar; 10] = std::array::from_fn(|_| {
                 let mut rh = forest.empty_root_hash();
                 for _ in 0..10 {
@@ -2093,10 +2666,16 @@ mod tests {
             });
             (forest.take(), roots)
         };
-        let forest = Forest::<3, 161>::load(mmap, TEST_FLAGS).unwrap();
+        let forest = Forest::<3, 161>::load(
+            mmap,
+            TEST_FLAGS,
+            Box::new(NoopExternalNodeManager::default()),
+            Scalar::ZERO,
+        )
+        .unwrap();
         assert_eq!(
             forest.empty_root_hash(),
-            Forest::<3, 161>::calculate_empty_root_hash()
+            parse_scalar("0x54da9bb9b3fa9ac90efeef9e08ef2e7c18096f37b739fa4a20bf838905a2df0e")
         );
         assert!(check_forest_consistency(&forest, &roots).is_ok());
     }

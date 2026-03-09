@@ -1,8 +1,9 @@
+use crate::accounts::AccountStore;
 use crate::clock::Clock;
 use crate::constants;
 use crate::data::{
-    AccountInfo, AccountProof, AccountTree, BlockHeader, BlockInfo, BlockList, ProgramStorageTree,
-    Transaction, TransactionInclusionProof, TransactionTree,
+    AccountInfo, AccountProof, BlockHeader, BlockInfo, BlockList, ProgramStorageTree, Transaction,
+    TransactionInclusionProof, TransactionTree,
 };
 use crate::libernet;
 use crate::proto::{self, EncodeMerkleProof};
@@ -396,7 +397,7 @@ struct Repr {
     transactions_by_signer: BTreeMap<Scalar, Vec<Scalar>>,
     transactions_by_recipient: BTreeMap<Scalar, Vec<Scalar>>,
 
-    accounts: AccountTree,
+    accounts: AccountStore,
     program_storage: ProgramStorageTree,
 
     block_listeners: BTreeSet<BlockListener>,
@@ -412,7 +413,7 @@ impl Repr {
         initial_accounts: &[(Scalar, AccountInfo)],
     ) -> Result<Self> {
         let network = topology::Network::new(identity)?;
-        let accounts = AccountTree::from(initial_accounts);
+        let accounts = AccountStore::from(initial_accounts)?;
         let genesis_block = make_genesis_block(
             chain_id,
             clock.now(),
@@ -488,7 +489,9 @@ impl Repr {
         match self.get_block_by_hash(block_hash) {
             Some(block) => Ok(AccountState {
                 block_info: block,
-                proof: self.accounts.get_proof(account_address, block.number()),
+                proof: self
+                    .accounts
+                    .get_proof(account_address, block.number() as usize),
             }),
             None => Err(anyhow!(
                 "block {} not found",
@@ -501,7 +504,9 @@ impl Repr {
         let block = self.get_latest_block();
         AccountState {
             block_info: block,
-            proof: self.accounts.get_proof(account_address, block.number()),
+            proof: self
+                .accounts
+                .get_proof(account_address, block.number() as usize),
         }
     }
 
@@ -571,7 +576,6 @@ impl Repr {
         &mut self,
         payload: &libernet::transaction::BlockReward,
     ) -> Result<()> {
-        let version = self.current_version();
         let recipient = proto::decode_scalar(
             payload
                 .recipient
@@ -584,11 +588,8 @@ impl Repr {
                 .as_ref()
                 .context("invalid block reward transaction payload: missing amount")?,
         )?;
-        let recipient_account = self
-            .accounts
-            .get(recipient, version)
-            .add_to_balance(amount)?;
-        self.accounts.put(recipient, recipient_account, version);
+        let recipient_account = self.accounts.get_latest(recipient).add_to_balance(amount)?;
+        self.accounts.put(recipient, recipient_account)?;
         Ok(())
     }
 
@@ -597,7 +598,6 @@ impl Repr {
         signer: Scalar,
         payload: &libernet::transaction::SendCoins,
     ) -> Result<()> {
-        let version = self.current_version();
         let recipient = proto::decode_scalar(
             payload
                 .recipient
@@ -610,7 +610,7 @@ impl Repr {
                 .as_ref()
                 .context("invalid coin transfer transaction payload: missing amount")?,
         )?;
-        let mut signer_account = *self.accounts.get(signer, version);
+        let mut signer_account = self.accounts.get_latest(signer);
         let sender_balance = signer_account.balance();
         if sender_balance < amount {
             return Err(anyhow!(
@@ -621,10 +621,10 @@ impl Repr {
             ));
         }
         signer_account = signer_account.sub_from_balance(amount)?;
-        self.accounts.put(signer, signer_account, version);
-        let mut recipient_account = *self.accounts.get(recipient, version);
+        self.accounts.put(signer, signer_account)?;
+        let mut recipient_account = self.accounts.get_latest(recipient);
         recipient_account = recipient_account.add_to_balance(amount)?;
-        self.accounts.put(recipient, recipient_account, version);
+        self.accounts.put(recipient, recipient_account)?;
         Ok(())
     }
 
@@ -642,9 +642,8 @@ impl Repr {
                 self.chain_id
             ));
         }
-        let block_number = self.current_version();
         let nonce = payload.nonce();
-        let signer_account = *self.accounts.get(signer, block_number);
+        let signer_account = self.accounts.get_latest(signer);
         if nonce <= signer_account.last_nonce() {
             return Err(anyhow!(
                 "invalid nonce {} (latest for {} is {})",
@@ -670,9 +669,9 @@ impl Repr {
             }
             None => Err(anyhow!("invalid transaction payload")),
         }?;
-        let mut signer_account = *self.accounts.get(signer, block_number);
+        let mut signer_account = self.accounts.get_latest(signer);
         signer_account = signer_account.set_last_nonce(nonce);
-        self.accounts.put(signer, signer_account, block_number);
+        self.accounts.put(signer, signer_account)?;
         Ok(())
     }
 
@@ -1099,6 +1098,7 @@ impl Repr {
 
     fn close_block(&mut self, timestamp: SystemTime) -> Result<BlockInfo> {
         let block_number = self.current_version();
+        assert_eq!(block_number as usize, self.accounts.current_version());
         let previous_block_hash = *self.block_hashes_by_number.last().unwrap();
         let (_, network_topology) = self
             .network_topologies
@@ -1106,7 +1106,7 @@ impl Repr {
             .next_back()
             .unwrap();
         let transactions_root_hash = self.transactions_per_block.last().unwrap().root_hash();
-        let accounts_root_hash = self.accounts.root_hash(block_number);
+        let accounts_root_hash = self.accounts.commit();
         let program_storage_root_hash = self.program_storage.root_hash(block_number);
         let block_header = BlockHeader::new(
             self.chain_id,
@@ -1139,12 +1139,12 @@ impl Repr {
     }
 
     fn notify_accounts(&mut self, block_info: &BlockInfo) {
-        let current_version = self.accounts.get_version(self.current_version() - 1);
+        let version = (self.current_version() - 1) as usize;
         let mut empty_accounts = vec![];
         for (account_address, listeners) in &mut self.account_watchers {
             let message = AccountState {
                 block_info: *block_info,
-                proof: current_version.get_proof(*account_address),
+                proof: self.accounts.get_proof(*account_address, version),
             };
             let mut closed = vec![];
             for listener in &*listeners {
@@ -1165,17 +1165,19 @@ impl Repr {
     }
 
     fn notify_account_changes(&mut self, block_info: &BlockInfo) {
-        let last_version = self.current_version() - 1;
-        let previous_version = self.accounts.get_version(last_version - 1);
-        let current_version = self.accounts.get_version(last_version);
+        let current_version = (self.current_version() - 1) as usize;
+        let previous_version = current_version - 1;
         let mut empty_accounts = vec![];
         for (account_address, listeners) in &mut self.account_listeners {
-            let previous_hash = previous_version.get(*account_address).as_scalar();
-            let account = current_version.get(*account_address);
+            let previous_hash = self
+                .accounts
+                .get(*account_address, previous_version)
+                .as_scalar();
+            let account = self.accounts.get(*account_address, current_version);
             if account.as_scalar() != previous_hash {
                 let message = AccountState {
                     block_info: *block_info,
-                    proof: current_version.get_proof(*account_address),
+                    proof: self.accounts.get_proof(*account_address, current_version),
                 };
                 let mut closed = vec![];
                 for listener in &*listeners {
