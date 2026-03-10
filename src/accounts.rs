@@ -216,8 +216,6 @@ impl AccountStore {
 
 #[cfg(test)]
 mod tests {
-    use crypto::utils;
-
     use super::*;
     use crate::testing::parse_scalar;
 
