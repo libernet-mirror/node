@@ -1,9 +1,8 @@
 use crate::account;
 use crate::constants;
 use crate::libernet;
-use crate::proto::{self, DecodeFromAny, DecodeMerkleProof, EncodeToAny};
 use crate::program::Sha3Hash;
-use crate::proto;
+use crate::proto::{self, DecodeFromAny, DecodeMerkleProof, EncodeToAny};
 use crate::store::{HeaderData, MappedHashSet, NodeData, Stored, StoredScalar, StoredU64};
 use crate::tree;
 use anyhow::{Context, Result, anyhow};
@@ -457,7 +456,7 @@ impl Program {
         module.sha3_hash(&mut hasher)?;
         Ok(Self {
             module: Some(module),
-            hash: h512_to_scalar(H512::from_slice(hasher.finalize().as_slice())),
+            hash: utils::h512_to_scalar(H512::from_slice(hasher.finalize().as_slice())),
         })
     }
 }
@@ -470,8 +469,9 @@ impl AsScalar for Program {
 
 impl proto::EncodeToAny for Program {
     fn encode_to_any(&self) -> Result<prost_types::Any> {
-        prost_types::Any::from_msg(self.module.as_ref().context("missing program module")?)
-            .map_err(|e| anyhow!(e.to_string()))
+        Ok(prost_types::Any::from_msg(
+            self.module.as_ref().context("missing program module")?,
+        )?)
     }
 }
 

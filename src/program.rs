@@ -18,12 +18,15 @@ const CATCH_ELEMENT_ONE_TAG: [u8; 1] = [0];
 const CATCH_ELEMENT_ONE_REF_TAG: [u8; 1] = [1];
 const CATCH_ELEMENT_ALL_TAG: [u8; 1] = [2];
 const CATCH_ELEMENT_ALL_REF_TAG: [u8; 1] = [3];
+const SUBTYPE_KIND_FUNC_TAG: [u8; 1] = [1];
+const ELEMENT_FUNCTIONS_TAG: [u8; 1] = [1];
+const ELEMENT_EXPRESSIONS_TAG: [u8; 1] = [2];
 
 macro_rules! some {
-    ($expr:expr, $pat:pat => $body:block, $msg:expr $(,)?) => {{
-        match $expr {
-            Some($pat) => $body,
-            _ => anyhow::bail!($msg),
+    ($expression:expr, $pattern:pat => $body:block, $message:expr $(,)?) => {{
+        match $expression {
+            Some($pattern) => $body,
+            _ => anyhow::bail!($message),
         }
     }};
 }
@@ -346,7 +349,6 @@ impl Sha3Hash for Operator {
                 if operator.is_some() {
                     bail!("Operator is not allowed for this opcode");
                 }
-                hasher.update([0]);
             }
             OpCode::Block | OpCode::Loop | OpCode::If | OpCode::LegacyExceptionsExtTry => {
                 some!(operator, BlockType(block_type) => {
@@ -526,7 +528,7 @@ impl Sha3Hash for SubType {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match &self.kind {
             Some(sub_type::Kind::Func(func_type)) => {
-                hasher.update([1]);
+                hasher.update(SUBTYPE_KIND_FUNC_TAG);
                 func_type.sha3_hash(hasher)?;
             }
             _ => bail!("Sub type kind is required"),
@@ -723,8 +725,14 @@ impl Sha3Hash for ElementKind {
 impl Sha3Hash for Items {
     fn sha3_hash<D: Digest>(&self, hasher: &mut D) -> Result<()> {
         match self {
-            Items::Functions(functions) => functions.sha3_hash(hasher)?,
-            Items::Expressions(expressions) => expressions.sha3_hash(hasher)?,
+            Items::Functions(functions) => {
+                hasher.update(ELEMENT_FUNCTIONS_TAG);
+                functions.sha3_hash(hasher)?;
+            }
+            Items::Expressions(expressions) => {
+                hasher.update(ELEMENT_EXPRESSIONS_TAG);
+                expressions.sha3_hash(hasher)?;
+            }
         }
         Ok(())
     }
@@ -1111,7 +1119,7 @@ mod tests {
             opcode: Some(OpCode::Nop as i32),
             operator: None,
         };
-        hash_eq!([op], [&(OpCode::Nop as i32).to_le_bytes()[..], &[0]]);
+        hash_eq!([op], [&(OpCode::Nop as i32).to_le_bytes()]);
     }
 
     #[test]
@@ -1609,7 +1617,6 @@ mod tests {
             [
                 &1u64.to_le_bytes()[..],
                 &(OpCode::Nop as i32).to_le_bytes()[..],
-                &[0]
             ]
         );
     }
@@ -1785,7 +1792,14 @@ mod tests {
     #[test]
     fn test_items_functions_to_hash() {
         let items = Items::Functions(ElementFunctions { functions: vec![1] });
-        hash_eq!([items], [&1u64.to_le_bytes()[..], &1u32.to_le_bytes()[..]]);
+        hash_eq!(
+            [items],
+            [
+                &ELEMENT_FUNCTIONS_TAG,
+                &1u64.to_le_bytes()[..],
+                &1u32.to_le_bytes()[..]
+            ]
+        );
     }
 
     #[test]
@@ -1797,6 +1811,7 @@ mod tests {
         hash_eq!(
             [items],
             [
+                &ELEMENT_EXPRESSIONS_TAG,
                 &(RefType::RefFunc as i32).to_le_bytes()[..],
                 &0u64.to_le_bytes()[..]
             ]
@@ -1823,6 +1838,7 @@ mod tests {
                 &[0],
                 &[0],
                 &OPTION_SOME_TAG,
+                &ELEMENT_FUNCTIONS_TAG,
                 &0u64.to_le_bytes()[..]
             ]
         );
