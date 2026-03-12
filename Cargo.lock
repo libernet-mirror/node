@@ -1361,6 +1361,7 @@ dependencies = [
  "prost-types",
  "rustls",
  "serde_json",
+ "sha3",
  "time",
  "tokio",
  "tokio-rustls",
