@@ -998,12 +998,185 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
+struct HeapSpan {
+    offset: StoredU64,
+    length: StoredU64,
+}
+
+impl HeapSpan {
+    fn offset(&self) -> usize {
+        self.offset.to_u64() as usize
+    }
+
+    fn length(&self) -> usize {
+        self.length.to_u64() as usize
+    }
+}
+
+impl Stored for HeapSpan {}
+
+/// An append-only heap of dynamically sized blocks stored in a memory-mapped file.
+///
+/// NOTE: in this context "heap" means a set of dynamically sized memory blocks, not to be confused
+/// with the tree data structure used for priority queues.
+#[derive(Debug)]
+pub struct StoredHeap<H: HeaderData> {
+    mmap: MmapMut,
+    _data: PhantomData<H>,
+}
+
+impl<H: HeaderData> StoredHeap<H> {
+    /// The byte size allocated for the file header.
+    pub const PADDED_HEADER_SIZE: usize = PAGE_SIZE;
+
+    const SPAN_SIZE: usize = std::mem::size_of::<HeapSpan>();
+
+    fn data(&self) -> &[u8] {
+        &self.mmap[..]
+    }
+
+    fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.mmap[..]
+    }
+
+    fn header(&self) -> &Header<H> {
+        let data = self.data();
+        unsafe { &*(data.as_ptr() as *const Header<H>) }
+    }
+
+    fn header_mut(&mut self) -> &mut Header<H> {
+        let data = self.data_mut();
+        unsafe { &mut *(data.as_ptr() as *mut Header<H>) }
+    }
+
+    fn span(&self, index: usize) -> &HeapSpan {
+        assert!(index < self.size());
+        let data = self.data();
+        unsafe {
+            &*(data
+                .as_ptr()
+                .add(data.len())
+                .sub(Self::SPAN_SIZE * (index + 1)) as *const HeapSpan)
+        }
+    }
+
+    fn span_mut(&mut self, index: usize) -> &mut HeapSpan {
+        assert!(index < self.size());
+        let data = self.data();
+        unsafe {
+            &mut *(data
+                .as_ptr()
+                .add(data.len())
+                .sub(Self::SPAN_SIZE * (index + 1)) as *mut HeapSpan)
+        }
+    }
+
+    pub fn new(mut mmap: MmapMut, flags: u32) -> Result<Self> {
+        let data = &mmap[..];
+        let address = data.as_ptr() as usize;
+        if address % PAGE_SIZE != 0 {
+            return Err(anyhow!("the memory-mapped address is not page-aligned"));
+        }
+        if mmap.len() % PAGE_SIZE != 0 {
+            return Err(anyhow!("mmap size must be a multiple of the page size"));
+        }
+        let header = Header::<H>::new(flags, 0, 0);
+        let data = &mut mmap[..];
+        *unsafe { &mut *(data.as_ptr() as *mut Header<H>) } = header;
+        Ok(Self {
+            mmap,
+            _data: Default::default(),
+        })
+    }
+
+    pub fn default(flags: u32) -> Result<Self> {
+        Self::new(MmapMut::map_anon(PAGE_SIZE * 2)?, flags)
+    }
+
+    /// Returns the number of elements in the heap.
+    pub fn size(&self) -> usize {
+        self.header().size()
+    }
+
+    /// Returns the i-th element stored in the heap.
+    pub fn get(&self, index: usize) -> &[u8] {
+        let span = self.span(index);
+        let offset = span.offset();
+        let length = span.length();
+        &self.data()[offset..(offset + length)]
+    }
+
+    fn word_align(length: usize) -> usize {
+        (length + 7) & !7usize
+    }
+
+    fn page_align(length: usize) -> usize {
+        (length + PAGE_SIZE - 1) & !PAGE_SIZE
+    }
+
+    /// Appends a new element to the heap, returning its index.
+    ///
+    /// Fails if an I/O error occurs while resizing the heap.
+    pub fn append(&mut self, data: &[u8]) -> Result<usize> {
+        let new_span_table_size = Self::SPAN_SIZE * (self.size() + 1);
+        let occupied_space = {
+            let size = self.size();
+            if size > 0 {
+                let last_span = self.span(size - 1);
+                Self::word_align(last_span.offset() + last_span.length())
+            } else {
+                0
+            }
+        };
+        let available_space =
+            self.mmap.len() - Self::PADDED_HEADER_SIZE - new_span_table_size - occupied_space;
+        let padded_data_size = Self::word_align(data.len());
+        if padded_data_size > available_space {
+            let old_size = self.mmap.len();
+            let new_size = {
+                let min_size = Self::page_align(
+                    Self::PADDED_HEADER_SIZE
+                        + new_span_table_size
+                        + occupied_space
+                        + padded_data_size,
+                );
+                (min_size / PAGE_SIZE).next_power_of_two() * PAGE_SIZE
+            };
+            unsafe {
+                self.mmap
+                    .remap(new_size, memmap2::RemapOptions::default().may_move(true))
+            }?;
+            let span_table_size = Self::SPAN_SIZE * self.size();
+            self.data_mut().copy_within(
+                (old_size - span_table_size)..old_size,
+                new_size - span_table_size,
+            );
+        }
+        let index = self.size();
+        let (offset, length) = if index > 0 {
+            let last_span = self.span(index - 1);
+            let offset = Self::word_align(last_span.offset() + last_span.length());
+            let length = Self::word_align(data.len());
+            (offset, length)
+        } else {
+            (0, Self::word_align(data.len()))
+        };
+        let new_span = self.span_mut(index);
+        new_span.offset = (offset as u64).into();
+        new_span.length = (length as u64).into();
+        let offset = PAGE_SIZE + offset;
+        self.data_mut()[offset..(offset + length)].copy_from_slice(data);
+        Ok(index)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
     use crypto::poseidon;
+    use std::collections::BTreeMap;
 
     const TEST_FLAGS: u32 =
         constants::DATA_FILE_TYPE_ACCOUNT_TREE | constants::DATA_FILE_TYPE_TEST_TREE;
