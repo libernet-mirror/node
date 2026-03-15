@@ -1803,6 +1803,25 @@ mod tests {
     }
 
     #[test]
+    fn test_default_initial_state() {
+        let mut set = TestMappedHashSet::default(TEST_FLAGS).unwrap();
+        assert_eq!(set.file_version(), constants::DATA_FILE_VERSION);
+        assert_eq!(set.flags(), TEST_FLAGS);
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
+        assert!(set.get(TestNodeData::test_hash1()).is_none());
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
     fn test_update_header_data() {
         let mut set = make_test_hash_set().unwrap();
         let header = TestHeaderData::test_data();
