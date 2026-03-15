@@ -1,11 +1,10 @@
 use crate::constants;
-use crate::data::Transaction;
+use crate::data::{Transaction, TransactionInclusionProof};
 use crate::libernet;
 use crate::smt;
 use crate::store::{EmptyHeaderData, MappedHashSet, NodeData, Stored, StoredHeap, StoredU64};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use blstrs::Scalar;
-use crypto::utils;
 use ff::Field;
 use memmap2::MmapMut;
 use prost::Message;
@@ -117,30 +116,39 @@ impl TransactionStore {
             .put(*root_hash, Scalar::from(index as u64), transaction_hash)?;
         let root_hash = *root_hash;
         let heap_index = self.heap.append(bytes.as_slice())?;
-        let (_, inserted) = self.indices.insert_hashed(
+        self.indices.insert_hashed(
             GlobalTransactionIndex {
                 index: (heap_index as u64).into(),
             },
             transaction_hash,
         )?;
-        if !inserted {
-            return Err(anyhow!(
-                "duplicated transaction {}",
-                utils::format_scalar(transaction_hash)
-            ));
-        }
         Ok(root_hash)
     }
 
     /// Retrieves the i-th transaction of the specified version.
-    pub fn get(&self, version: usize, index: usize) -> Result<libernet::Transaction> {
+    pub fn get(&self, version: usize, index: usize) -> Result<Transaction> {
         let transaction_hash = self
             .forest
             .get(self.root_hash(version), Scalar::from(index as u64))
             .context("transaction not found")?;
         let heap_index = self.indices.get(transaction_hash).unwrap();
         let bytes = self.heap.get(heap_index.index());
-        Ok(libernet::Transaction::decode(bytes)?)
+        let proto = libernet::Transaction::decode(bytes)?;
+        Transaction::from_proto_verify(proto)
+    }
+
+    /// Retrieves the i-th transaction of the specified version, along with a Merkle proof for it.
+    pub fn get_proof(&self, version: usize, index: usize) -> Result<TransactionInclusionProof> {
+        let proof = self
+            .forest
+            .get_proof(self.root_hash(version), Scalar::from(index as u64))
+            .context("transaction not found")?;
+        let transaction_hash = *proof.value();
+        let heap_index = self.indices.get(transaction_hash).unwrap();
+        let bytes = self.heap.get(heap_index.index());
+        let proto = libernet::Transaction::decode(bytes)?;
+        let transaction = Transaction::from_proto_verify(proto)?;
+        Ok(proof.map(transaction).unwrap())
     }
 
     /// Seals the current version, locking it into the version history. Returns the root hash of the
