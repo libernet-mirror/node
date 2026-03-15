@@ -49,4 +49,4 @@ pub const DATA_FILE_TYPE_TRANSACTION_INDICES: u32 = 8;
 pub const DATA_FILE_TYPE_TRANSACTION_HEAP: u32 = 9;
 
 /// Test data file type.
-pub const DATA_FILE_TYPE_TEST_TREE: u32 = 0x01000000;
+pub const DATA_FILE_TYPE_TEST_FILE: u32 = 0x01000000;

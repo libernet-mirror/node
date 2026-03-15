@@ -901,7 +901,7 @@ mod tests {
     use primitive_types::U256;
     use std::collections::{BTreeMap, BTreeSet};
 
-    const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_TREE;
+    const TEST_FLAGS: u32 = constants::DATA_FILE_TYPE_TEST_FILE;
 
     #[derive(Debug)]
     struct ConsistencyChecker<'a, HD: HeaderData, const W: usize, const H: usize> {
