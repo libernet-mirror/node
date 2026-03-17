@@ -29,6 +29,7 @@ mod smt;
 mod ssl;
 mod store;
 mod topology;
+mod transactions;
 mod tree;
 
 #[cfg(test)]

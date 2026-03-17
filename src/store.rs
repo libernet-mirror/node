@@ -690,6 +690,19 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
         Self::load(mmap, flags)
     }
 
+    /// Initializes a new empty hash set.
+    ///
+    /// The underlying memory-mapped region is automatically allocated with the minimum initial
+    /// capacity.
+    pub fn default(flags: u32) -> Result<Self> {
+        Self::new(
+            MmapMut::map_anon(
+                Self::PADDED_HEADER_SIZE + Self::min_capacity() * Self::padded_node_size(),
+            )?,
+            flags,
+        )
+    }
+
     /// Returns the file format version as specified in the file.
     ///
     /// It must be `constants::DATA_FILE_VERSION`.
@@ -998,15 +1011,304 @@ impl<H: HeaderData, T: NodeData> MappedHashSet<H, T> {
     }
 }
 
+#[derive(Debug, Default, Copy, Clone)]
+#[repr(C)]
+struct HeapSpan {
+    offset: StoredU64,
+    length: StoredU64,
+}
+
+impl HeapSpan {
+    fn offset(&self) -> usize {
+        self.offset.to_u64() as usize
+    }
+
+    fn length(&self) -> usize {
+        self.length.to_u64() as usize
+    }
+}
+
+impl Stored for HeapSpan {}
+
+/// An append-only heap of dynamically sized blocks stored in a memory-mapped file.
+///
+/// NOTE: in this context "heap" means a set of dynamically sized memory blocks, not to be confused
+/// with the tree data structure used for priority queues.
+#[derive(Debug)]
+pub struct StoredHeap<H: HeaderData> {
+    mmap: MmapMut,
+    _data: PhantomData<H>,
+}
+
+impl<H: HeaderData> StoredHeap<H> {
+    /// The byte size allocated for the file header.
+    pub const PADDED_HEADER_SIZE: usize = PAGE_SIZE;
+
+    /// The maximum allowed size for `HeaderData` implementations.
+    ///
+    /// This is given by the fact that the total file header size must be 0x1000.
+    pub const MAX_HEADER_DATA_SIZE: usize =
+        PAGE_SIZE - std::mem::size_of::<Header<EmptyHeaderData>>();
+
+    const SPAN_SIZE: usize = std::mem::size_of::<HeapSpan>();
+
+    fn data(&self) -> &[u8] {
+        &self.mmap[..]
+    }
+
+    fn data_mut(&mut self) -> &mut [u8] {
+        &mut self.mmap[..]
+    }
+
+    fn header(&self) -> &Header<H> {
+        let data = self.data();
+        unsafe { &*(data.as_ptr() as *const Header<H>) }
+    }
+
+    fn header_mut(&mut self) -> &mut Header<H> {
+        let data = self.data_mut();
+        unsafe { &mut *(data.as_ptr() as *mut Header<H>) }
+    }
+
+    fn span(&self, index: usize) -> &HeapSpan {
+        assert!(index < self.size());
+        let data = self.data();
+        unsafe {
+            &*(data
+                .as_ptr()
+                .add(data.len())
+                .sub(Self::SPAN_SIZE * (index + 1)) as *const HeapSpan)
+        }
+    }
+
+    fn span_mut(&mut self, index: usize) -> &mut HeapSpan {
+        assert!(index < self.size());
+        let data = self.data();
+        unsafe {
+            &mut *(data
+                .as_ptr()
+                .add(data.len())
+                .sub(Self::SPAN_SIZE * (index + 1)) as *mut HeapSpan)
+        }
+    }
+
+    pub fn load(mmap: MmapMut, expected_flags: u32) -> Result<Self> {
+        let data = &mmap[..];
+        let address = data.as_ptr() as usize;
+        if address % PAGE_SIZE != 0 {
+            return Err(anyhow!("the memory-mapped address is not page-aligned"));
+        }
+        if mmap.len() % PAGE_SIZE != 0 {
+            return Err(anyhow!("mmap size must be a multiple of the page size"));
+        }
+        let heap = Self {
+            mmap,
+            _data: Default::default(),
+        };
+        let header = heap.header();
+        if header.signature != *constants::DATA_FILE_SIGNATURE {
+            return Err(anyhow!("invalid file signature"));
+        }
+        let file_version = header.file_version();
+        if file_version != constants::DATA_FILE_VERSION {
+            return Err(anyhow!(
+                "unrecognized data file version {} (want {})",
+                file_version,
+                constants::DATA_FILE_VERSION
+            ));
+        }
+        let flags = header.flags();
+        if flags & expected_flags != expected_flags {
+            return Err(anyhow!("invalid flags for this file type"));
+        }
+        let node_size = header.node_size();
+        if node_size != 0 {
+            return Err(anyhow!("invalid node size (must be 0 for heaps)"));
+        }
+        let capacity = header.capacity();
+        if capacity != 0 {
+            return Err(anyhow!("invalid capacity (must be 0 for heaps)"));
+        }
+        Ok(heap)
+    }
+
+    pub fn new(mut mmap: MmapMut, flags: u32) -> Result<Self> {
+        let data = &mut mmap[..];
+        data.fill(0);
+        let header = Header::<H>::new(flags, 0, 0);
+        *unsafe { &mut *(data.as_ptr() as *mut Header<H>) } = header;
+        Ok(Self {
+            mmap,
+            _data: Default::default(),
+        })
+    }
+
+    pub fn default(flags: u32) -> Result<Self> {
+        Self::new(MmapMut::map_anon(PAGE_SIZE * 2)?, flags)
+    }
+
+    /// Returns the file format version as specified in the file.
+    ///
+    /// It must be `constants::DATA_FILE_VERSION`.
+    pub fn file_version(&self) -> u32 {
+        self.header().file_version()
+    }
+
+    /// Returns the flags specified in the file.
+    ///
+    /// Use the `DATA_FILE_TYPE_*` constants to parse this value.
+    pub fn flags(&self) -> u32 {
+        self.header().flags()
+    }
+
+    /// Returns the number of elements in the heap.
+    pub fn size(&self) -> usize {
+        self.header().size()
+    }
+
+    /// Destroys the `StoredHeap` and returns the wrapped memory map.
+    pub fn take(self) -> MmapMut {
+        self.mmap
+    }
+
+    /// Returns a reference to the header data.
+    pub fn header_data(&self) -> &H {
+        self.header().data()
+    }
+
+    /// Returns a mutable reference to the header data.
+    pub fn header_data_mut(&mut self) -> &mut H {
+        self.header_mut().data_mut()
+    }
+
+    /// Returns the i-th element stored in the heap.
+    ///
+    /// REQUIRES: `index` must be strictly less than `size()`.
+    pub fn get(&self, index: usize) -> &[u8] {
+        assert!(index < self.size());
+        let span = self.span(index);
+        let offset = PAGE_SIZE + span.offset();
+        let length = span.length();
+        &self.data()[offset..(offset + length)]
+    }
+
+    /// Returns the length of the i-th element.
+    ///
+    /// REQUIRES: `index` must be strictly less than `size()`.
+    pub fn get_length(&self, index: usize) -> usize {
+        assert!(index < self.size());
+        let span = self.span(index);
+        span.length()
+    }
+
+    fn word_align(length: usize) -> usize {
+        (length + 7) & !7usize
+    }
+
+    fn page_align(length: usize) -> usize {
+        (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1)
+    }
+
+    /// Appends a new element to the heap, returning its index.
+    ///
+    /// Fails if an I/O error occurs while resizing the heap.
+    pub fn append(&mut self, data: &[u8]) -> Result<usize> {
+        let new_span_table_size = Self::SPAN_SIZE * (self.size() + 1);
+        let occupied_space = {
+            let size = self.size();
+            if size > 0 {
+                let last_span = self.span(size - 1);
+                Self::word_align(last_span.offset() + last_span.length())
+            } else {
+                0
+            }
+        };
+        let available_space =
+            self.mmap.len() - Self::PADDED_HEADER_SIZE - new_span_table_size - occupied_space;
+        let padded_data_size = Self::word_align(data.len());
+        if padded_data_size > available_space {
+            let old_size = self.mmap.len();
+            let new_size = {
+                let min_size = Self::page_align(
+                    Self::PADDED_HEADER_SIZE
+                        + new_span_table_size
+                        + occupied_space
+                        + padded_data_size,
+                );
+                (min_size / PAGE_SIZE).next_power_of_two() * PAGE_SIZE
+            };
+            unsafe {
+                self.mmap
+                    .remap(new_size, memmap2::RemapOptions::default().may_move(true))
+            }?;
+            let span_table_size = Self::SPAN_SIZE * self.size();
+            self.data_mut().copy_within(
+                (old_size - span_table_size)..old_size,
+                new_size - span_table_size,
+            );
+        }
+        let index = self.size();
+        let offset = if index > 0 {
+            let last_span = self.span(index - 1);
+            Self::word_align(last_span.offset() + last_span.length())
+        } else {
+            0
+        };
+        self.header_mut().increment_size();
+        let new_span = self.span_mut(index);
+        new_span.offset = (offset as u64).into();
+        new_span.length = (data.len() as u64).into();
+        let offset = PAGE_SIZE + offset;
+        self.data_mut()[offset..(offset + data.len())].copy_from_slice(data);
+        Ok(index)
+    }
+
+    #[cfg(test)]
+    fn check_consistency(&self) -> Result<()> {
+        let byte_size = self.mmap.len();
+        if byte_size % PAGE_SIZE != 0 {
+            return Err(anyhow!(
+                "the byte size is not a multiple of the page size (got {})",
+                byte_size
+            ));
+        }
+        let num_pages = byte_size / PAGE_SIZE;
+        if !num_pages.is_power_of_two() {
+            return Err(anyhow!(
+                "the number of pages is not a power of 2 (got {})",
+                num_pages
+            ));
+        }
+        let size = self.size();
+        let mut offset = 0;
+        for i in 0..size {
+            let span = self.span(i);
+            let current_offset = span.offset();
+            if current_offset != offset {
+                return Err(anyhow!(
+                    "bad offset at span {} (got {}, want {})",
+                    i,
+                    current_offset,
+                    offset
+                ));
+            }
+            offset = Self::word_align(current_offset + span.length());
+        }
+        if byte_size < Self::PADDED_HEADER_SIZE + offset + Self::SPAN_SIZE * size {
+            return Err(anyhow!("the allocated space exceeds the heap size"));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
     use super::*;
     use crypto::poseidon;
+    use std::collections::BTreeMap;
 
     const TEST_FLAGS: u32 =
-        constants::DATA_FILE_TYPE_ACCOUNT_TREE | constants::DATA_FILE_TYPE_TEST_TREE;
+        constants::DATA_FILE_TYPE_ACCOUNT_TREE | constants::DATA_FILE_TYPE_TEST_FILE;
 
     #[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
     #[repr(C)]
@@ -1484,6 +1786,25 @@ mod tests {
     #[test]
     fn test_initial_state() {
         let mut set = make_test_hash_set().unwrap();
+        assert_eq!(set.file_version(), constants::DATA_FILE_VERSION);
+        assert_eq!(set.flags(), TEST_FLAGS);
+        assert_eq!(set.size(), 0);
+        assert_eq!(set.capacity(), 2);
+        assert_eq!(*set.header_data(), TestHeaderData::default());
+        assert_eq!(*set.header_data_mut(), TestHeaderData::default());
+        assert!(!set.has(TestNodeData::test_hash1()));
+        assert!(!set.has(TestNodeData::test_hash2()));
+        assert!(set.get(TestNodeData::test_hash1()).is_none());
+        assert!(set.get(TestNodeData::test_hash2()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash1()).is_none());
+        assert!(set.get_mut(TestNodeData::test_hash2()).is_none());
+        assert!(check_iterated_elements(&set, &[]).is_ok());
+        assert!(set.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_default_initial_state() {
+        let mut set = TestMappedHashSet::default(TEST_FLAGS).unwrap();
         assert_eq!(set.file_version(), constants::DATA_FILE_VERSION);
         assert_eq!(set.flags(), TEST_FLAGS);
         assert_eq!(set.size(), 0);
@@ -2451,5 +2772,152 @@ mod tests {
             unsafe { &mut *(std::ptr::from_ref(&mut *mmap) as *mut Header<TestHeaderData>) };
         header.size = 64.into();
         assert!(MappedHashSet::<TestHeaderData, TestNodeData>::load(mmap, TEST_FLAGS).is_err());
+    }
+
+    const TEST_HEAP_FLAGS: u32 =
+        constants::DATA_FILE_TYPE_TRANSACTION_HEAP | constants::DATA_FILE_TYPE_TEST_FILE;
+
+    type TestHeap = StoredHeap<TestHeaderData>;
+
+    fn make_test_heap() -> Result<TestHeap> {
+        TestHeap::new(
+            MmapMut::map_anon(TestHeap::PADDED_HEADER_SIZE + PAGE_SIZE)?,
+            TEST_HEAP_FLAGS,
+        )
+    }
+
+    #[test]
+    fn test_heap_format() {
+        assert_eq!(TestHeap::PADDED_HEADER_SIZE, PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_new_heap() {
+        let heap = make_test_heap().unwrap();
+        assert_eq!(heap.file_version(), constants::DATA_FILE_VERSION);
+        assert_eq!(heap.flags(), TEST_HEAP_FLAGS);
+        assert_eq!(heap.size(), 0);
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_default_heap() {
+        let heap = TestHeap::default(TEST_HEAP_FLAGS).unwrap();
+        assert_eq!(heap.file_version(), constants::DATA_FILE_VERSION);
+        assert_eq!(heap.flags(), TEST_HEAP_FLAGS);
+        assert_eq!(heap.size(), 0);
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_one_element() {
+        let mut heap = make_test_heap().unwrap();
+        let data = b"lorem ipsum dolor sit amet";
+        assert_eq!(heap.append(data).unwrap(), 0);
+        assert_eq!(heap.size(), 1);
+        assert_eq!(heap.get(0), data);
+        assert_eq!(heap.get_length(0), data.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_two_elements_1() {
+        let mut heap = make_test_heap().unwrap();
+        let data1 = b"lorem ipsum dolor sit amet";
+        let data2 = b"sator arepo tenet opera rotas";
+        assert_eq!(heap.append(data1).unwrap(), 0);
+        assert_eq!(heap.append(data2).unwrap(), 1);
+        assert_eq!(heap.size(), 2);
+        assert_eq!(heap.get(0), data1);
+        assert_eq!(heap.get_length(0), data1.len());
+        assert_eq!(heap.get(1), data2);
+        assert_eq!(heap.get_length(1), data2.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_two_elements_2() {
+        let mut heap = make_test_heap().unwrap();
+        let data1 = b"sator arepo tenet opera rotas";
+        let data2 = b"lorem ipsum dolor sit amet";
+        assert_eq!(heap.append(data1).unwrap(), 0);
+        assert_eq!(heap.append(data2).unwrap(), 1);
+        assert_eq!(heap.size(), 2);
+        assert_eq!(heap.get(0), data1);
+        assert_eq!(heap.get_length(0), data1.len());
+        assert_eq!(heap.get(1), data2);
+        assert_eq!(heap.get_length(1), data2.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_large_element() {
+        let mut heap = make_test_heap().unwrap();
+        let data: [u8; 0x1800] = std::array::from_fn(|i| (i as u8).wrapping_pow(2));
+        assert_eq!(heap.append(&data).unwrap(), 0);
+        assert_eq!(heap.size(), 1);
+        assert_eq!(heap.get(0), &data);
+        assert_eq!(heap.get_length(0), data.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_large_element_first_1() {
+        let mut heap = make_test_heap().unwrap();
+        let data1: [u8; 0x1800] = std::array::from_fn(|i| (i as u8).wrapping_pow(2));
+        let data2 = b"lorem ipsum dolor sit amet";
+        assert_eq!(heap.append(&data1).unwrap(), 0);
+        assert_eq!(heap.append(data2).unwrap(), 1);
+        assert_eq!(heap.size(), 2);
+        assert_eq!(heap.get(0), &data1);
+        assert_eq!(heap.get_length(0), data1.len());
+        assert_eq!(heap.get(1), data2);
+        assert_eq!(heap.get_length(1), data2.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_large_element_first_2() {
+        let mut heap = make_test_heap().unwrap();
+        let data1: [u8; 0x1800] = std::array::from_fn(|i| (i as u8).wrapping_pow(2));
+        let data2 = b"sator arepo tenet opera rotas";
+        assert_eq!(heap.append(&data1).unwrap(), 0);
+        assert_eq!(heap.append(data2).unwrap(), 1);
+        assert_eq!(heap.size(), 2);
+        assert_eq!(heap.get(0), &data1);
+        assert_eq!(heap.get_length(0), data1.len());
+        assert_eq!(heap.get(1), data2);
+        assert_eq!(heap.get_length(1), data2.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_large_element_second_1() {
+        let mut heap = make_test_heap().unwrap();
+        let data1 = b"lorem ipsum dolor sit amet";
+        let data2: [u8; 0x1800] = std::array::from_fn(|i| (i as u8).wrapping_pow(2));
+        assert_eq!(heap.append(data1).unwrap(), 0);
+        assert_eq!(heap.append(&data2).unwrap(), 1);
+        assert_eq!(heap.size(), 2);
+        assert_eq!(heap.get(0), data1);
+        assert_eq!(heap.get_length(0), data1.len());
+        assert_eq!(heap.get(1), &data2);
+        assert_eq!(heap.get_length(1), data2.len());
+        assert!(heap.check_consistency().is_ok());
+    }
+
+    #[test]
+    fn test_append_large_element_second_2() {
+        let mut heap = make_test_heap().unwrap();
+        let data1 = b"sator arepo tenet opera rotas";
+        let data2: [u8; 0x1800] = std::array::from_fn(|i| (i as u8).wrapping_pow(2));
+        assert_eq!(heap.append(data1).unwrap(), 0);
+        assert_eq!(heap.append(&data2).unwrap(), 1);
+        assert_eq!(heap.size(), 2);
+        assert_eq!(heap.get(0), data1);
+        assert_eq!(heap.get_length(0), data1.len());
+        assert_eq!(heap.get(1), &data2);
+        assert_eq!(heap.get_length(1), data2.len());
+        assert!(heap.check_consistency().is_ok());
     }
 }

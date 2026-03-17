@@ -758,7 +758,6 @@ mod tests {
     use super::*;
     use crate::proto::{DecodeFromAny, EncodeMerkleProof, EncodeToAny};
     use crate::testing::parse_scalar;
-    use crypto::utils;
     use std::time::Duration;
 
     const TEST_CHAIN_ID: u64 = 42;
