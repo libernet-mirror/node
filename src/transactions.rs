@@ -3,8 +3,9 @@ use crate::data::{Transaction, TransactionInclusionProof};
 use crate::libernet;
 use crate::smt;
 use crate::store::{EmptyHeaderData, MappedHashSet, NodeData, Stored, StoredHeap, StoredU64};
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
+use crypto::merkle;
 use ff::Field;
 use memmap2::MmapMut;
 use prost::Message;
@@ -35,6 +36,56 @@ impl NodeData for GlobalTransactionIndex {
 type TransactionForest = smt::Forest<2, 32>;
 type TransactionIndices = MappedHashSet<EmptyHeaderData, GlobalTransactionIndex>;
 type TransactionHeap = StoredHeap<EmptyHeaderData>;
+
+/// Iterates over the transactions of a block.
+///
+/// Instances are constructed by `TransactionStore::iter`.
+#[derive(Debug)]
+pub struct TransactionIterator<'a> {
+    parent: &'a TransactionStore,
+    version: usize,
+    index: usize,
+}
+
+impl<'a> TransactionIterator<'a> {
+    fn lookup_transaction(
+        &self,
+        proof: merkle::Proof<Scalar, Scalar, 2, 32>,
+    ) -> Result<TransactionInclusionProof> {
+        let transaction_hash = *proof.value();
+        let heap_index = self
+            .parent
+            .indices
+            .get(transaction_hash)
+            .context("transaction not found")?;
+        let bytes = self.parent.heap.get(heap_index.index());
+        let proto = libernet::Transaction::decode(bytes)?;
+        let transaction = Transaction::from_proto_verify(proto)?;
+        Ok(proof.map(transaction).unwrap())
+    }
+}
+
+impl<'a> Iterator for TransactionIterator<'a> {
+    type Item = Result<TransactionInclusionProof>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let proof = match self.parent.forest.get_proof(
+            self.parent.root_hash(self.version),
+            Scalar::from(self.index as u64),
+        ) {
+            Some(proof) => proof,
+            None => {
+                return Some(Err(anyhow!("invalid root hash")));
+            }
+        };
+        let transaction_hash = *proof.value();
+        if transaction_hash == Scalar::ZERO {
+            return None;
+        }
+        self.index += 1;
+        Some(self.lookup_transaction(proof))
+    }
+}
 
 /// Stores block transactions.
 ///
@@ -132,16 +183,30 @@ impl TransactionStore {
         Ok(root_hash)
     }
 
+    /// Looks up a transaction by its hash, returning an error if it's not found.
+    pub fn get_by_hash(&self, transaction_hash: Scalar) -> Result<Transaction> {
+        let heap_index = self
+            .indices
+            .get(transaction_hash)
+            .context("transaction not found")?;
+        let bytes = self.heap.get(heap_index.index());
+        let proto = libernet::Transaction::decode(bytes)?;
+        Transaction::from_proto_verify(proto)
+    }
+
     /// Retrieves the i-th transaction of the specified version.
     pub fn get(&self, version: usize, index: usize) -> Result<Transaction> {
         let transaction_hash = self
             .forest
             .get(self.root_hash(version), Scalar::from(index as u64))
-            .unwrap();
+            .context("invalid root hash")?;
         if transaction_hash == Scalar::ZERO {
             return Err(anyhow!("transaction not found"));
         }
-        let heap_index = self.indices.get(transaction_hash).unwrap();
+        let heap_index = self
+            .indices
+            .get(transaction_hash)
+            .context("invalid transaction hash")?;
         let bytes = self.heap.get(heap_index.index());
         let proto = libernet::Transaction::decode(bytes)?;
         Transaction::from_proto_verify(proto)
@@ -152,16 +217,53 @@ impl TransactionStore {
         let proof = self
             .forest
             .get_proof(self.root_hash(version), Scalar::from(index as u64))
-            .unwrap();
+            .context("invalid root hash")?;
         let transaction_hash = *proof.value();
         if transaction_hash == Scalar::ZERO {
             return Err(anyhow!("transaction not found"));
         }
-        let heap_index = self.indices.get(transaction_hash).unwrap();
+        let heap_index = self
+            .indices
+            .get(transaction_hash)
+            .context("invalid transaction hash")?;
         let bytes = self.heap.get(heap_index.index());
         let proto = libernet::Transaction::decode(bytes)?;
         let transaction = Transaction::from_proto_verify(proto)?;
         Ok(proof.map(transaction).unwrap())
+    }
+
+    /// Returns the hashes of all transactions of a block in chronological order (the first element
+    /// is the hash of the first transaction of the block, the second element is the hash of the
+    /// second one, and so on).
+    ///
+    /// REQUIRES: `version` must be less than or equal to `current_version()`.
+    pub fn get_hashes(&self, version: usize) -> Result<Vec<Scalar>> {
+        let root_hash = self.root_hash(version);
+        let mut hashes = vec![];
+        let mut index = 0u64;
+        loop {
+            let transaction_hash = self
+                .forest
+                .get(root_hash, index.into())
+                .context("invalid root hash")?;
+            if transaction_hash != Scalar::ZERO {
+                hashes.push(transaction_hash);
+                index += 1;
+            } else {
+                return Ok(hashes);
+            }
+        }
+    }
+
+    /// Iterates over the transactions of a block.
+    ///
+    /// REQUIRES: `version` must be less than or equal to `current_version()`.
+    pub fn iter<'a>(&'a self, version: usize) -> TransactionIterator<'a> {
+        TransactionIterator {
+            parent: self,
+            version,
+            index: 0,
+        }
     }
 
     /// Seals the current version, locking it into the version history. Returns the root hash of the
@@ -199,6 +301,9 @@ mod tests {
 
     fn lookup(store: &TransactionStore, version: usize, index: usize) -> Result<Transaction> {
         let transaction = store.get(version, index)?;
+        if store.get_by_hash(transaction.hash())? != transaction {
+            return Err(anyhow!("inconsistent lookup"));
+        }
         let proof = store.get_proof(version, index)?;
         if proof.key() != Scalar::from(index as u64) {
             return Err(anyhow!(
@@ -217,6 +322,16 @@ mod tests {
         Ok(transaction)
     }
 
+    fn iterate(store: &TransactionStore, version: usize) -> Result<Vec<Scalar>> {
+        store
+            .iter(version)
+            .map(|proof| match proof {
+                Ok(proof) => Ok(proof.value().hash()),
+                Err(error) => Err(error),
+            })
+            .collect()
+    }
+
     #[test]
     fn test_initial_state() {
         let store = TransactionStore::default().unwrap();
@@ -230,6 +345,8 @@ mod tests {
             parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
         );
         assert_eq!(store.size(), 0);
+        assert_eq!(store.get_hashes(0).unwrap(), vec![]);
+        assert_eq!(iterate(&store, 0).unwrap(), vec![]);
     }
 
     #[test]
@@ -262,6 +379,18 @@ mod tests {
         assert_eq!(store.size(), 1);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction);
         assert!(lookup(&store, 0, 1).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![parse_scalar(
+                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+            )]
+        );
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+            )]
+        );
     }
 
     #[test]
@@ -310,6 +439,20 @@ mod tests {
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
         assert_eq!(lookup(&store, 0, 1).unwrap(), transaction2);
         assert!(lookup(&store, 0, 2).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+            ]
+        );
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+            ]
+        );
     }
 
     #[test]
@@ -335,6 +478,10 @@ mod tests {
         assert_eq!(store.size(), 0);
         assert!(lookup(&store, 0, 0).is_err());
         assert!(lookup(&store, 1, 0).is_err());
+        assert_eq!(store.get_hashes(0).unwrap(), vec![]);
+        assert_eq!(store.get_hashes(1).unwrap(), vec![]);
+        assert_eq!(iterate(&store, 0).unwrap(), vec![]);
+        assert_eq!(iterate(&store, 1).unwrap(), vec![]);
     }
 
     #[test]
@@ -377,6 +524,20 @@ mod tests {
         assert!(lookup(&store, 0, 1).is_err());
         assert!(lookup(&store, 1, 0).is_err());
         assert!(lookup(&store, 1, 1).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![parse_scalar(
+                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+            )]
+        );
+        assert_eq!(store.get_hashes(1).unwrap(), vec![]);
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+            )]
+        );
+        assert_eq!(iterate(&store, 1).unwrap(), vec![]);
     }
 
     #[test]
@@ -436,6 +597,22 @@ mod tests {
         assert!(lookup(&store, 1, 0).is_err());
         assert!(lookup(&store, 1, 1).is_err());
         assert!(lookup(&store, 1, 2).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+            ]
+        );
+        assert_eq!(store.get_hashes(1).unwrap(), vec![]);
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+            ]
+        );
+        assert_eq!(iterate(&store, 1).unwrap(), vec![]);
     }
 
     #[test]
@@ -493,6 +670,30 @@ mod tests {
         assert!(lookup(&store, 0, 1).is_err());
         assert_eq!(lookup(&store, 1, 0).unwrap(), transaction2);
         assert!(lookup(&store, 1, 1).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![parse_scalar(
+                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+            )]
+        );
+        assert_eq!(
+            store.get_hashes(1).unwrap(),
+            vec![parse_scalar(
+                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+            )]
+        );
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+            )]
+        );
+        assert_eq!(
+            iterate(&store, 1).unwrap(),
+            vec![parse_scalar(
+                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+            )]
+        );
     }
 
     #[test]
@@ -560,5 +761,31 @@ mod tests {
         assert!(lookup(&store, 1, 1).is_err());
         assert!(lookup(&store, 2, 0).is_err());
         assert!(lookup(&store, 2, 1).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![parse_scalar(
+                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+            )]
+        );
+        assert_eq!(
+            store.get_hashes(1).unwrap(),
+            vec![parse_scalar(
+                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+            )]
+        );
+        assert_eq!(store.get_hashes(2).unwrap(), vec![]);
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+            )]
+        );
+        assert_eq!(
+            iterate(&store, 1).unwrap(),
+            vec![parse_scalar(
+                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+            )]
+        );
+        assert_eq!(iterate(&store, 2).unwrap(), vec![]);
     }
 }
