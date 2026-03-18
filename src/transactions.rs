@@ -107,11 +107,7 @@ impl<'a> DoubleEndedIterator for TransactionIterator<'a> {
         let mut index = match self.index_back {
             Some(index) => index,
             None => {
-                let size = self.parent.get_size(self.version).unwrap();
-                if size == 0 {
-                    return None;
-                }
-                let index = size - 1;
+                let index = self.parent.get_size(self.version).unwrap();
                 self.index_back = Some(index);
                 index
             }
@@ -434,6 +430,7 @@ mod tests {
             parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
         );
         assert_eq!(store.size(), 0);
+        assert_eq!(store.get_size(0).unwrap(), 0);
         assert_eq!(store.get_hashes(0).unwrap(), vec![]);
         assert_eq!(iterate(&store, 0).unwrap(), vec![]);
         assert_eq!(reverse_iteration(&store, 0).unwrap(), vec![]);
@@ -467,6 +464,7 @@ mod tests {
             parse_scalar("0x738275ee4bd33ed0962fb83e5c29a5ed761d821e52026a88b049238327438194")
         );
         assert_eq!(store.size(), 1);
+        assert_eq!(store.get_size(0).unwrap(), 1);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction);
         assert!(lookup(&store, 0, 1).is_err());
         assert_eq!(
@@ -532,6 +530,7 @@ mod tests {
             parse_scalar("0x0904abc2b8dc27364d53f2afa5e696fd8a4f86356ba615dd56ca81b914a97c86")
         );
         assert_eq!(store.size(), 2);
+        assert_eq!(store.get_size(0).unwrap(), 2);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
         assert_eq!(lookup(&store, 0, 1).unwrap(), transaction2);
         assert!(lookup(&store, 0, 2).is_err());
@@ -552,8 +551,8 @@ mod tests {
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
                 parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
             ]
         );
     }
@@ -579,6 +578,8 @@ mod tests {
             parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
         );
         assert_eq!(store.size(), 0);
+        assert_eq!(store.get_size(0).unwrap(), 0);
+        assert_eq!(store.get_size(1).unwrap(), 0);
         assert!(lookup(&store, 0, 0).is_err());
         assert!(lookup(&store, 1, 0).is_err());
         assert_eq!(store.get_hashes(0).unwrap(), vec![]);
@@ -625,6 +626,8 @@ mod tests {
             parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
         );
         assert_eq!(store.size(), 0);
+        assert_eq!(store.get_size(0).unwrap(), 1);
+        assert_eq!(store.get_size(1).unwrap(), 0);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction);
         assert!(lookup(&store, 0, 1).is_err());
         assert!(lookup(&store, 1, 0).is_err());
@@ -703,6 +706,8 @@ mod tests {
             parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
         );
         assert_eq!(store.size(), 0);
+        assert_eq!(store.get_size(0).unwrap(), 2);
+        assert_eq!(store.get_size(1).unwrap(), 0);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
         assert_eq!(lookup(&store, 0, 1).unwrap(), transaction2);
         assert!(lookup(&store, 0, 2).is_err());
@@ -725,6 +730,14 @@ mod tests {
             ]
         );
         assert_eq!(iterate(&store, 1).unwrap(), vec![]);
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![
+                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+            ]
+        );
+        assert_eq!(reverse_iteration(&store, 1).unwrap(), vec![]);
     }
 
     #[test]
@@ -778,6 +791,8 @@ mod tests {
             parse_scalar("0x199913e12c2efa797495ba08941e106dc94f05832e3792927f7b5a6ba15dbdfd")
         );
         assert_eq!(store.size(), 1);
+        assert_eq!(store.get_size(0).unwrap(), 1);
+        assert_eq!(store.get_size(1).unwrap(), 1);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
         assert!(lookup(&store, 0, 1).is_err());
         assert_eq!(lookup(&store, 1, 0).unwrap(), transaction2);
@@ -802,6 +817,18 @@ mod tests {
         );
         assert_eq!(
             iterate(&store, 1).unwrap(),
+            vec![parse_scalar(
+                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+            )]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+            )]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 1).unwrap(),
             vec![parse_scalar(
                 "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
             )]
@@ -867,6 +894,9 @@ mod tests {
             parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
         );
         assert_eq!(store.size(), 0);
+        assert_eq!(store.get_size(0).unwrap(), 1);
+        assert_eq!(store.get_size(1).unwrap(), 1);
+        assert_eq!(store.get_size(2).unwrap(), 0);
         assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
         assert!(lookup(&store, 0, 1).is_err());
         assert_eq!(lookup(&store, 1, 0).unwrap(), transaction2);
@@ -899,5 +929,18 @@ mod tests {
             )]
         );
         assert_eq!(iterate(&store, 2).unwrap(), vec![]);
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+            )]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 1).unwrap(),
+            vec![parse_scalar(
+                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+            )]
+        );
+        assert_eq!(reverse_iteration(&store, 2).unwrap(), vec![]);
     }
 }
