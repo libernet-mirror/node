@@ -3,12 +3,13 @@ use crate::clock::Clock;
 use crate::constants;
 use crate::data::{
     AccountInfo, AccountProof, BlockHeader, BlockInfo, BlockList, ProgramStorageTree, Transaction,
-    TransactionInclusionProof, TransactionTree,
+    TransactionInclusionProof,
 };
 use crate::libernet;
 use crate::proto::{self, EncodeMerkleProof};
 use crate::store::NodeData;
 use crate::topology;
+use crate::transactions::TransactionStore;
 use anyhow::{Context, Result, anyhow};
 use blstrs::Scalar;
 use crypto::{
@@ -128,7 +129,7 @@ fn make_genesis_block(
     accounts_root_hash: Scalar,
 ) -> Result<BlockInfo> {
     let block_number = 0;
-    let transactions_root_hash = TransactionTree::default().root_hash();
+    let transactions_root_hash = TransactionStore::default()?.current_root_hash();
     let program_storage_root_hash = ProgramStorageTree::default().root_hash(block_number);
     Ok(BlockInfo::new(
         chain_id,
@@ -140,116 +141,6 @@ fn make_genesis_block(
         accounts_root_hash,
         program_storage_root_hash,
     ))
-}
-
-/// Stores and indexes the transactions of a block.
-#[derive(Debug, Default, Clone)]
-struct BlockTransactions {
-    /// Indexes the transactions by their hash.
-    ///
-    /// The keys of this map are transaction hashes. The first component of the value pairs is the
-    /// transaction number within the block (0 for the first, 1 for the second, etc.), while the
-    /// second component is the transaction object.
-    by_hash: BTreeMap<Scalar, (usize, Transaction)>,
-
-    /// The transaction SMT. The `transactions_root_hash` of the block will be set to the root hash
-    /// of this tree when the block is closed.
-    tree: TransactionTree,
-}
-
-impl BlockTransactions {
-    /// Returns the root hash of the transaction SMT.
-    fn root_hash(&self) -> Scalar {
-        self.tree.root_hash()
-    }
-
-    /// Returns the number of transactions.
-    fn len(&self) -> usize {
-        self.by_hash.len()
-    }
-
-    /// Adds a transaction and returns the transaction number.
-    fn add(&mut self, transaction: Transaction) -> usize {
-        let transaction_number = self.by_hash.len();
-        let key = Scalar::from(transaction_number as u64);
-        let hash = transaction.hash();
-        self.by_hash.insert(hash, (transaction_number, transaction));
-        self.tree = self.tree.put(key, hash);
-        transaction_number
-    }
-
-    /// Returns all transaction hashes in chronological order, i.e. first the hash of the first
-    /// transaction, then the hash of the second one, etc.
-    fn get_all_hashes(&self) -> Vec<Scalar> {
-        let mut results = self
-            .by_hash
-            .iter()
-            .map(|(hash, (transaction_number, _))| (*transaction_number, *hash))
-            .collect::<Vec<_>>();
-        results.sort_unstable();
-        results.into_iter().map(|(_, hash)| hash).collect()
-    }
-
-    /// Returns proof of inclusion of a transaction in the block, or None if `transaction_index` is
-    /// out of bounds.
-    ///
-    /// The transaction index is zero-based, so None is returned when `transaction_index` is greater
-    /// than or equal to the number of transactions.
-    fn get_inclusion_proof(&self, transaction_index: usize) -> Option<TransactionInclusionProof> {
-        let proof = self.tree.get_proof(Scalar::from(transaction_index as u64));
-        let (_, transaction) = self.by_hash.get(proof.value())?.clone();
-        Some(proof.map(transaction).unwrap())
-    }
-
-    /// Constructs an iterator that iterates over the transactions in chronological order, returning
-    /// an inclusion proof of each.
-    ///
-    /// NOTE: this iteration is relatively expensive because a brand new inclusion proof is
-    /// constructed for every element, including a clone of the transaction object.
-    fn iter(&self) -> impl DoubleEndedIterator<Item = TransactionInclusionProof> {
-        BlockTransactionIterator::new(self)
-    }
-}
-
-#[derive(Copy, Clone)]
-struct BlockTransactionIterator<'a> {
-    parent: &'a BlockTransactions,
-    index: usize,
-}
-
-impl<'a> BlockTransactionIterator<'a> {
-    fn new(parent: &'a BlockTransactions) -> Self {
-        Self { parent, index: 0 }
-    }
-}
-
-impl<'a> Iterator for BlockTransactionIterator<'a> {
-    type Item = TransactionInclusionProof;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.parent.len() {
-            let proof = self.parent.get_inclusion_proof(self.index).unwrap();
-            self.index += 1;
-            Some(proof)
-        } else {
-            None
-        }
-    }
-}
-
-impl<'a> DoubleEndedIterator for BlockTransactionIterator<'a> {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.index < self.parent.len() {
-            let proof = self
-                .parent
-                .get_inclusion_proof(self.parent.len() - 1 - self.index)
-                .unwrap();
-            self.index += 1;
-            Some(proof)
-        } else {
-            None
-        }
-    }
 }
 
 /// Allows locating a specific transaction.
@@ -392,7 +283,7 @@ struct Repr {
 
     network_topologies: BTreeMap<u64, topology::Network>,
 
-    transactions_per_block: Vec<BlockTransactions>,
+    transactions: TransactionStore,
     transaction_locators_by_hash: BTreeMap<Scalar, TransactionLocator>,
     transactions_by_signer: BTreeMap<Scalar, Vec<Scalar>>,
     transactions_by_recipient: BTreeMap<Scalar, Vec<Scalar>>,
@@ -428,15 +319,14 @@ impl Repr {
             constants::DATA_FILE_TYPE_BLOCK_DESCRIPTORS,
         )?;
         blocks.insert_hashed(*genesis_block.header(), genesis_block.hash())?;
+        let mut transactions = TransactionStore::default()?;
+        transactions.commit();
         Ok(Self {
             chain_id,
             blocks,
             block_hashes_by_number: vec![genesis_block.hash()],
             network_topologies: BTreeMap::from([(0, network)]),
-            transactions_per_block: vec![
-                BlockTransactions::default(), // transactions of the genesis block (always empty)
-                BlockTransactions::default(), // transactions of the first (pending) block
-            ],
+            transactions,
             transaction_locators_by_hash: BTreeMap::default(),
             transactions_by_signer: BTreeMap::default(),
             transactions_by_recipient: BTreeMap::default(),
@@ -554,22 +444,27 @@ impl Repr {
         }
     }
 
-    fn get_transaction(&self, hash: Scalar) -> Option<(BlockInfo, TransactionInclusionProof)> {
-        let locator = *(self.transaction_locators_by_hash.get(&hash)?);
-        let block_number = self.check_block_number(locator.block_number)?;
+    fn get_transaction(&self, hash: Scalar) -> Result<(BlockInfo, TransactionInclusionProof)> {
+        let locator = *(self
+            .transaction_locators_by_hash
+            .get(&hash)
+            .context(format!(
+                "transaction {} not found",
+                utils::format_scalar(hash)
+            ))?);
+        let block_number = self.check_block_number(locator.block_number).unwrap();
         let block_info = self.get_block_by_number(block_number).unwrap();
-        let transactions = &self.transactions_per_block[block_number];
-        let proof = transactions
-            .get_inclusion_proof(locator.transaction_number)
-            .unwrap();
-        Some((block_info, proof))
+        let proof = self
+            .transactions
+            .get_proof(block_number, locator.transaction_number)?;
+        Ok((block_info, proof))
     }
 
     fn get_all_block_transaction_hashes(&self, block_number: usize) -> Result<Vec<Scalar>> {
-        Ok(self.transactions_per_block[self
+        let block_number = self
             .check_block_number(block_number)
-            .context(format!("block #{} not found", block_number))?]
-        .get_all_hashes())
+            .context(format!("block #{} not found", block_number))?;
+        self.transactions.get_hashes(block_number)
     }
 
     fn apply_block_reward_transaction(
@@ -701,8 +596,7 @@ impl Repr {
         let transaction = Transaction::from_proto(transaction)?;
         let (hash, signer, recipient) = Self::get_transaction_params(&transaction)?;
         self.apply_transaction(&transaction, fail_on_block_reward)?;
-        let block_transactions = self.transactions_per_block.last_mut().unwrap();
-        let transaction_number = block_transactions.add(transaction);
+        let transaction_number = self.transactions.push(&transaction)?;
         self.transaction_locators_by_hash.insert(
             hash,
             TransactionLocator {
@@ -783,8 +677,8 @@ impl Repr {
                         return Ok(results);
                     }
                     let mut block_results = vec![];
-                    let transactions = &self.transactions_per_block[block_number];
-                    for proof in transactions.iter() {
+                    for proof in self.transactions.iter(block_number) {
+                        let proof = proof?;
                         if max_count > 0 {
                             max_count -= 1;
                         } else {
@@ -804,8 +698,8 @@ impl Repr {
                         return Ok(results);
                     }
                     let mut block_results = vec![];
-                    let transactions = &self.transactions_per_block[block_number];
-                    for proof in transactions.iter().rev() {
+                    for proof in self.transactions.iter(block_number).rev() {
+                        let proof = proof?;
                         if max_count > 0 {
                             max_count -= 1;
                         } else {
@@ -825,15 +719,20 @@ impl Repr {
 
     fn get_transaction_inclusion_proof(
         &self,
-        transaction_hash: &Scalar,
-    ) -> Option<(usize, TransactionInclusionProof)> {
-        let transaction_locator = self.transaction_locators_by_hash.get(transaction_hash)?;
-        let block_transactions = self
-            .transactions_per_block
-            .get(transaction_locator.block_number)?;
-        let proof =
-            block_transactions.get_inclusion_proof(transaction_locator.transaction_number)?;
-        Some((transaction_locator.block_number, proof))
+        transaction_hash: Scalar,
+    ) -> Result<(usize, TransactionInclusionProof)> {
+        let transaction_locator = self
+            .transaction_locators_by_hash
+            .get(&transaction_hash)
+            .context(format!(
+                "transaction {} not found",
+                utils::format_scalar(transaction_hash)
+            ))?;
+        let proof = self.transactions.get_proof(
+            transaction_locator.block_number,
+            transaction_locator.transaction_number,
+        )?;
+        Ok((transaction_locator.block_number, proof))
     }
 
     fn query_transactions_from_list(
@@ -882,19 +781,23 @@ impl Repr {
         let mut last_block_number = 0;
         let mut block_results = vec![];
         for hash in transaction_hashes {
-            // TODO: don't silently skip errors, log them.
-            if let Some((block_number, proof)) = self.get_transaction_inclusion_proof(&hash) {
-                if block_number != last_block_number {
-                    if !block_results.is_empty() {
-                        let block_info = self.get_block_by_number(block_number).unwrap();
-                        results.add_block(block_info, block_results);
+            match self.get_transaction_inclusion_proof(hash) {
+                Ok((block_number, proof)) => {
+                    if block_number != last_block_number {
+                        if !block_results.is_empty() {
+                            let block_info = self.get_block_by_number(block_number).unwrap();
+                            results.add_block(block_info, block_results);
+                        }
+                        last_block_number = block_number;
+                        block_results = vec![proof];
+                    } else {
+                        block_results.push(proof);
                     }
-                    last_block_number = block_number;
-                    block_results = vec![proof];
-                } else {
-                    block_results.push(proof);
                 }
-            }
+                Err(_) => {
+                    // TODO: don't silently skip errors, log them.
+                }
+            };
         }
         if !block_results.is_empty() {
             let block_info = self.get_block_by_number(last_block_number).unwrap();
@@ -978,19 +881,24 @@ impl Repr {
             } else if lhs_locator > rhs_locator {
                 j += 1;
             } else {
-                // TODO: don't silently skip errors, log them.
-                if let Some((block_number, proof)) = self.get_transaction_inclusion_proof(lhs) {
-                    if block_number != last_block_number {
-                        if !block_results.is_empty() {
-                            let block_info = self.get_block_by_number(last_block_number).unwrap();
-                            results.add_block(block_info, block_results);
+                match self.get_transaction_inclusion_proof(*lhs) {
+                    Ok((block_number, proof)) => {
+                        if block_number != last_block_number {
+                            if !block_results.is_empty() {
+                                let block_info =
+                                    self.get_block_by_number(last_block_number).unwrap();
+                                results.add_block(block_info, block_results);
+                            }
+                            last_block_number = block_number;
+                            block_results = vec![proof];
+                        } else {
+                            block_results.push(proof);
                         }
-                        last_block_number = block_number;
-                        block_results = vec![proof];
-                    } else {
-                        block_results.push(proof);
                     }
-                }
+                    Err(_) => {
+                        // TODO: don't silently skip errors, log them.
+                    }
+                };
                 i += 1;
                 j += 1;
                 max_count -= 1;
@@ -1038,19 +946,24 @@ impl Repr {
             } else if lhs_locator > rhs_locator {
                 i -= 1;
             } else {
-                // TODO: don't silently skip errors, log them.
-                if let Some((block_number, proof)) = self.get_transaction_inclusion_proof(lhs) {
-                    if block_number != last_block_number {
-                        if !block_results.is_empty() {
-                            let block_info = self.get_block_by_number(last_block_number).unwrap();
-                            results.add_block(block_info, block_results);
+                match self.get_transaction_inclusion_proof(*lhs) {
+                    Ok((block_number, proof)) => {
+                        if block_number != last_block_number {
+                            if !block_results.is_empty() {
+                                let block_info =
+                                    self.get_block_by_number(last_block_number).unwrap();
+                                results.add_block(block_info, block_results);
+                            }
+                            last_block_number = block_number;
+                            block_results = vec![proof];
+                        } else {
+                            block_results.push(proof);
                         }
-                        last_block_number = block_number;
-                        block_results = vec![proof];
-                    } else {
-                        block_results.push(proof);
                     }
-                }
+                    Err(_) => {
+                        // TODO: don't silently skip errors, log them.
+                    }
+                };
                 i -= 1;
                 j -= 1;
                 max_count -= 1;
@@ -1105,7 +1018,7 @@ impl Repr {
             .range(0..=block_number)
             .next_back()
             .unwrap();
-        let transactions_root_hash = self.transactions_per_block.last().unwrap().root_hash();
+        let transactions_root_hash = self.transactions.commit();
         let accounts_root_hash = self.accounts.commit();
         let program_storage_root_hash = self.program_storage.root_hash(block_number);
         let block_header = BlockHeader::new(
@@ -1121,8 +1034,6 @@ impl Repr {
         let block_hash = block_header.hash();
         self.blocks.insert_hashed(block_header, block_hash)?;
         self.block_hashes_by_number.push(block_hash);
-        self.transactions_per_block
-            .push(BlockTransactions::default());
         Ok(BlockInfo::from_parts(block_hash, block_header))
     }
 
@@ -1279,7 +1190,7 @@ impl Db {
     pub async fn get_transaction(
         &self,
         hash: Scalar,
-    ) -> Option<(BlockInfo, TransactionInclusionProof)> {
+    ) -> Result<(BlockInfo, TransactionInclusionProof)> {
         self.repr.lock().await.get_transaction(hash)
     }
 
@@ -1439,203 +1350,6 @@ mod tests {
             staking_balance: 0.into(),
         }
         .into()
-    }
-
-    #[test]
-    fn test_empty_block_transactions() {
-        let transactions = BlockTransactions::default();
-        assert_eq!(
-            transactions.root_hash(),
-            parse_scalar("0x6d95ae588d6c75947417a6509c159b787eedc227eeb3d478a18ed7cabfd0f634")
-        );
-        assert_eq!(transactions.len(), 0);
-        assert!(transactions.get_all_hashes().is_empty());
-        assert!(transactions.get_inclusion_proof(0).is_none());
-        assert!(transactions.get_inclusion_proof(1).is_none());
-        assert!(transactions.iter().collect::<Vec<_>>().is_empty());
-    }
-
-    #[test]
-    fn test_block_transactions_with_reward_transaction() {
-        let account = testing::account1();
-        let transaction = Transaction::from_proto(
-            Transaction::make_block_reward_proto(
-                &account,
-                TEST_CHAIN_ID,
-                12,
-                account.address(),
-                123.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let transactions = {
-            let mut transactions = BlockTransactions::default();
-            let index = transactions.add(transaction.clone());
-            assert_eq!(index, 0);
-            transactions
-        };
-        assert_eq!(
-            transactions.root_hash(),
-            parse_scalar("0x45743cc9383cd54d730dbcec9a108579cd16b4d97b206aea74d42d927d4a4b54")
-        );
-        assert_eq!(transactions.len(), 1);
-        assert_eq!(
-            transactions.get_all_hashes(),
-            vec![parse_scalar(
-                "0x04b949d8d6847d96044c7f6edba034935a07fd06f9a100899cd88f5ebd68f0f2"
-            )]
-        );
-        let proof = transactions.get_inclusion_proof(0).unwrap();
-        assert_eq!(proof.root_hash(), transactions.root_hash());
-        assert_eq!(proof.key(), 0.into());
-        assert_eq!(proof.value(), &transaction);
-        assert!(proof.verify().is_ok());
-        assert!(transactions.get_inclusion_proof(1).is_none());
-        let proofs = transactions.iter().collect::<Vec<_>>();
-        assert_eq!(proofs, vec![proof.clone()]);
-        let proofs = transactions.iter().rev().collect::<Vec<_>>();
-        assert_eq!(proofs, vec![proof]);
-    }
-
-    #[test]
-    fn test_block_transactions_with_two_transactions() {
-        let account1 = testing::account1();
-        let account2 = testing::account2();
-        let transaction1 = Transaction::from_proto(
-            Transaction::make_block_reward_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                12,
-                account1.address(),
-                123.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let transaction2 = Transaction::from_proto(
-            Transaction::make_coin_transfer_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                13,
-                account2.address(),
-                100.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let transactions = {
-            let mut transactions = BlockTransactions::default();
-            assert_eq!(transactions.add(transaction1.clone()), 0);
-            assert_eq!(transactions.add(transaction2.clone()), 1);
-            transactions
-        };
-        assert_eq!(
-            transactions.root_hash(),
-            parse_scalar("0x729cc1326cdf146d151c0b37a26e00ac53e2e33f2ae47dc67b79aaf097f6ad2b")
-        );
-        assert_eq!(transactions.len(), 2);
-        assert_eq!(
-            transactions.get_all_hashes(),
-            vec![
-                parse_scalar("0x04b949d8d6847d96044c7f6edba034935a07fd06f9a100899cd88f5ebd68f0f2"),
-                parse_scalar("0x1d0474fe8ad0f20ceab880d6656f0f26084575102d1137ec77e1f5284625bef0"),
-            ]
-        );
-        let proof1 = transactions.get_inclusion_proof(0).unwrap();
-        assert_eq!(proof1.root_hash(), transactions.root_hash());
-        assert_eq!(proof1.key(), 0.into());
-        assert_eq!(proof1.value(), &transaction1);
-        assert!(proof1.verify().is_ok());
-        let proof2 = transactions.get_inclusion_proof(1).unwrap();
-        assert_eq!(proof2.root_hash(), transactions.root_hash());
-        assert_eq!(proof2.key(), 1.into());
-        assert_eq!(proof2.value(), &transaction2);
-        assert!(proof2.verify().is_ok());
-        assert!(transactions.get_inclusion_proof(2).is_none());
-        let proofs = transactions.iter().collect::<Vec<_>>();
-        assert_eq!(proofs, vec![proof1.clone(), proof2.clone()]);
-        let proofs = transactions.iter().rev().collect::<Vec<_>>();
-        assert_eq!(proofs, vec![proof2, proof1]);
-    }
-
-    #[test]
-    fn test_block_transactions_with_three_transactions() {
-        let account1 = testing::account1();
-        let account2 = testing::account2();
-        let transaction1 = Transaction::from_proto(
-            Transaction::make_block_reward_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                12,
-                account1.address(),
-                123.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let transaction2 = Transaction::from_proto(
-            Transaction::make_coin_transfer_proto(
-                &account1,
-                TEST_CHAIN_ID,
-                13,
-                account2.address(),
-                100.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let transaction3 = Transaction::from_proto(
-            Transaction::make_coin_transfer_proto(
-                &account2,
-                TEST_CHAIN_ID,
-                1,
-                account1.address(),
-                50.into(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let transactions = {
-            let mut transactions = BlockTransactions::default();
-            assert_eq!(transactions.add(transaction1.clone()), 0);
-            assert_eq!(transactions.add(transaction2.clone()), 1);
-            assert_eq!(transactions.add(transaction3.clone()), 2);
-            transactions
-        };
-        assert_eq!(
-            transactions.root_hash(),
-            parse_scalar("0x1c150ee22169b440af49a2fa4fac26269b1d2c453af43f3f5191db6c17bf9821")
-        );
-        assert_eq!(transactions.len(), 3);
-        assert_eq!(
-            transactions.get_all_hashes(),
-            vec![
-                parse_scalar("0x04b949d8d6847d96044c7f6edba034935a07fd06f9a100899cd88f5ebd68f0f2"),
-                parse_scalar("0x1d0474fe8ad0f20ceab880d6656f0f26084575102d1137ec77e1f5284625bef0"),
-                parse_scalar("0x545da34cc12de38713b6df5505726660a8f67a66c7c241cde01e70b67846051a"),
-            ]
-        );
-        let proof1 = transactions.get_inclusion_proof(0).unwrap();
-        assert_eq!(proof1.root_hash(), transactions.root_hash());
-        assert_eq!(proof1.key(), 0.into());
-        assert_eq!(proof1.value(), &transaction1);
-        assert!(proof1.verify().is_ok());
-        let proof2 = transactions.get_inclusion_proof(1).unwrap();
-        assert_eq!(proof2.root_hash(), transactions.root_hash());
-        assert_eq!(proof2.key(), 1.into());
-        assert_eq!(proof2.value(), &transaction2);
-        assert!(proof2.verify().is_ok());
-        let proof3 = transactions.get_inclusion_proof(2).unwrap();
-        assert_eq!(proof3.root_hash(), transactions.root_hash());
-        assert_eq!(proof3.key(), 2.into());
-        assert_eq!(proof3.value(), &transaction3);
-        assert!(proof3.verify().is_ok());
-        assert!(transactions.get_inclusion_proof(3).is_none());
-        let proofs = transactions.iter().collect::<Vec<_>>();
-        assert_eq!(proofs, vec![proof1.clone(), proof2.clone(), proof3.clone()]);
-        let proofs = transactions.iter().rev().collect::<Vec<_>>();
-        assert_eq!(proofs, vec![proof3, proof2, proof1]);
     }
 
     struct TestFixture {
