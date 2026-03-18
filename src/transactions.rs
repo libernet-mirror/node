@@ -45,9 +45,19 @@ pub struct TransactionIterator<'a> {
     parent: &'a TransactionStore,
     version: usize,
     index: usize,
+    index_back: Option<usize>,
 }
 
 impl<'a> TransactionIterator<'a> {
+    fn new(parent: &'a TransactionStore, version: usize) -> Self {
+        Self {
+            parent,
+            version,
+            index: 0,
+            index_back: None,
+        }
+    }
+
     fn lookup_transaction(
         &self,
         proof: merkle::Proof<Scalar, Scalar, 2, 32>,
@@ -69,6 +79,11 @@ impl<'a> Iterator for TransactionIterator<'a> {
     type Item = Result<TransactionInclusionProof>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Some(index_back) = self.index_back {
+            if self.index > index_back {
+                return None;
+            }
+        }
         let proof = match self.parent.forest.get_proof(
             self.parent.root_hash(self.version),
             Scalar::from(self.index as u64),
@@ -83,6 +98,38 @@ impl<'a> Iterator for TransactionIterator<'a> {
             return None;
         }
         self.index += 1;
+        Some(self.lookup_transaction(proof))
+    }
+}
+
+impl<'a> DoubleEndedIterator for TransactionIterator<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let mut index = match self.index_back {
+            Some(index) => index,
+            None => {
+                let size = self.parent.get_size(self.version).unwrap();
+                if size == 0 {
+                    return None;
+                }
+                let index = size - 1;
+                self.index_back = Some(index);
+                index
+            }
+        };
+        if index <= self.index {
+            return None;
+        }
+        index -= 1;
+        self.index_back = Some(index);
+        let proof = match self.parent.forest.get_proof(
+            self.parent.root_hash(self.version),
+            Scalar::from(index as u64),
+        ) {
+            Some(proof) => proof,
+            None => {
+                return Some(Err(anyhow!("invalid root hash")));
+            }
+        };
         Some(self.lookup_transaction(proof))
     }
 }
@@ -159,6 +206,41 @@ impl TransactionStore {
     /// This gets incremented by 1 at every push and reset to zero at every commit.
     pub fn size(&self) -> usize {
         self.next_index
+    }
+
+    /// Returns the number of transactions in an arbitrary revision.
+    ///
+    /// This algorithm runs in O(log(N)) and works by performing a search for the first null
+    /// transaction hash in the SMT for the specified version.
+    pub fn get_size(&self, version: usize) -> Result<usize> {
+        let root_hash = self.root_hash(version);
+        let hash = self
+            .forest
+            .get(root_hash, Scalar::ZERO)
+            .context("invalid root hash")?;
+        if hash == Scalar::ZERO {
+            return Ok(0);
+        }
+        let mut i = 0;
+        for s in 0..32 {
+            let mut j = 1u64 << s;
+            let hash = self.forest.get(root_hash, j.into()).unwrap();
+            if hash != Scalar::ZERO {
+                i = j;
+            } else {
+                while j > i {
+                    let k = i + ((j - i) >> 1);
+                    let hash = self.forest.get(root_hash, k.into()).unwrap();
+                    if hash != Scalar::ZERO {
+                        i = k + 1;
+                    } else {
+                        j = k;
+                    }
+                }
+                break;
+            }
+        }
+        Ok(i as usize)
     }
 
     /// Adds a transaction to (the current revision of) the store.
@@ -259,11 +341,7 @@ impl TransactionStore {
     ///
     /// REQUIRES: `version` must be less than or equal to `current_version()`.
     pub fn iter<'a>(&'a self, version: usize) -> TransactionIterator<'a> {
-        TransactionIterator {
-            parent: self,
-            version,
-            index: 0,
-        }
+        TransactionIterator::new(self, version)
     }
 
     /// Seals the current version, locking it into the version history. Returns the root hash of the
@@ -332,6 +410,17 @@ mod tests {
             .collect()
     }
 
+    fn reverse_iteration(store: &TransactionStore, version: usize) -> Result<Vec<Scalar>> {
+        store
+            .iter(version)
+            .rev()
+            .map(|proof| match proof {
+                Ok(proof) => Ok(proof.value().hash()),
+                Err(error) => Err(error),
+            })
+            .collect()
+    }
+
     #[test]
     fn test_initial_state() {
         let store = TransactionStore::default().unwrap();
@@ -347,6 +436,7 @@ mod tests {
         assert_eq!(store.size(), 0);
         assert_eq!(store.get_hashes(0).unwrap(), vec![]);
         assert_eq!(iterate(&store, 0).unwrap(), vec![]);
+        assert_eq!(reverse_iteration(&store, 0).unwrap(), vec![]);
     }
 
     #[test]
@@ -387,6 +477,12 @@ mod tests {
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+            )]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
             vec![parse_scalar(
                 "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
             )]
@@ -453,6 +549,13 @@ mod tests {
                 parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
             ]
         );
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![
+                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+            ]
+        );
     }
 
     #[test]
@@ -482,6 +585,8 @@ mod tests {
         assert_eq!(store.get_hashes(1).unwrap(), vec![]);
         assert_eq!(iterate(&store, 0).unwrap(), vec![]);
         assert_eq!(iterate(&store, 1).unwrap(), vec![]);
+        assert_eq!(reverse_iteration(&store, 0).unwrap(), vec![]);
+        assert_eq!(reverse_iteration(&store, 1).unwrap(), vec![]);
     }
 
     #[test]
@@ -538,6 +643,13 @@ mod tests {
             )]
         );
         assert_eq!(iterate(&store, 1).unwrap(), vec![]);
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+            )]
+        );
+        assert_eq!(reverse_iteration(&store, 1).unwrap(), vec![]);
     }
 
     #[test]
