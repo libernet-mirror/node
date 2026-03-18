@@ -126,11 +126,11 @@ fn make_genesis_block(
     timestamp: SystemTime,
     network_topology_root_hash: Scalar,
     accounts_root_hash: Scalar,
-) -> BlockInfo {
+) -> Result<BlockInfo> {
     let block_number = 0;
     let transactions_root_hash = TransactionTree::default().root_hash();
     let program_storage_root_hash = ProgramStorageTree::default().root_hash(block_number);
-    BlockInfo::new(
+    Ok(BlockInfo::new(
         chain_id,
         block_number,
         Scalar::ZERO,
@@ -139,7 +139,7 @@ fn make_genesis_block(
         transactions_root_hash,
         accounts_root_hash,
         program_storage_root_hash,
-    )
+    ))
 }
 
 /// Stores and indexes the transactions of a block.
@@ -419,7 +419,7 @@ impl Repr {
             clock.now(),
             network.root_hash(),
             accounts.root_hash(0),
-        );
+        )?;
         let mut blocks = BlockList::new(
             MmapMut::map_anon(
                 BlockList::PADDED_HEADER_SIZE
