@@ -925,6 +925,234 @@ mod tests {
     }
 
     #[test]
+    fn test_push_two_commit_push_one() {
+        let mut store = TransactionStore::default().unwrap();
+        let transaction1 = Transaction::from_proto(
+            Transaction::make_block_reward_proto(
+                &test_account1(),
+                TEST_CHAIN_ID,
+                1,
+                test_account2().address(),
+                12.into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let transaction2 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &test_account2(),
+                TEST_CHAIN_ID,
+                1,
+                test_account3().address(),
+                34.into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let transaction3 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &test_account3(),
+                TEST_CHAIN_ID,
+                1,
+                test_account1().address(),
+                56.into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.push(&transaction1).unwrap(),
+            parse_scalar("0x19ec75a9eb0522698a3f57c1c11c648b87943e5aa35d422883269c7b06010256")
+        );
+        assert_eq!(
+            store.push(&transaction2).unwrap(),
+            parse_scalar("0x2666817884a22839c054e44cb585ea83074c1a84d1fa8964a7a2b3ff3141b0c2")
+        );
+        assert_eq!(
+            store.commit(),
+            parse_scalar("0x2666817884a22839c054e44cb585ea83074c1a84d1fa8964a7a2b3ff3141b0c2")
+        );
+        assert_eq!(
+            store.push(&transaction3).unwrap(),
+            parse_scalar("0x52a114bd56a38429de75a9b3f543b55c3f12abae613bb2e9b3c8f3498af05a03")
+        );
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(
+            store.root_hash(0),
+            parse_scalar("0x2666817884a22839c054e44cb585ea83074c1a84d1fa8964a7a2b3ff3141b0c2")
+        );
+        assert_eq!(
+            store.root_hash(1),
+            parse_scalar("0x52a114bd56a38429de75a9b3f543b55c3f12abae613bb2e9b3c8f3498af05a03")
+        );
+        assert_eq!(
+            store.current_root_hash(),
+            parse_scalar("0x52a114bd56a38429de75a9b3f543b55c3f12abae613bb2e9b3c8f3498af05a03")
+        );
+        assert_eq!(store.size(), 1);
+        assert_eq!(store.get_size(0).unwrap(), 2);
+        assert_eq!(store.get_size(1).unwrap(), 1);
+        assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
+        assert_eq!(lookup(&store, 0, 1).unwrap(), transaction2);
+        assert!(lookup(&store, 0, 2).is_err());
+        assert_eq!(lookup(&store, 1, 0).unwrap(), transaction3);
+        assert!(lookup(&store, 1, 1).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![
+                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
+                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+            ]
+        );
+        assert_eq!(
+            store.get_hashes(1).unwrap(),
+            vec![parse_scalar(
+                "0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"
+            )]
+        );
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![
+                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
+                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+            ]
+        );
+        assert_eq!(
+            iterate(&store, 1).unwrap(),
+            vec![parse_scalar(
+                "0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"
+            )]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![
+                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
+            ]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 1).unwrap(),
+            vec![parse_scalar(
+                "0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"
+            )]
+        );
+    }
+
+    #[test]
+    fn test_push_one_commit_push_two() {
+        let mut store = TransactionStore::default().unwrap();
+        let transaction1 = Transaction::from_proto(
+            Transaction::make_block_reward_proto(
+                &test_account1(),
+                TEST_CHAIN_ID,
+                1,
+                test_account2().address(),
+                12.into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let transaction2 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &test_account2(),
+                TEST_CHAIN_ID,
+                1,
+                test_account3().address(),
+                34.into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let transaction3 = Transaction::from_proto(
+            Transaction::make_coin_transfer_proto(
+                &test_account3(),
+                TEST_CHAIN_ID,
+                1,
+                test_account1().address(),
+                56.into(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            store.push(&transaction1).unwrap(),
+            parse_scalar("0x19ec75a9eb0522698a3f57c1c11c648b87943e5aa35d422883269c7b06010256")
+        );
+        assert_eq!(
+            store.commit(),
+            parse_scalar("0x19ec75a9eb0522698a3f57c1c11c648b87943e5aa35d422883269c7b06010256")
+        );
+        assert_eq!(
+            store.push(&transaction2).unwrap(),
+            parse_scalar("0x456119757e26e7d0c9530c860c38f51838382ca16d68b853f7a1119dd2676da3")
+        );
+        assert_eq!(
+            store.push(&transaction3).unwrap(),
+            parse_scalar("0x4461cf85f0fad7ea0cfc620855911ac88e76aebf4e046fd2583d8039998f11f6")
+        );
+        assert_eq!(store.current_version(), 1);
+        assert_eq!(
+            store.root_hash(0),
+            parse_scalar("0x19ec75a9eb0522698a3f57c1c11c648b87943e5aa35d422883269c7b06010256")
+        );
+        assert_eq!(
+            store.root_hash(1),
+            parse_scalar("0x4461cf85f0fad7ea0cfc620855911ac88e76aebf4e046fd2583d8039998f11f6")
+        );
+        assert_eq!(
+            store.current_root_hash(),
+            parse_scalar("0x4461cf85f0fad7ea0cfc620855911ac88e76aebf4e046fd2583d8039998f11f6")
+        );
+        assert_eq!(store.size(), 2);
+        assert_eq!(store.get_size(0).unwrap(), 1);
+        assert_eq!(store.get_size(1).unwrap(), 2);
+        assert_eq!(lookup(&store, 0, 0).unwrap(), transaction1);
+        assert!(lookup(&store, 0, 1).is_err());
+        assert_eq!(lookup(&store, 1, 0).unwrap(), transaction2);
+        assert_eq!(lookup(&store, 1, 1).unwrap(), transaction3);
+        assert!(lookup(&store, 1, 2).is_err());
+        assert_eq!(
+            store.get_hashes(0).unwrap(),
+            vec![parse_scalar(
+                "0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"
+            )]
+        );
+        assert_eq!(
+            store.get_hashes(1).unwrap(),
+            vec![
+                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+            ]
+        );
+        assert_eq!(
+            iterate(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"
+            )]
+        );
+        assert_eq!(
+            iterate(&store, 1).unwrap(),
+            vec![
+                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+            ]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 0).unwrap(),
+            vec![parse_scalar(
+                "0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"
+            )]
+        );
+        assert_eq!(
+            reverse_iteration(&store, 1).unwrap(),
+            vec![
+                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+            ]
+        );
+    }
+
+    #[test]
     fn test_push_commit_push_commit() {
         let mut store = TransactionStore::default().unwrap();
         let transaction1 = Transaction::from_proto(
