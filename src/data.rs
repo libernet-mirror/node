@@ -490,6 +490,9 @@ pub struct Transaction {
 }
 
 impl Transaction {
+    pub const BLOCK_REWARD_DST: &'static [u8] = b"libernet/transaction/block_reward";
+    pub const SEND_COINS_DST: &'static [u8] = b"libernet/transaction/send_coins";
+
     fn hash_block_reward_transaction(
         chain_id: u64,
         nonce: u64,
@@ -497,6 +500,7 @@ impl Transaction {
         transaction: &libernet::transaction::BlockReward,
     ) -> Result<Scalar> {
         Ok(poseidon::hash_t3(&[
+            utils::hash_to_scalar(Self::BLOCK_REWARD_DST),
             sender_address,
             chain_id.into(),
             nonce.into(),
@@ -522,6 +526,7 @@ impl Transaction {
         transaction: &libernet::transaction::SendCoins,
     ) -> Result<Scalar> {
         Ok(poseidon::hash_t3(&[
+            utils::hash_to_scalar(Self::SEND_COINS_DST),
             sender_address,
             chain_id.into(),
             nonce.into(),
