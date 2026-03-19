@@ -1240,6 +1240,18 @@ mod tests {
     }
 
     #[test]
+    fn test_transactions_dsts() {
+        assert_eq!(
+            utils::hash_to_scalar(Transaction::BLOCK_REWARD_DST),
+            parse_scalar("0x2354fbdbabaab2075cbefe832071e7b85297d3dd4a9ba7074bb3487ed5e3651f")
+        );
+        assert_eq!(
+            utils::hash_to_scalar(Transaction::SEND_COINS_DST),
+            parse_scalar("0x42e713a7bd50ea9400810b63ffd6f04860196513b2cf9ec3608411c2c38f059b")
+        );
+    }
+
+    #[test]
     fn test_decode_and_verify_transaction_proof() {
         let account1 = account::testing::account1();
         let account2 = account::testing::account2();
