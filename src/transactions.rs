@@ -130,7 +130,7 @@ impl<'a> DoubleEndedIterator for TransactionIterator<'a> {
     }
 }
 
-/// Stores block transactions.
+/// Stores transactions.
 ///
 /// Each block has a Merkle tree of included transactions. The tree is binary and keyed by
 /// transaction number within the block (ie. 0 for the first transaction of the block, 1 for the
@@ -456,11 +456,11 @@ mod tests {
         assert_eq!(store.current_version(), 0);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x738275ee4bd33ed0962fb83e5c29a5ed761d821e52026a88b049238327438194")
+            parse_scalar("0x4d1c17a2777911106c2e4ab0bd33dbaf5e6380ab323d5fdc7c92345bfc135f80")
         );
         assert_eq!(
             store.current_root_hash(),
-            parse_scalar("0x738275ee4bd33ed0962fb83e5c29a5ed761d821e52026a88b049238327438194")
+            parse_scalar("0x4d1c17a2777911106c2e4ab0bd33dbaf5e6380ab323d5fdc7c92345bfc135f80")
         );
         assert_eq!(store.size(), 1);
         assert_eq!(store.get_size(0).unwrap(), 1);
@@ -469,19 +469,19 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![parse_scalar(
-                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+                "0x157a7dbfaab92ba8e6ba287d7ec853f9877ce441dc73a59c53b0ff65cb1f091c"
             )]
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+                "0x157a7dbfaab92ba8e6ba287d7ec853f9877ce441dc73a59c53b0ff65cb1f091c"
             )]
         );
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+                "0x157a7dbfaab92ba8e6ba287d7ec853f9877ce441dc73a59c53b0ff65cb1f091c"
             )]
         );
     }
@@ -516,11 +516,11 @@ mod tests {
         assert_eq!(store.current_version(), 0);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x0904abc2b8dc27364d53f2afa5e696fd8a4f86356ba615dd56ca81b914a97c86")
+            parse_scalar("0x2088e0e8b7acbb227397952eecaa8d308494bb975cef6c1c1a8f3f855981626b")
         );
         assert_eq!(
             store.current_root_hash(),
-            parse_scalar("0x0904abc2b8dc27364d53f2afa5e696fd8a4f86356ba615dd56ca81b914a97c86")
+            parse_scalar("0x2088e0e8b7acbb227397952eecaa8d308494bb975cef6c1c1a8f3f855981626b")
         );
         assert_eq!(store.size(), 2);
         assert_eq!(store.get_size(0).unwrap(), 2);
@@ -530,22 +530,22 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
-                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+                parse_scalar("0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"),
+                parse_scalar("0x2eb13676f6b8d61232fcc5c2cb8073ecb7ee27bdb8edf2c88972555db92334a8"),
             ]
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
-                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+                parse_scalar("0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"),
+                parse_scalar("0x2eb13676f6b8d61232fcc5c2cb8073ecb7ee27bdb8edf2c88972555db92334a8"),
             ]
         );
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x2eb13676f6b8d61232fcc5c2cb8073ecb7ee27bdb8edf2c88972555db92334a8"),
+                parse_scalar("0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"),
             ]
         );
     }
@@ -592,11 +592,11 @@ mod tests {
         assert_eq!(store.current_version(), 0);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x0b88fea6dc3924b70be94c1c99c10ca45f8043f0a114f5e57200ca626c2c9fae")
+            parse_scalar("0x20fee7ba3c0979d156b5cf34af146bbe60fb89ef8d75f57980458ff8d8ebf972")
         );
         assert_eq!(
             store.current_root_hash(),
-            parse_scalar("0x0b88fea6dc3924b70be94c1c99c10ca45f8043f0a114f5e57200ca626c2c9fae")
+            parse_scalar("0x20fee7ba3c0979d156b5cf34af146bbe60fb89ef8d75f57980458ff8d8ebf972")
         );
         assert_eq!(store.size(), 3);
         assert_eq!(store.get_size(0).unwrap(), 3);
@@ -607,25 +607,25 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![
-                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
-                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+                parse_scalar("0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
+                parse_scalar("0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"),
             ]
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
-                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+                parse_scalar("0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
+                parse_scalar("0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"),
             ]
         );
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
-                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
+                parse_scalar("0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
+                parse_scalar("0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"),
             ]
         );
     }
@@ -680,12 +680,12 @@ mod tests {
         assert_eq!(store.push(&transaction).unwrap(), 0);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x738275ee4bd33ed0962fb83e5c29a5ed761d821e52026a88b049238327438194")
+            parse_scalar("0x4d1c17a2777911106c2e4ab0bd33dbaf5e6380ab323d5fdc7c92345bfc135f80")
         );
         assert_eq!(store.current_version(), 1);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x738275ee4bd33ed0962fb83e5c29a5ed761d821e52026a88b049238327438194")
+            parse_scalar("0x4d1c17a2777911106c2e4ab0bd33dbaf5e6380ab323d5fdc7c92345bfc135f80")
         );
         assert_eq!(
             store.root_hash(1),
@@ -705,21 +705,21 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![parse_scalar(
-                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+                "0x157a7dbfaab92ba8e6ba287d7ec853f9877ce441dc73a59c53b0ff65cb1f091c"
             )]
         );
         assert_eq!(store.get_hashes(1).unwrap(), vec![]);
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+                "0x157a7dbfaab92ba8e6ba287d7ec853f9877ce441dc73a59c53b0ff65cb1f091c"
             )]
         );
         assert_eq!(iterate(&store, 1).unwrap(), vec![]);
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x56dfe0c69422410d258fdff9aa0419c38e0c5e91afddb2f45f76cb6ec17f6a38"
+                "0x157a7dbfaab92ba8e6ba287d7ec853f9877ce441dc73a59c53b0ff65cb1f091c"
             )]
         );
         assert_eq!(reverse_iteration(&store, 1).unwrap(), vec![]);
@@ -754,12 +754,12 @@ mod tests {
         assert_eq!(store.push(&transaction2).unwrap(), 1);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x0904abc2b8dc27364d53f2afa5e696fd8a4f86356ba615dd56ca81b914a97c86")
+            parse_scalar("0x2088e0e8b7acbb227397952eecaa8d308494bb975cef6c1c1a8f3f855981626b")
         );
         assert_eq!(store.current_version(), 1);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x0904abc2b8dc27364d53f2afa5e696fd8a4f86356ba615dd56ca81b914a97c86")
+            parse_scalar("0x2088e0e8b7acbb227397952eecaa8d308494bb975cef6c1c1a8f3f855981626b")
         );
         assert_eq!(
             store.root_hash(1),
@@ -781,24 +781,24 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
-                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+                parse_scalar("0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"),
+                parse_scalar("0x2eb13676f6b8d61232fcc5c2cb8073ecb7ee27bdb8edf2c88972555db92334a8"),
             ]
         );
         assert_eq!(store.get_hashes(1).unwrap(), vec![]);
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
-                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
+                parse_scalar("0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"),
+                parse_scalar("0x2eb13676f6b8d61232fcc5c2cb8073ecb7ee27bdb8edf2c88972555db92334a8"),
             ]
         );
         assert_eq!(iterate(&store, 1).unwrap(), vec![]);
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"),
-                parse_scalar("0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"),
+                parse_scalar("0x2eb13676f6b8d61232fcc5c2cb8073ecb7ee27bdb8edf2c88972555db92334a8"),
+                parse_scalar("0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"),
             ]
         );
         assert_eq!(reverse_iteration(&store, 1).unwrap(), vec![]);
@@ -832,21 +832,21 @@ mod tests {
         assert_eq!(store.push(&transaction1).unwrap(), 0);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x1ec6dcb0dd77ccadbf50b502a7b61fe083ef564505c17da2e889becbb8a87558")
+            parse_scalar("0x2eea4ac9e18c1bf75317b03b596cfa8b3a6e635e3194fefc08e60c83455e09c0")
         );
         assert_eq!(store.push(&transaction2).unwrap(), 0);
         assert_eq!(store.current_version(), 1);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x1ec6dcb0dd77ccadbf50b502a7b61fe083ef564505c17da2e889becbb8a87558")
+            parse_scalar("0x2eea4ac9e18c1bf75317b03b596cfa8b3a6e635e3194fefc08e60c83455e09c0")
         );
         assert_eq!(
             store.root_hash(1),
-            parse_scalar("0x199913e12c2efa797495ba08941e106dc94f05832e3792927f7b5a6ba15dbdfd")
+            parse_scalar("0x41063a752b9839d08e2a18cb279599be4646db7bb7153e652ab6d0774ec9006a")
         );
         assert_eq!(
             store.current_root_hash(),
-            parse_scalar("0x199913e12c2efa797495ba08941e106dc94f05832e3792927f7b5a6ba15dbdfd")
+            parse_scalar("0x41063a752b9839d08e2a18cb279599be4646db7bb7153e652ab6d0774ec9006a")
         );
         assert_eq!(store.size(), 1);
         assert_eq!(store.get_size(0).unwrap(), 1);
@@ -858,37 +858,37 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![parse_scalar(
-                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+                "0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"
             )]
         );
         assert_eq!(
             store.get_hashes(1).unwrap(),
             vec![parse_scalar(
-                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+                "0x0aabfb03d78c59db731defcce16097cb2d8f85f2d6507d0d7b730748418165cb"
             )]
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+                "0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"
             )]
         );
         assert_eq!(
             iterate(&store, 1).unwrap(),
             vec![parse_scalar(
-                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+                "0x0aabfb03d78c59db731defcce16097cb2d8f85f2d6507d0d7b730748418165cb"
             )]
         );
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+                "0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"
             )]
         );
         assert_eq!(
             reverse_iteration(&store, 1).unwrap(),
             vec![parse_scalar(
-                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+                "0x0aabfb03d78c59db731defcce16097cb2d8f85f2d6507d0d7b730748418165cb"
             )]
         );
     }
@@ -933,21 +933,21 @@ mod tests {
         assert_eq!(store.push(&transaction2).unwrap(), 1);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x2666817884a22839c054e44cb585ea83074c1a84d1fa8964a7a2b3ff3141b0c2")
+            parse_scalar("0x47d91237bf3f720aedb3a6ef99d64917c0f9a099adcda7bb5b5ff2b2c6a013cc")
         );
         assert_eq!(store.push(&transaction3).unwrap(), 0);
         assert_eq!(store.current_version(), 1);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x2666817884a22839c054e44cb585ea83074c1a84d1fa8964a7a2b3ff3141b0c2")
+            parse_scalar("0x47d91237bf3f720aedb3a6ef99d64917c0f9a099adcda7bb5b5ff2b2c6a013cc")
         );
         assert_eq!(
             store.root_hash(1),
-            parse_scalar("0x52a114bd56a38429de75a9b3f543b55c3f12abae613bb2e9b3c8f3498af05a03")
+            parse_scalar("0x3af42be549ae68dcf67c9150700992f1066fb2f54d0ec413fc5f5732f9649d85")
         );
         assert_eq!(
             store.current_root_hash(),
-            parse_scalar("0x52a114bd56a38429de75a9b3f543b55c3f12abae613bb2e9b3c8f3498af05a03")
+            parse_scalar("0x3af42be549ae68dcf67c9150700992f1066fb2f54d0ec413fc5f5732f9649d85")
         );
         assert_eq!(store.size(), 1);
         assert_eq!(store.get_size(0).unwrap(), 2);
@@ -960,40 +960,40 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![
-                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+                parse_scalar("0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
             ]
         );
         assert_eq!(
             store.get_hashes(1).unwrap(),
             vec![parse_scalar(
-                "0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"
+                "0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"
             )]
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+                parse_scalar("0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
             ]
         );
         assert_eq!(
             iterate(&store, 1).unwrap(),
             vec![parse_scalar(
-                "0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"
+                "0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"
             )]
         );
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
-                parse_scalar("0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
+                parse_scalar("0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"),
             ]
         );
         assert_eq!(
             reverse_iteration(&store, 1).unwrap(),
             vec![parse_scalar(
-                "0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"
+                "0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"
             )]
         );
     }
@@ -1037,22 +1037,22 @@ mod tests {
         assert_eq!(store.push(&transaction1).unwrap(), 0);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x19ec75a9eb0522698a3f57c1c11c648b87943e5aa35d422883269c7b06010256")
+            parse_scalar("0x0052cef49aa5dc83a484041bc51eb7cf76f3adfd8de0141073e710ecb4f78e88")
         );
         assert_eq!(store.push(&transaction2).unwrap(), 0);
         assert_eq!(store.push(&transaction3).unwrap(), 1);
         assert_eq!(store.current_version(), 1);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x19ec75a9eb0522698a3f57c1c11c648b87943e5aa35d422883269c7b06010256")
+            parse_scalar("0x0052cef49aa5dc83a484041bc51eb7cf76f3adfd8de0141073e710ecb4f78e88")
         );
         assert_eq!(
             store.root_hash(1),
-            parse_scalar("0x4461cf85f0fad7ea0cfc620855911ac88e76aebf4e046fd2583d8039998f11f6")
+            parse_scalar("0x14a76f5cdbb69c17cc4727b4dd5cf7f19c287cab96a9376fc748a4592e117e44")
         );
         assert_eq!(
             store.current_root_hash(),
-            parse_scalar("0x4461cf85f0fad7ea0cfc620855911ac88e76aebf4e046fd2583d8039998f11f6")
+            parse_scalar("0x14a76f5cdbb69c17cc4727b4dd5cf7f19c287cab96a9376fc748a4592e117e44")
         );
         assert_eq!(store.size(), 2);
         assert_eq!(store.get_size(0).unwrap(), 1);
@@ -1065,40 +1065,40 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![parse_scalar(
-                "0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"
+                "0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"
             )]
         );
         assert_eq!(
             store.get_hashes(1).unwrap(),
             vec![
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
-                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
+                parse_scalar("0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"),
             ]
         );
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"
+                "0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"
             )]
         );
         assert_eq!(
             iterate(&store, 1).unwrap(),
             vec![
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
-                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
+                parse_scalar("0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"),
             ]
         );
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x5eacb6a3156699a9d2242d2a2c150ec764b35eb2afc65d47a97620f23a94e048"
+                "0x60c348af4e8645e0accfb09c7e415b2ba19dd61ef4891106d01ece21e1eea544"
             )]
         );
         assert_eq!(
             reverse_iteration(&store, 1).unwrap(),
             vec![
-                parse_scalar("0x4eb98e66c5b805c1f7598bac3e7af05798e07e608aed935e9609bc4809722871"),
-                parse_scalar("0x2448aca07f3986bf1f3c0f7a87d9498dcf8b97789953c8115313f3e9309711d3"),
+                parse_scalar("0x12cb8b51585d17a587a5711af4f1e5703ce652c4dcc80b284a239ce37c0fc7b4"),
+                parse_scalar("0x730d84c403c42286a1891c206127f60d4fba2399cb484f3b2db109e28a25342f"),
             ]
         );
     }
@@ -1131,21 +1131,21 @@ mod tests {
         assert_eq!(store.push(&transaction1).unwrap(), 0);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x1ec6dcb0dd77ccadbf50b502a7b61fe083ef564505c17da2e889becbb8a87558")
+            parse_scalar("0x2eea4ac9e18c1bf75317b03b596cfa8b3a6e635e3194fefc08e60c83455e09c0")
         );
         assert_eq!(store.push(&transaction2).unwrap(), 0);
         assert_eq!(
             store.commit(),
-            parse_scalar("0x199913e12c2efa797495ba08941e106dc94f05832e3792927f7b5a6ba15dbdfd")
+            parse_scalar("0x41063a752b9839d08e2a18cb279599be4646db7bb7153e652ab6d0774ec9006a")
         );
         assert_eq!(store.current_version(), 2);
         assert_eq!(
             store.root_hash(0),
-            parse_scalar("0x1ec6dcb0dd77ccadbf50b502a7b61fe083ef564505c17da2e889becbb8a87558")
+            parse_scalar("0x2eea4ac9e18c1bf75317b03b596cfa8b3a6e635e3194fefc08e60c83455e09c0")
         );
         assert_eq!(
             store.root_hash(1),
-            parse_scalar("0x199913e12c2efa797495ba08941e106dc94f05832e3792927f7b5a6ba15dbdfd")
+            parse_scalar("0x41063a752b9839d08e2a18cb279599be4646db7bb7153e652ab6d0774ec9006a")
         );
         assert_eq!(
             store.root_hash(2),
@@ -1168,39 +1168,39 @@ mod tests {
         assert_eq!(
             store.get_hashes(0).unwrap(),
             vec![parse_scalar(
-                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+                "0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"
             )]
         );
         assert_eq!(
             store.get_hashes(1).unwrap(),
             vec![parse_scalar(
-                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+                "0x0aabfb03d78c59db731defcce16097cb2d8f85f2d6507d0d7b730748418165cb"
             )]
         );
         assert_eq!(store.get_hashes(2).unwrap(), vec![]);
         assert_eq!(
             iterate(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+                "0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"
             )]
         );
         assert_eq!(
             iterate(&store, 1).unwrap(),
             vec![parse_scalar(
-                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+                "0x0aabfb03d78c59db731defcce16097cb2d8f85f2d6507d0d7b730748418165cb"
             )]
         );
         assert_eq!(iterate(&store, 2).unwrap(), vec![]);
         assert_eq!(
             reverse_iteration(&store, 0).unwrap(),
             vec![parse_scalar(
-                "0x368b8dcd0fac05961817bee3af225d68a47cd508b275ff97eb9e2e9a5ea398dc"
+                "0x3ad8dc6b5e81af9086c088a12a7e24ad767cf82dec876c0c104fea2a93018282"
             )]
         );
         assert_eq!(
             reverse_iteration(&store, 1).unwrap(),
             vec![parse_scalar(
-                "0x533824197efd76b0d7f5db6ee96de839e6f5894350501ae54f27c9b1f94dd5d8"
+                "0x0aabfb03d78c59db731defcce16097cb2d8f85f2d6507d0d7b730748418165cb"
             )]
         );
         assert_eq!(reverse_iteration(&store, 2).unwrap(), vec![]);
