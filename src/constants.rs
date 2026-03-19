@@ -6,7 +6,7 @@ pub const PROTOCOL_VERSION_MAJOR: u32 = 0;
 /// Current minor protocol version.
 ///
 /// Bump it when the `proto` submodule gets updated with compatible changes.
-pub const PROTOCOL_VERSION_MINOR: u32 = 1;
+pub const PROTOCOL_VERSION_MINOR: u32 = 2;
 
 /// Current protocol build.
 ///
