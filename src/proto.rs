@@ -395,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_scalar_encoding_to_any() {
-        let value = utils::get_random_scalar();
+        let value = utils::get_random_scalar::<Scalar>();
         let encoded = value.encode_to_any().unwrap();
         assert_eq!(Scalar::decode_from_any(&encoded).unwrap(), value);
     }
@@ -439,14 +439,14 @@ mod tests {
 
     #[test]
     fn test_g1_point_encoding() {
-        let point = (G1Projective::generator() * utils::get_random_scalar()).into();
+        let point = (G1Projective::generator() * utils::get_random_scalar::<Scalar>()).into();
         let encoded = encode_g1(point);
         assert_eq!(decode_g1(&encoded).unwrap(), point);
     }
 
     #[test]
     fn test_g2_point_encoding() {
-        let point = (G2Projective::generator() * utils::get_random_scalar()).into();
+        let point = (G2Projective::generator() * utils::get_random_scalar::<Scalar>()).into();
         let encoded = encode_g2(point);
         assert_eq!(decode_g2(&encoded).unwrap(), point);
     }
