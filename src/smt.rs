@@ -824,6 +824,27 @@ impl<const W: usize, const H: usize> Forest<W, H> {
     pub fn take(self) -> MmapMut {
         self.repr.take()
     }
+
+    /// Increments the reference count of the specified root.
+    ///
+    /// REQUIRES: `root_hash` must refer to a root, ie. a node at level `H`.
+    pub fn ref_root(&mut self, root_hash: Scalar) {
+        self.repr.ref_node(root_hash, false);
+    }
+
+    /// Decrements the reference count of the specified root.
+    ///
+    /// If the root is not the root of the empty tree (ie. `root != empty_root_hash()`) and the
+    /// reference count reaches zero, the node is removed from the data structure and the reference
+    /// counts of its children are also decremented; this may in turn trigger recursive removal of
+    /// all descendants whose reference count reaches zero.
+    ///
+    /// The nodes of the empty tree are never removed from the data structure.
+    ///
+    /// REQUIRES: `root_hash` must refer to a root, ie. a node at level `H`.
+    pub fn unref_root(&mut self, root_hash: Scalar) -> Result<bool> {
+        self.repr.unref_node(root_hash, H - 1)
+    }
 }
 
 impl<const H: usize> Forest<2, H> {

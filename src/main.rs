@@ -23,6 +23,7 @@ mod data;
 mod db;
 mod net;
 mod program;
+mod programs;
 mod proto;
 mod service;
 mod smt;
